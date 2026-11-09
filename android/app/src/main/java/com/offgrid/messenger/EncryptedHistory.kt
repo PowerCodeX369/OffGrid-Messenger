@@ -54,6 +54,29 @@ class EncryptedHistory(context:Context) {
         try {output.write(stored);file.finishWrite(output)}
         catch(error:Exception){file.failWrite(output);throw error}
     }
+    // Separate encrypted ledger prevents delayed / retried RX frames and on-disk
+    // history restoration from resurrecting messages hidden by Delete for me.
+    private val hiddenFile=AtomicFile(File(context.applicationContext.filesDir,"offgrid-hidden-ids.enc"))
+    private val hiddenAad="OffGridMessenger/hidden-ids/1".toByteArray(Charsets.UTF_8)
+    fun loadHiddenIds():Set<String> = synchronized(IO_LOCK) {
+        if(!hiddenFile.baseFile.exists())return@synchronized emptySet()
+        val raw=hiddenFile.openRead().use{it.readBytes()}
+        require(raw.size in 33..25000 && raw.copyOfRange(0,4).contentEquals("OGD1".toByteArray()))
+        val cipher=Cipher.getInstance("AES/GCM/NoPadding")
+        cipher.init(Cipher.DECRYPT_MODE,key(),GCMParameterSpec(128,raw.copyOfRange(4,16)))
+        cipher.updateAAD(hiddenAad)
+        HiddenMessageIds.decode(cipher.doFinal(raw.copyOfRange(16,raw.size)))
+    }
+    fun saveHiddenIds(ids:Set<String>) = synchronized(IO_LOCK) {
+        val cipher=Cipher.getInstance("AES/GCM/NoPadding")
+        cipher.init(Cipher.ENCRYPT_MODE,key())
+        cipher.updateAAD(hiddenAad)
+        val raw="OGD1".toByteArray()+cipher.iv+cipher.doFinal(HiddenMessageIds.encode(ids))
+        val output=hiddenFile.startWrite()
+        try {output.write(raw);hiddenFile.finishWrite(output)}
+        catch(e:Exception){hiddenFile.failWrite(output);throw e}
+    }
+
     private val avatarFile=AtomicFile(File(context.applicationContext.filesDir,"offgrid-contact-avatar.enc"))
     private val avatarAad="OffGridMessenger/contact-avatar/1".toByteArray(Charsets.UTF_8)
     fun loadAvatar():ByteArray? = synchronized(IO_LOCK) {
@@ -75,5 +98,5 @@ class EncryptedHistory(context:Context) {
         catch(e:Exception){avatarFile.failWrite(out);throw e}
     }
     fun clearAvatar() = synchronized(IO_LOCK) {avatarFile.delete()}
-    fun clear()=synchronized(IO_LOCK){file.delete()}
+    fun clear()=synchronized(IO_LOCK){file.delete();hiddenFile.delete()}
 }

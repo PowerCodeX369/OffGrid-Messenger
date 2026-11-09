@@ -128,6 +128,7 @@ class MainActivity : ComponentActivity() {
     private var voicePlaybackFile:File?=null
     private var recordAutoStop:Runnable?=null
     private val playedReceipts=mutableSetOf<String>()
+    private val hiddenMessageIds=mutableSetOf<String>()
     private var activityDestroyed=false
 
     private fun bleTrace(message: String) {
@@ -170,11 +171,17 @@ class MainActivity : ComponentActivity() {
         keepBleBackground=preferences.getBoolean("ble_background",false)
         accessibleVoiceTap=preferences.getBoolean("accessible_voice_tap",false)
         historyWorker.execute {
+            val hidden=runCatching { history.loadHiddenIds() }.getOrElse {
+                mainHandler.post {bleTrace("Hidden message ledger unavailable: ${it.javaClass.simpleName}")}
+                emptySet()
+            }
             runCatching { history.load() }.onSuccess { stored ->
                 mainHandler.post {
                     if(!activityDestroyed) {
+                        hiddenMessageIds.addAll(hidden)
                         val present=items.map { it.id }.toSet()
-                        val old=stored.filterNot {it.id in present}.map { if(it.outgoing && it.status=="sending")it.copy(status="failed") else it }
+                        val old=stored.filterNot {it.id in present || it.id in hiddenMessageIds}
+                            .map { if(it.outgoing && it.status=="sending")it.copy(status="failed") else it }
                         items.addAll(0,old)
                         playedReceipts.addAll(old.filter { !it.outgoing && it.status=="played" }.map{it.id})
                         if(old.isNotEmpty())bleTrace("Restored ${old.size} encrypted messages from device")
@@ -285,8 +292,14 @@ class MainActivity : ComponentActivity() {
     private fun deleteForMe(item:ChatItem) {
         val idx=items.indexOfFirst { it.id==item.id }
         if(idx>=0) {
-            items.removeAt(idx);scheduleHistorySave()
-            state="Message deleted from this device"
+            if(playingId==item.id)stopVoicePlayback()
+            // Suppress duplicate radio delivery and stale history restores first.
+            hiddenMessageIds.add(item.id)
+            items.removeAt(idx)
+            val deletedSnapshot=hiddenMessageIds.toSet()
+            historyWorker.execute {runCatching {history.saveHiddenIds(deletedSnapshot)} }
+            scheduleHistorySave()
+            state="Message removed from this device"
         }
     }
     private fun editOutgoing(item:ChatItem,updated:String) {
@@ -609,6 +622,11 @@ class MainActivity : ComponentActivity() {
                     if(parsed.bulk) mediaAcks.accept(split[1],split[2],split[3])
                     else link?.send("APPACK ${split[1]} ${split[2]} ${split[3]}")
                     val env=assembler.accept(split[1],split[2],frame)?:return
+                    // A local deletion is permanent even when the sender retries a frame.
+                    if(env.id in hiddenMessageIds && env.kind in listOf(OgmCodec.TEXT,OgmCodec.IMAGE,OgmCodec.VOICE)) {
+                        controlReceipt(OgmCodec.DELIVERED,env.id)
+                        return
+                    }
                     when(env.kind) {
                         OgmCodec.TEXT -> {
                             val body=env.text.toString(Charsets.UTF_8)
@@ -861,7 +879,8 @@ class MainActivity : ComponentActivity() {
                         accessibleVoiceTap=it;prefs.edit().putBoolean("accessible_voice_tap",it).apply()
                     },
                     clearHistory={
-                        items.clear();playedReceipts.clear();historyWorker.execute { history.clear() }
+                        items.clear();playedReceipts.clear();hiddenMessageIds.clear()
+                        historyWorker.execute { history.clear() }
                     },retry=::retryFailed
                 )
             )
