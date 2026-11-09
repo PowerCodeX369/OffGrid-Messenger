@@ -11,7 +11,7 @@ def fragment(start,end):
     return s[s.index(start):s.index(end)]
 helpers=fragment('static uint32_t sack_read32(', '/* Keep this extension')
 parse_mac=fragment('static bool parse_mac(', 'static int nibble(')
-parser=fragment('static bool parse_batch_ack(', 'static void serial_task(')
+parser=fragment('static bool parse_batch_ack(', 'static void ble_commands(' if 'static void ble_commands(' in s else 'static void serial_task(')
 pre="""#include <stdint.h>\n#include <stdio.h>\n#include <stdlib.h>\n#include <string.h>\n#include <stdbool.h>\n#include <ctype.h>\n#define SACK_MAX_IDS 6\n#define EV_APPACK_BATCH 8\ntypedef struct {int type;uint8_t mac[6];uint32_t session;uint16_t length;uint8_t text[180];} event_t;\n"""
 main=r"""int main(void){
  uint8_t sample[4]={0};sack_write32(sample,0xfedcba98u);

@@ -1,26 +1,18 @@
-# Phase 1.6.1 validation
+# Phase 1.4.11 — Local validation record
 
-## Local checks
+**Status:** Experimental, awaiting ESP-IDF hardware build and outdoor range tests.
 
-- JavaScript syntax validation for `web/app.js`, `web/protocol.js`, `web/adaptive.js`.
-- Existing Node protocol, selective ACK, voice and diagnostic unit tests.
-- Existing Playwright/Chromium voice recording (short and two-minute), played receipts, and auto-scroll regression tests.
-- New Chromium tests at desktop and narrow-screen sizes:
-  - Notification permission requested only on clicking the bell; default off.
-  - Unread badges in sidebar and contact; encrypted local viewing state; title count.
-  - One alert per new message while tab is in background; no alerts while foreground.
-  - No duplicate notifications on duplicate messages; preview private by default.
-  - Badges clear upon foreground viewing, and outbound read receipts remain independent.
-  - Notification toggle-off and theme stability.
-  - Mic-to-send transition, text send and revert to mic, blank input safety.
-- Firmware and crypto source files compared by SHA-256 to the user-approved 1.6 build; expected to be byte-for-byte identical.
-- Host-side C syntax checks and pure C policy tests.
-- ZIP CRC and archive integrity.
+Validated locally:
 
-## Not verified here
+- Official Espressif documentation checked for `WIFI_PROTOCOL_LR`, `WIFI_PHY_MODE_LR`, `WIFI_PHY_RATE_LORA_250K`, `WIFI_PHY_RATE_LORA_500K`, `esp_now_set_peer_rate_config()` and ESP32-C3 compatibility.
+- C source syntax checked against host-side stubs, both USB IRQ enabled/disabled, with format-string mismatch errors enabled. **Host stubs are not ESP-IDF**.
+- Unit tests checked target PHY for strong/moderate/weak RSSI, manual 250/500 kbps, and 12 -> 6 -> 1 -> 500 -> 250 kbps fallback.
+- Static contract tests checked native USB Serial/JTAG IRQ implementation, FreeRTOS task watchdog yield, NVS pairing-key storage, LR peer persistence/probes/response, unicast confirmations and existing browser encryption.
+- JavaScript syntax checked with Node.js.
+- Existing AES-256-GCM photo and text protocol tests passed, including 500 Unicode characters and a 96 KiB test payload, loss/reordering and wrong ciphertext rejection.
+- Selective ACK, diagnostics, browser auto-scroll smoke, handshake and watchdog regression tests passed.
+- The approved web CSS, logo, encryption protocol module and adaptive photo controller are byte-for-byte identical to Phase 1.4.10.4.
 
-- Physical ESP32 throughput, range or RF loss recovery (no radio changes were made).
-- Native KDE/Windows/macOS notification-daemon delivery, because automation uses a mocked browser Notification implementation.
-- User's acceptance of visual refinements; actual UI should be reviewed in Chromium.
+**Not validated here:** full ESP-IDF build, actual `esp_now_set_peer_rate_config()` success with LR phy/rate on device, control ACKs at distance, multi-minute radio stability, real throughput or claimed range.
 
-**No ESP32 firmware flash required.**
+**Do not promote this experimental build to the frozen baseline until the tests in README.md pass on both boards.**

@@ -1,0 +1,38 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "OffGrid: Build + Flash BOTH ESP32s",
+      "type": "shell",
+      "command": "bash",
+      "args": [
+        "${workspaceFolder}/scripts/flash_both.sh",
+        "${input:offgridA}",
+        "${input:offgridB}"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": [],
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated",
+        "clear": true
+      }
+    }
+  ],
+  "inputs": [
+    {
+      "id": "offgridA",
+      "type": "promptString",
+      "description": "Board A serial port",
+      "default": "/dev/ttyACM0"
+    },
+    {
+      "id": "offgridB",
+      "type": "promptString",
+      "description": "Board B serial port",
+      "default": "/dev/ttyACM1"
+    }
+  ]
+}
