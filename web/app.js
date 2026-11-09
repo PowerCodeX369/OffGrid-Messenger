@@ -198,7 +198,7 @@ async function runDiagnostics(){
  speedDiagnostics.busy=false;if(speedDiagnostics.runButton)speedDiagnostics.runButton.disabled=false;
 }
 
-try{theme=localStorage.getItem('offgrid_theme')==='light'?'light':'dark';imageMode=localStorage.getItem('offgrid_image_mode')==='lossless'?'lossless':'hq';linkPreference=['auto','range','speed'].includes(localStorage.getItem('offgrid_link_preference'))?localStorage.getItem('offgrid_link_preference'):'auto';adaptivePhotos=localStorage.getItem('offgrid_adaptive_photos')!=='off';selectivePhotoAcks=localStorage.getItem('offgrid_sack_photos')!=='off';}catch{}
+try{theme=localStorage.getItem('offgrid_theme')==='light'?'light':'dark';imageMode=localStorage.getItem('offgrid_image_mode')==='lossless'?'lossless':'hq';linkPreference=['auto','range','speed','lr500','lr250'].includes(localStorage.getItem('offgrid_link_preference'))?localStorage.getItem('offgrid_link_preference'):'auto';adaptivePhotos=localStorage.getItem('offgrid_adaptive_photos')!=='off';selectivePhotoAcks=localStorage.getItem('offgrid_sack_photos')!=='off';}catch{}
 document.body.classList.toggle('light',theme==='light');
 const macKey=()=>localMac||'unknown';
 const nameKey=()=>`offgrid_phase14_name_${macKey()}`;
@@ -231,6 +231,9 @@ function chosenWindow(job=activeTransfer){
  const fast=(kind==='image' && selectivePhotoAcks && speedDiagnostics.sackCapable && adaptivePhotos) ||
             (job?.kind==='probe' && job?.batch && speedDiagnostics.sackCapable);
  if(fast){
+   // In LR mode, favor reliable small windows over PHY throughput.
+   if(linkPreference==='lr250'||radioTelemetry.phy===0.25)return 1;
+   if(linkPreference==='lr500'||radioTelemetry.phy===0.5)return 2;
    // C firmware MAX_PENDING=8; reserve two slots for scheduling margin.
    // A 6-slot window is large enough for one selective ACK group.
    const rssi=radioTelemetry.rssi;
@@ -246,6 +249,7 @@ function photoBudget(){
  // Image preparation happens before transmission; mid-transfer signal changes
  // alter the in-flight window, never mutate already-encrypted image bytes.
  if(linkPreference==='range')return 32*1024;
+ if(['lr250','lr500'].includes(linkPreference))return 32*1024;
  if(linkPreference==='auto'&&radioTelemetry.rssi!==null&&radioTelemetry.rssi< -78)return 32*1024;
  if(linkStats.mode==='weak')return 32*1024;
  if(linkPreference==='speed'||(linkStats.mode==='strong'&&radioTelemetry.rssi!==null&&radioTelemetry.rssi>=-65))return 60*1024;
@@ -254,10 +258,10 @@ function photoBudget(){
 function updateLinkBadge(){
  const node=$('linkModeLabel');if(!node)return;
  const speed=chosenWindow({kind:'image',control:false}),budget=Math.round(photoBudget()/1024);
- const name=linkPreference==='auto'?'Auto compression':linkPreference==='range'?'Smaller photos':'Higher-quality photos';
+ const name=linkPreference==='auto'?'Auto compression':linkPreference==='range'?'Smaller photos':linkPreference==='lr500'?'Long Range 500':linkPreference==='lr250'?'Long Range 250':'Higher-quality photos';
  let quality='learning';
  if(linkStats.samples>3)quality=linkStats.mode==='strong'?'strong':linkStats.mode==='weak'?'weak':'steady';
- const phy=radioTelemetry.available?`adaptive ${radioTelemetry.phy} Mbps PHY`:'radio discovery starting';
+ const phy=radioTelemetry.available?`${radioTelemetry.phy<1?'LR ': 'adaptive '}${radioTelemetry.phy} Mbps PHY`:'radio discovery starting';
  const signal=radioTelemetry.available&&radioTelemetry.rssi!==null?`${radioTelemetry.rssi} dBm`:'signal —';
  node.textContent=`${name} · ${phy} · ${signal} · ${selectivePhotoAcks&&speedDiagnostics.sackCapable&&adaptivePhotos?"batch ACK":"legacy ACK"} · photo window ${speed} · ~${budget} KB${photoFlow.samples?` · ACK ${Math.round(photoFlow.emaMs)} ms`:``}${linkStats.lastKBs?` · ${linkStats.lastKBs.toFixed(1)} KB/s`:``}`;
  node.title=`ESP-NOW peer: ${radioTelemetry.peer}. TX successful: ${radioTelemetry.txok}, TX failures: ${radioTelemetry.txfail}, received: ${radioTelemetry.rx}, discovery beacons received: ${radioTelemetry.hello}. Reported PHY rate is not actual file throughput.`;
@@ -683,7 +687,7 @@ function parseLine(raw){const s=raw.trim();if(!s)return;
  if(s.startsWith('LINK|')){
   const parts=s.split('|'),fields={};for(const bit of parts.slice(2)){const j=bit.indexOf('=');if(j>0)fields[bit.slice(0,j)]=bit.slice(j+1);}
   const phy=Number(fields.PHY),rssi=Number(fields.RSSI);
-  if([1,6,12].includes(phy)){
+  if([0.25,0.5,1,6,12].includes(phy)){
    const newTxFail=Number(fields.TXFAIL)||0;
    if(newTxFail>radioTelemetry.txfail && photoFlow.samples)photoFlow.penalty('firmware reports radio TX failure');
    // Use current telemetry only; cumulative TX failures are not a permanent ban.
@@ -696,7 +700,7 @@ function parseLine(raw){const s=raw.trim();if(!s)return;
  }
  if(s.startsWith('RATE_ERROR|')){console.warn('Radio PHY configuration:',s);toast('ESP32 PHY rate could not be applied; falling back to safe rate.');return;}
  if(s.startsWith('RATE|')||s.startsWith('PEER|'))return;
- if(s.startsWith('READY|')){const parts=s.split('|');speedDiagnostics.capable=parts.includes('DIAG=1');speedDiagnostics.sackCapable=parts.includes('SACK=1');if(!parts.includes('PROTO=2')||!parts.includes('CAP=180')||!parts.includes('STABLE=1')||!parts.includes('NVSKEY=1')){if(!firmwareMismatchNotified){toast('Wrong ESP32 firmware protocol; open Diagnostics to see its READY response.');firmwareMismatchNotified=true;}showUsbHint('Incompatible READY. Expected PROTO=2, CAP=180, STABLE=1, NVSKEY=1.');console.warn('Incompatible firmware READY:',s);return;}const mac=parts[1];if(!/^[0-9A-Fa-f:]{17}$/.test(mac))return;if(verified&&localMac===mac)return;void onReady(mac);return;}
+ if(s.startsWith('READY|')){const parts=s.split('|');speedDiagnostics.capable=parts.includes('DIAG=1');speedDiagnostics.sackCapable=parts.includes('SACK=1');if(!parts.includes('PROTO=2')||!parts.includes('CAP=180')||!parts.includes('STABLE=1')||!parts.includes('NVSKEY=1')){if(!firmwareMismatchNotified){toast('Wrong ESP32 firmware protocol; open Diagnostics to see its READY response.');firmwareMismatchNotified=true;}showUsbHint('Incompatible READY. Expected PROTO=2, CAP=180, STABLE=1, NVSKEY=1, LR=1.');console.warn('Incompatible firmware READY:',s);return;}const mac=parts[1];if(!/^[0-9A-Fa-f:]{17}$/.test(mac))return;if(!parts.includes('LR=1'))toast('ESP32 Wi-Fi driver did not enable Long Range; normal messaging remains available.');if(verified&&localMac===mac)return;void onReady(mac);return;}
  if(s.startsWith('QUEUED|')){const [,session,id,hex]=s.split('|'),slot=radioByHex.get(hex);if(slot){slot.wire=`${session}:${id}`;radioByWire.set(slot.wire,slot);}return;}
  if(s.startsWith('RX|')){const [,mac,session,id,data]=s.split('|');if(mac&&session&&id&&data)void processRx(mac,session,id,data);return;}
  if(/^(SENT|DELIVERED|FAILED|RETRY|RADIO_ERROR)\|/.test(s)){const [type,session,id,extra]=s.split('|');if(type==='RADIO_ERROR'){console.warn('ESP-NOW:',extra);if(radioTelemetry.txfail<=2)toast('Radio send issue: '+extra+' — check Radio diagnostics in Settings.');}else onRadio(type,session,id,extra);return;}
@@ -831,9 +835,9 @@ function showRename(){showDialog('Contact name',body=>{body.append(el('p','','Th
 async function clearHistory(){if(!verified||!secretKey)return;if(runningTransfers||pendingRadio()||transferQueue.length){toast('Finish active transfers before clearing history.');return;}if(!confirm('Delete encrypted chat history for this ESP32 from this browser? This cannot be undone.'))return;
  await wipeStored();records=[];recordMap.clear();revokePhotos();renderHistory();toast('Local chat history cleared.');closeDialog();}
 function showInfo(){showDialog('Chat information',body=>{[['Contact',activeContact],['Your ESP32',localMac||'Disconnected'],['Protocol','ESP-NOW firmware protocol 2 / encrypted app protocol OGM4'],['Security',secretKey?'AES-256-GCM, 256-bit random shared key':'Not paired'],['Photo target',`${Math.round(photoBudget()/1024)} KB optimized, 96 KB absolute`],['Radio PHY',radioTelemetry.available?`${radioTelemetry.phy} Mbps TX, RSSI ${radioTelemetry.rssi===null?'unknown':radioTelemetry.rssi+' dBm'}`:'Waiting for telemetry'],['Link profile',`${linkPreference}; adaptive PHY; photo window ${chosenWindow({kind:'image',control:false})}; auto ${adaptivePhotos?'on':'off'}`],['Key storage','ESP32 NVS, browser RAM only'],['History','AES-GCM encrypted IndexedDB']].forEach(([a,b])=>{const line=el('div','info-line');line.append(el('span','',a),el('strong','',b));body.append(line);});body.append(el('p','','Grey single tick = transmitted; grey double tick = peer decrypted and confirmed; blue double tick = peer app reported it was viewed. Browser history is stored encrypted at rest.'));});}
-function showSettings(){showDialog('Settings',body=>{body.append(el('p','','Phase 1.4.10.3: selective photo ACKs and existing speed diagnostics, with adaptive ESP-NOW PHY (1/6/12 Mbps). Phase 1.4.10.2 remains the frozen rollback baseline.'));
+function showSettings(){showDialog('Settings',body=>{body.append(el('p','','Experimental Phase 1.4.11: Espressif LR 500/250 kbps with existing 1/6/12 Mbps adaptive modes. 1.4.10.2 remains the frozen baseline. Test text before photos.'));
  const linkLabel=el('label','','Transfer profile');body.append(linkLabel);const linkSelect=document.createElement('select');linkSelect.className='setting-select';
- [['auto','Auto · balanced photo compression, stable packet flow'],['range','Range first · more compressed photos, ~32 KB'],['speed','Quality first · less compression, ~60 KB']].forEach(([v,t])=>{const opt=document.createElement('option');opt.value=v;opt.textContent=t;linkSelect.append(opt);});
+ [['auto','Auto · 12 / 6 / 1 Mbps, LR500 / LR250 when weak'],['range','Standard 1 Mbps · conservative non-LR'],['speed','Speed first · prefer faster radio rates'],['lr500','Manual LR 500 kbps · outdoor distance test'],['lr250','Manual LR 250 kbps · maximum sensitivity test']].forEach(([v,t])=>{const opt=document.createElement('option');opt.value=v;opt.textContent=t;linkSelect.append(opt);});
  linkSelect.value=linkPreference;linkSelect.onchange=()=>{linkPreference=linkSelect.value;try{localStorage.setItem('offgrid_link_preference',linkPreference);}catch{}if(verified)void writeLine('RATE '+linkPreference.toUpperCase()).catch(()=>{});updateLinkBadge();};body.append(linkSelect);
  const flowLabel=el('label','','Photo transfer throughput');body.append(flowLabel);const flowSelect=document.createElement('select');flowSelect.className='setting-select';
  [['on','Automatic · up to 6 in-flight batch fragments on strong links'],['off','Stable · legacy one-fragment transfer (instant rollback)']].forEach(([v,t])=>{const opt=document.createElement('option');opt.value=v;opt.textContent=t;flowSelect.append(opt);});
@@ -849,7 +853,7 @@ function showSettings(){showDialog('Settings',body=>{body.append(el('p','','Phas
  body.append(el('p','','Batch ACK requires 1.4.10.3 firmware on both boards and the new web app on both browsers. It only applies to NEW photo sends. Set Legacy before sending a photo to revert without flashing. Ordinary text, read/delivery receipts and encryption stay unchanged.'));
  body.append(el('p','','Photo batching is isolated from text messaging and blue ticks. If transfers regress, disable Selective batch ACK or switch Photo transfer throughput to Stable. A full image is Delivered only after the receiver authenticates its AES-GCM payload.'));
 
- body.append(el('p','','Link quality comes from real browser acknowledgments and ESP32 RSSI, not distance. 1 Mbps broadcast discovers and recovers the link. Peer unicast adapts actual PHY speed to RSSI, with fallback after unanswered messages. Text/receipts keep the same encryption and acknowledgment protocol.')); 
+ body.append(el('p','','Link quality comes from real browser acknowledgments and ESP32 RSSI, not distance. 1 Mbps broadcast discovers nearby nodes; saved peer MAC enables LR recovery probes if a link becomes unreachable at normal rates. Automatic PHY adapts using RSSI and retries; manual LR500/LR250 are for outdoor testing. Both boards need Phase 1.4.11 firmware. Text/receipts keep the same encryption and acknowledgment protocol.')); 
  const modeLabel=el('label','','Image optimization');body.append(modeLabel);const select=document.createElement('select');select.className='setting-select';
  [['hq','Optimized WebP/JPEG (adaptive 32–60 KB target, may resize)'],['lossless','Lossless PNG + metadata stripping (reject if >96 KB)']].forEach(([v,t])=>{const opt=document.createElement('option');opt.value=v;opt.textContent=t;select.append(opt);});select.value=imageMode;select.onchange=()=>{imageMode=select.value;try{localStorage.setItem('offgrid_image_mode',imageMode);}catch{}updateLinkBadge();};body.append(select);
  body.append(el('p','','Metadata stripping does not make photos tiny. High-quality mode can reduce dimensions and introduce slight loss; lossless PNG keeps the canvas pixels exact but may not fit through this radio link.'));
