@@ -93,7 +93,7 @@ class MainActivity : ComponentActivity() {
     private val historyWorker = Executors.newSingleThreadExecutor()
     private var scheduledHistory: Runnable? = null
     private var appResumed by mutableStateOf(false)
-    private var chatScreenVisible by mutableStateOf(false)
+    private var chatScreenVisible by mutableStateOf(true)
     private var notificationsEnabled by mutableStateOf(true)
     private var notificationPreview by mutableStateOf(false)
     private var keepBleBackground by mutableStateOf(false)
