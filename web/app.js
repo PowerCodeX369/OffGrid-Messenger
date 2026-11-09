@@ -2,8 +2,10 @@
 /* OffGrid Phase 1.4.5.1 USB FIX: proven broadcast radio + NVS keys, same encrypted app protocol.
    Keys are stored on each ESP32 and imported only into browser RAM over physical USB. No external servers. */
 const P=globalThis.OGP,$=id=>document.getElementById(id);
-const MAX_CHARS=500,MAX_PHOTO=96*1024,MAX_VOICE_MS=30000,STORE='OffGridMessengerV14';
-const APP_VERSION='1.5-reliable-lr-voice';
+const MAX_CHARS=500,MAX_PHOTO=96*1024,MAX_VOICE_MS=P.VOICE_MAX_MS,STORE='OffGridMessengerV14';
+const APP_VERSION='1.5.1-voice120-played';
+/* Played is a separate state for voice notes: reading the chat must never
+ * imply that audio was listened to. Message tick status remains unchanged. */
 const stateRank={sending:0,queued:0,sent:1,failed:1,delivered:2,read:3};
 const encoder=new TextEncoder();
 let port=null,reader=null,writer=null,readPromise=null,closing=false,verified=false,serialBuffer='',writeChain=Promise.resolve(),handshakeTimer=null;
@@ -367,7 +369,15 @@ function makeBubble(record,animate=true){
    const photoCaption=document.createElement('div');photoCaption.className='photo-caption';photoCaption.textContent=`${record.width||'?'} × ${record.height||'?'} · ${formatBytes(record.bytes?.length||0)}`;bubble.append(photoCaption);
  }else if(record.kind==='voice'){
    const container=el('div','voice-clip'),sound=document.createElement('audio');
+   const mic=el('span','voice-played-icon');mic.dataset.role='voice-played';
+   mic.innerHTML='<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="2" width="6" height="13" rx="3"/><path d="M5.5 11a6.5 6.5 0 0 0 13 0M12 17.5V22m-4 0h8"/></svg>';
+   container.append(mic);
    sound.controls=true;sound.preload='none';sound.setAttribute('aria-label','Voice message playback');
+   if(record.bytes?.length){
+     /* 'play' only signals a requested state change. 'playing' means the
+        browser has actually started playback; no autoplay or read shortcut. */
+     sound.addEventListener('playing',()=>{void markVoicePlayed(record.id);});
+   }
    if(record.bytes?.length){
      const mime=record.mime||'audio/webm';
      const url=URL.createObjectURL(new Blob([record.bytes],{type:mime}));
@@ -383,6 +393,11 @@ function makeBubble(record,animate=true){
 }
 function updateBubble(r){const row=Array.from($('messages').children).find(el=>el.dataset.mid===r.id);if(!row)return;row.dataset.status=r.status||'';
  const receipt=row.querySelector('[data-role="tick"]');if(receipt){receipt.className='receipt-icon '+(r.status||'sending');receipt.setAttribute('aria-label',r.status||'Sending');}
+ const voiceIcon=row.querySelector('[data-role="voice-played"]');if(voiceIcon){
+   voiceIcon.classList.toggle('played',!!r.played);
+   voiceIcon.setAttribute('aria-label',r.played?'Voice message played':'Voice message not yet played');
+   voiceIcon.title=r.played?'Voice message played':'Voice message not yet played';
+ }
  const prog=row.querySelector('[data-role="progress"]');if(prog)prog.textContent=r.status==='sending'&&r.progress?`${r.progress}%${['image','voice'].includes(r.kind)&&r.speedKbps?' · '+r.speedKbps.toFixed(1)+' KB/s':''}`:'';
  if(r.dir==='out'){row.title=(r.status||'Sending')+(r.error?': '+r.error:'');row.classList.toggle('retryable',r.status==='failed');if(r.status==='failed')row.onclick=()=>retryMessage(r.id);else row.onclick=null;}
 }
@@ -434,7 +449,7 @@ function togglePhotoZoom(){
  if($('photoViewer').classList.contains('hidden'))return;
  viewerZoomed=!viewerZoomed;$('viewerCanvas').classList.toggle('zoomed',viewerZoomed);
 }
-function serializeRecord(r){return {id:r.id,kind:r.kind,dir:r.dir,ts:r.ts,text:r.text||'',mime:r.mime||'',width:r.width||0,height:r.height||0,durationMs:r.durationMs||0,bytes:r.bytes?P.base64url(r.bytes):'',readSent:!!r.readSent,deliveredAckSent:!!r.deliveredAckSent,peerMac:r.peerMac||null};}
+function serializeRecord(r){return {id:r.id,kind:r.kind,dir:r.dir,ts:r.ts,text:r.text||'',mime:r.mime||'',width:r.width||0,height:r.height||0,durationMs:r.durationMs||0,bytes:r.bytes?P.base64url(r.bytes):'',readSent:!!r.readSent,deliveredAckSent:!!r.deliveredAckSent,played:!!r.played,playedSent:!!r.playedSent,peerMac:r.peerMac||null};}
 async function storeRecord(r){if(!secretKey||!localMac)return;const payload=P.textBytes(JSON.stringify(serializeRecord(r)));const sealed=await P.sealAtRest(secretKey,payload,macKey(),r.id);await dbPut('messages',{pk:macKey()+'/'+r.id,owner:macKey(),id:r.id,ts:r.ts,dir:r.dir,status:r.status,seal:sealed});}
 async function storeStatus(r){if(!secretKey||!localMac)return;const old=await dbGet('messages',macKey()+'/'+r.id);if(old){old.status=r.status;await dbPut('messages',old);}else await storeRecord(r);}
 async function hydrateHistory(){records=[];recordMap.clear();const rows=await listStored();for(const row of rows){try{const bytes=await P.openAtRest(secretKey,row.seal,macKey(),row.id);const d=JSON.parse(P.textFrom(bytes));d.bytes=d.bytes?P.fromBase64urlRaw(d.bytes):null;d.status=row.status||'sent';if(d.status==='sending'||d.status==='queued')d.status='failed';d.progress=0;records.push(d);recordMap.set(d.id,d);}catch(e){console.warn('Cannot decrypt stored record',row.id,e.message);}}
@@ -442,6 +457,17 @@ async function hydrateHistory(){records=[];recordMap.clear();const rows=await li
 /* Stored image data is base64url; unlike pairing keys, image byte length is arbitrary. */
 P.fromBase64urlRaw=function(s){const fixed=s.replace(/-/g,'+').replace(/_/g,'/');const bin=atob(fixed+'='.repeat((4-fixed.length%4)%4));return Uint8Array.from(bin,c=>c.charCodeAt(0));};
 async function appendRecord(r){records.push(r);recordMap.set(r.id,r);makeBubble(r);updateSidebar();try{await storeRecord(r);}catch(e){toast('Could not store encrypted chat history: '+e.message);} }
+/* Played receipts are encrypted application messages, independent of read
+ * ticks. A replay or repeated playback cannot enqueue duplicate receipts.
+ * If delivery fails, playedSent remains false for retry after reconnect. */
+async function markVoicePlayed(id){
+ const r=recordMap.get(id);
+ /* A sender previewing their own audio must NOT turn the outgoing mic blue;
+  * it only becomes blue after the other browser reports actual playback. */
+ if(!r||r.dir!=='in'||r.kind!=='voice'||!r.bytes?.length)return;
+ if(!r.played){r.played=true;updateBubble(r);try{await storeRecord(r);}catch(e){console.warn('Played state save failed',e);}}
+ if(r.dir==='in'&&!r.playedSent&&verified&&secretKey)enqueueReceipt('played',r.id);
+}
 async function setState(r,status,error=''){
  if(!r)return;const prior=r.status||'sending';if(prior==='read'&&status!=='read')return;if(prior==='delivered'&&status==='failed')return;
  if(status!=='failed'&&(stateRank[status]??0)<(stateRank[prior]??0))return;
@@ -578,12 +604,21 @@ async function handleEnvelope(env,mac){
   return;
  }
  if(env.kind===P.types.delivered||env.kind===P.types.read){if(env.body.length!==8)return;const original=P.hex(env.body),r=recordMap.get(original);if(r&&r.dir==='out')await setState(r,env.kind===P.types.read?'read':'delivered');return;}
+ if(env.kind===P.types.played){
+  if(env.body.length!==8)return;
+  const r=recordMap.get(P.hex(env.body));
+  if(r?.dir==='out'&&r.kind==='voice'&&!r.played){
+   r.played=true;updateBubble(r);
+   try{await storeRecord(r);}catch(e){console.warn('Played receipt persistence failed',e);}
+  }
+  return;
+ }
  if(env.kind!==P.types.text&&env.kind!==P.types.image&&env.kind!==P.types.voice)return;
  let r=recordMap.get(env.id);
- if(r){if(r.dir==='in'){enqueueReceipt('delivered',r.id);if(r.readSent)enqueueReceipt('read',r.id);}return;}
+ if(r){if(r.dir==='in'){enqueueReceipt('delivered',r.id);if(r.readSent)enqueueReceipt('read',r.id);if(r.kind==='voice'&&r.played&&r.playedSent)enqueueReceipt('played',r.id);}return;}
  if(env.kind===P.types.text){let text;try{text=P.textFrom(env.body);}catch{return;}if(countChars(text)>MAX_CHARS)return;r={id:env.id,kind:'text',dir:'in',ts:env.ts||Date.now(),text,status:'received',readSent:false,deliveredAckSent:false,peerMac:mac};}
  else if(env.kind===P.types.image){if(env.body.length<2||env.body.length>MAX_PHOTO+1)return;const mime=['image/webp','image/png','image/jpeg'][env.body[0]];if(!mime||!env.width||!env.height)return;r={id:env.id,kind:'image',dir:'in',ts:env.ts||Date.now(),mime,width:env.width,height:env.height,bytes:env.body.slice(1),status:'received',readSent:false,deliveredAckSent:false,peerMac:mac};}
- else{let voice;try{voice=P.unpackVoice(env.body,env.width);}catch{return;}
+ else{let voice;try{voice=P.unpackVoice(env.body,env.width+env.height*65536);}catch{return;}
   r={id:env.id,kind:'voice',dir:'in',ts:env.ts||Date.now(),mime:voice.mime,durationMs:voice.durationMs,bytes:voice.bytes,status:'received',readSent:false,deliveredAckSent:false,peerMac:mac};}
  peerMac=mac;
  await appendRecord(r);
@@ -600,7 +635,12 @@ async function sealJob(job){
  if(job.control){kind=P.types[job.kind];body=P.unhex(job.targetId);}
  else if(job.kind==='probe'){kind=P.types.probe;body=P.randomBytes(job.size);}
  else if(job.record.kind==='text'){kind=P.types.text;body=P.textBytes(job.record.text);}
- else if(job.record.kind==='voice'){kind=P.types.voice;body=P.packVoice(job.record.mime,job.record.bytes);width=job.record.durationMs;}
+ else if(job.record.kind==='voice'){
+  kind=P.types.voice;body=P.packVoice(job.record.mime,job.record.bytes);
+  /* Preserve the original 16-bit low word for 1.5 notes; use the previously
+     unused metadata high word to encode durations up to 120000 ms. */
+  width=job.record.durationMs&0xFFFF;height=Math.floor(job.record.durationMs/65536);
+ }
  else{kind=P.types.image;const r=job.record,mimeNum=({'image/webp':0,'image/png':1,'image/jpeg':2})[r.mime];if(mimeNum===undefined)throw Error('Unsupported image encoding');body=P.concat(Uint8Array.of(mimeNum),r.bytes);width=r.width;height=r.height;}
  const plain=P.makeEnvelope(kind,id,body,Math.floor(Date.now()/1000),width,height);
  const ciphertext=await P.seal(secretKey,plain,transferId);
@@ -670,6 +710,7 @@ async function runTransfers(){
       const r=recordMap.get(job.targetId);if(r&&r.dir==='in'){
        if(job.kind==='read')r.readSent=true;
        if(job.kind==='delivered')r.deliveredAckSent=true;
+       if(job.kind==='played')r.playedSent=true;
        await storeRecord(r);
       }
     }else if(job.record){await setState(job.record,'sent');}
@@ -733,7 +774,11 @@ async function onReady(mac){clearSelectiveAcks();firmwareMismatchNotified=false;
    const raw=await getNodeKey();
    if(raw){
      await adoptNodeKey(raw);
-     for(const r of records)if(r.dir==='in'&&!r.deliveredAckSent)enqueueReceipt('delivered',r.id);
+     for(const r of records){
+      if(r.dir!=='in')continue;
+      if(!r.deliveredAckSent)enqueueReceipt('delivered',r.id);
+      if(r.kind==='voice'&&r.played&&!r.playedSent)enqueueReceipt('played',r.id);
+     }
      sendReadReceipts();
    }else{
      secretKey=null;records=[];recordMap.clear();renderHistory();
@@ -807,10 +852,10 @@ function voiceButtonState(){
  btn.classList.toggle('recording',active);
  btn.setAttribute('aria-pressed',String(active));
  btn.setAttribute('aria-label',active?'Stop and send voice message':'Record voice message');
- btn.title=active?'Stop and send encrypted voice note':'Record encrypted voice message (up to 30 seconds)';
+ btn.title=active?'Stop and send encrypted voice note':'Record encrypted voice message (up to 2 minutes)';
  if(active){
   const elapsed=Math.min(MAX_VOICE_MS,Date.now()-currentVoiceRecording.started);
-  $('composerStatus').textContent=`🔴 Recording voice · ${Math.floor(elapsed/1000)}s / 30s · tap mic to send`;
+  $('composerStatus').textContent=`🔴 Recording voice · ${Math.floor(elapsed/1000)}s / 120s · tap mic to send`;
  }else if(verified&&secretKey){
   $('composerStatus').textContent='Enter to send · 🎤 tap microphone for voice note';
  }
@@ -847,7 +892,7 @@ async function toggleVoiceRecording(){
    if(v.cancelled)return;
    try{
     const blob=new Blob(v.chunks,{type:recorder.mimeType||mime});
-    if(blob.size>P.VOICE_MAX)throw Error('Recording exceeded 80 KiB. Try a shorter note.');
+    if(blob.size>P.VOICE_MAX)throw Error('Recording exceeded 384 KiB. Try a shorter note.');
     if(blob.size<256)throw Error('Recording is empty or too short.');
     if(!verified||!secretKey)throw Error('ESP32 disconnected; recording discarded.');
     const bytes=new Uint8Array(await blob.arrayBuffer());
@@ -925,7 +970,7 @@ async function migrateLegacy(){const oldKey='offgrid_phase13_history_'+macKey().
 function showRename(){showDialog('Contact name',body=>{body.append(el('p','','This is a local nickname for the remote node.'));const field=document.createElement('input');field.value=activeContact;field.maxLength=36;body.append(field);const save=el('button','primary-button','Save contact name');save.onclick=()=>{setName(field.value.trim());persistName();closeDialog();};body.append(el('div','modal-actions')).append(save);setTimeout(()=>{field.focus();field.select();},40);});}
 async function clearHistory(){if(!verified||!secretKey)return;if(runningTransfers||pendingRadio()||transferQueue.length){toast('Finish active transfers before clearing history.');return;}if(!confirm('Delete encrypted chat history for this ESP32 from this browser? This cannot be undone.'))return;
  await wipeStored();records=[];recordMap.clear();revokePhotos();renderHistory();toast('Local chat history cleared.');closeDialog();}
-function showInfo(){showDialog('Chat information',body=>{[['Contact',activeContact],['Your ESP32',localMac||'Disconnected'],['Protocol','ESP-NOW firmware protocol 2 / encrypted app protocol OGM4'],['Security',secretKey?'AES-256-GCM, 256-bit random shared key':'Not paired'],['Photo target',`${Math.round(photoBudget()/1024)} KB optimized, 96 KB absolute`],['Voice notes','Up to 30 seconds and 80 KiB, encrypted and stored locally'],['Radio PHY',radioTelemetry.available?`${radioTelemetry.phy} Mbps TX, RSSI ${radioTelemetry.rssi===null?'unknown':radioTelemetry.rssi+' dBm'}`:'Waiting for telemetry'],['Link profile',`${linkPreference}; adaptive PHY; media window ${chosenWindow({kind:'image',control:false})}; auto ${adaptivePhotos?'on':'off'}`],['Radio liveness',`${radioTelemetry.pingOk||0} confirmed peer probes · ${radioTelemetry.pingLost||0} missed · clean streak ${radioTelemetry.healthGood||0}`],['Key storage','ESP32 NVS, browser RAM only'],['History','AES-GCM encrypted IndexedDB']].forEach(([a,b])=>{const line=el('div','info-line');line.append(el('span','',a),el('strong','',b));body.append(line);});body.append(el('p','','Grey single tick = transmitted; grey double tick = peer decrypted and confirmed; blue double tick = peer app reported it was viewed. Browser history is stored encrypted at rest.'));});}
+function showInfo(){showDialog('Chat information',body=>{[['Contact',activeContact],['Your ESP32',localMac||'Disconnected'],['Protocol','ESP-NOW firmware protocol 2 / encrypted app protocol OGM4'],['Security',secretKey?'AES-256-GCM, 256-bit random shared key':'Not paired'],['Photo target',`${Math.round(photoBudget()/1024)} KB optimized, 96 KB absolute`],['Voice notes','Up to 2 minutes and 384 KiB, encrypted and stored locally; blue microphone means played'],['Radio PHY',radioTelemetry.available?`${radioTelemetry.phy} Mbps TX, RSSI ${radioTelemetry.rssi===null?'unknown':radioTelemetry.rssi+' dBm'}`:'Waiting for telemetry'],['Link profile',`${linkPreference}; adaptive PHY; media window ${chosenWindow({kind:'image',control:false})}; auto ${adaptivePhotos?'on':'off'}`],['Radio liveness',`${radioTelemetry.pingOk||0} confirmed peer probes · ${radioTelemetry.pingLost||0} missed · clean streak ${radioTelemetry.healthGood||0}`],['Key storage','ESP32 NVS, browser RAM only'],['History','AES-GCM encrypted IndexedDB']].forEach(([a,b])=>{const line=el('div','info-line');line.append(el('span','',a),el('strong','',b));body.append(line);});body.append(el('p','','Grey single tick = transmitted; grey double tick = peer decrypted and confirmed; blue double tick = peer app reported it was viewed. Browser history is stored encrypted at rest.'));});}
 function showSettings(){showDialog('Settings',body=>{body.append(el('p','','Phase 1.5: confirmed-probe-based adaptive LR with AES-256-GCM voice notes. Espressif LR 500/250 kbps with existing 1/6/12 Mbps adaptive modes. 1.4.11 remains the frozen stable baseline. Test text before photos and voice.'));
  const linkLabel=el('label','','Transfer profile');body.append(linkLabel);const linkSelect=document.createElement('select');linkSelect.className='setting-select';
  [['auto','Auto · 12 / 6 / 1 Mbps, LR500 / LR250 when weak'],['range','Standard 1 Mbps · conservative non-LR'],['speed','Speed first · prefer faster radio rates'],['lr500','Manual LR 500 kbps · outdoor distance test'],['lr250','Manual LR 250 kbps · maximum sensitivity test']].forEach(([v,t])=>{const opt=document.createElement('option');opt.value=v;opt.textContent=t;linkSelect.append(opt);});
@@ -980,4 +1025,4 @@ document.addEventListener('visibilitychange',sendReadReceipts);window.addEventLi
 window.addEventListener('beforeunload',()=>{stopVoiceRecording(true);revokePhotos();});
 setInterval(pruneIncoming,45000);
 (async()=>{try{db=await openDb();}catch(e){toast('IndexedDB unavailable. Encrypted storage cannot work: '+e.message);}refreshStatus();})();
-console.info('OffGrid Phase 1.5 — encrypted voice notes and verified two-way LR fallback. Built from Phase 1.4.11 baseline.');
+console.info('OffGrid Phase 1.5.1 — two-minute voice notes with AES-GCM authenticated played receipts. Based on working 1.5, preserving 1.4.11 stable.');
