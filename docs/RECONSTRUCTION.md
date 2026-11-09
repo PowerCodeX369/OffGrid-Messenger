@@ -7,3 +7,9 @@ When an archive contains one component but not another, the absent component is 
 The `main` branch represents the integrated project. The `app`, `web`, and `firmware` branches are **independent filtered histories** reconstructed from the same snapshots. Use them for isolated work; integrate changes intentionally through pull requests or cherry-picks after testing. Do not blindly merge component branches with `main`.
 
 Source archives are *not* embedded within Git to avoid duplicating historical artifacts and inadvertently committing hidden files. SHA-256 values are provided for validating the original ZIPs.
+
+## Identity rewrite for pre-publication preparation (2026-11-09)
+
+At the project owner's request, the reconstructed Git commits on `main`, `app`, `web`, and `firmware`, and the annotated release tags, were rewritten to the chosen publication identity **PowerCodeX <powercodex369@gmail.com>**. The rewrite did **not** recover the original authors, commit dates or original version-control records; those remain unknown. It deliberately changes all historical Git object IDs, so earlier commit hashes and annotated tag object hashes are no longer valid identifiers for this edition. Source trees associated with historical version tags were preserved. For archival checksums of the original release ZIP files, consult `SOURCE_MANIFEST.json`.
+
+This identity represents stewardship and reconstruction of the release snapshots, not an assertion that every historical change was personally authored at the synthetic Git commit timestamp. Later human contributions should be credited to their actual authors.

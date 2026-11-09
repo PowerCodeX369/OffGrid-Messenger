@@ -57,7 +57,7 @@ Read [the complete 47-release history](docs/HISTORY.md), or inspect an annotated
 - [Contributing](CONTRIBUTING.md) · [Code of conduct](CODE_OF_CONDUCT.md) · [Security policy](SECURITY.md) · [Changelog](CHANGELOG.md).
 - [GitHub bug reports and feature requests](.github/ISSUE_TEMPLATE/) · [pull-request checklist](.github/PULL_REQUEST_TEMPLATE.md).
 
-**Validation status:** the repository includes source and history but its Android snapshot lacks a Gradle wrapper, and full Android/ESP-IDF builds plus physical-device tests have not been run as part of this documentation update. No release version newer than `v2.5.6` is implied. The owner has not yet selected an open-source license, verified Git commit identity or vulnerability-reporting address; these must be confirmed before public contributor onboarding.
+**Validation status:** the repository includes source and history but its Android snapshot lacks a Gradle wrapper, and full Android/ESP-IDF builds plus physical-device tests have not been run as part of this documentation update. No release version newer than `v2.5.6` is implied. The owner has not selected an open-source license or configured a private vulnerability-reporting channel; these must be addressed before inviting public contributions. The reconstructed Git identity is now PowerCodeX (see provenance notes).
 
 ## Getting started
 
@@ -75,11 +75,15 @@ Two-node pairing rather than mesh routing; peer MAC persistence can complicate b
 
 ## Security and publishing
 
-Application-layer encryption and on-device storage protection are present, but a fixed shared conversation key, physical key retrieval interfaces and lack of independent audit are important caveats. **Do not publish real keys, NVS dumps, keystores, private device data or signed production credentials.** This repository is prepared for **private GitHub publication first**, not automatically made public. Read [security and release checklist](docs/SECURITY_AND_RELEASE.md).
+Application-layer encryption and on-device storage protection are present, but a fixed shared conversation key, physical key retrieval interfaces and lack of independent audit are important caveats. **Do not publish real keys, NVS dumps, keystores, private device data or signed production credentials.** The owner has requested a **public GitHub repository**, but publication is **pending** a thorough secrets review, rights/licensing decision and private vulnerability-reporting setup. No GitHub push has occurred. Read [security and release checklist](docs/SECURITY_AND_RELEASE.md).
 
 ## Version history integrity
 
 Reconstruction includes **47 archived source releases** from `v1.0.0` to `v2.5.6`. Git timestamps are synthetic, and some components were carried forward when a snapshot included only one component. Original ZIP checksums and per-version provenance are in `SOURCE_MANIFEST.json`. A full Git bundle and verified offline repository ZIP accompany this repository.
+
+## Project ownership and Git attribution
+
+**Project maintainer / reconstructed commit identity:** PowerCodeX (`powercodex369@gmail.com`). All reconstructed commits and annotated tags have been attributed to this chosen identity as a repository-maintenance convention, **not as verified evidence of who authored each original historical change**. The original author and committer identities were not present in the archived ZIP releases. Original timestamps also were not recoverable. See [provenance](docs/RECONSTRUCTION.md). New contributors retain their own authorship credit on future commits.
 
 ## License
 
