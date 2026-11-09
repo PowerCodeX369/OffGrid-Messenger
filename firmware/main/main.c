@@ -1,4 +1,4 @@
-/* OffGrid Messenger Phase 1.4.5.1 STABLE USB — ESP-IDF 5.x / ESP32-C3.
+/* OffGrid Messenger Phase 1.4.5.2 WATCHDOG FIX — ESP-IDF 5.x / ESP32-C3.
  * Rollback to tested Phase 1.4 broadcast ESP-NOW transport.
  * AES-256-GCM encryption/decryption is in the browser, NOT in the ESP32.
  * Node only forwards ciphertext and stores the pairing key in NVS.
@@ -314,7 +314,10 @@ static void process_event(const event_t *e) {
 static void dispatcher(void *arg) {
     event_t e;
     while(true) {
-        if(xQueueReceive(event_queue,&e,pdMS_TO_TICKS(5))==pdTRUE)process_event(&e);
+        /* FreeRTOS can tick at 100 Hz (10 ms/tick), so pdMS_TO_TICKS(5)
+         * alone can truncate to ZERO and spin forever at task priority 5.
+         * Adding one tick guarantees a genuine blocking opportunity. */
+        if(xQueueReceive(event_queue,&e,pdMS_TO_TICKS(5) + 1)==pdTRUE)process_event(&e);
         int64_t t=now_ms();
         if(t-last_report_ms>=LINK_REPORT_MS){last_report_ms=t;emit_link();}
         /* USB handshake resilience: no dependency on STATUS arriving intact. */
@@ -338,6 +341,9 @@ static void dispatcher(void *arg) {
             } else printf("RADIO_ERROR|%" PRIu32 "|%" PRIu32 "|%s\n",o->frame.session,o->frame.id,esp_err_to_name(err));
             break; /* one data packet per iteration to avoid bursts */
         }
+        /* Also yield when the queue stays busy, so the CPU0 IDLE task can
+         * execute and the Task Watchdog does not repeatedly trigger. */
+        vTaskDelay(1);
     }
 }
 static void serial_task(void *arg) {
@@ -395,7 +401,7 @@ static void serial_task(void *arg) {
 }
 void app_main(void) {
     setvbuf(stdout,NULL,_IONBF,0);
-    puts("BOOT|OffGrid Messenger Phase 1.4.5 STABLE / broadcast protocol 2");
+    puts("BOOT|OffGrid Messenger Phase 1.4.5.2 WDT FIX / broadcast protocol 2");
     esp_err_t e=nvs_flash_init();
     if(e==ESP_ERR_NVS_NO_FREE_PAGES||e==ESP_ERR_NVS_NEW_VERSION_FOUND){ESP_ERROR_CHECK(nvs_flash_erase());e=nvs_flash_init();}
     ESP_ERROR_CHECK(e);

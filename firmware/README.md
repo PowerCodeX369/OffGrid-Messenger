@@ -1,63 +1,58 @@
-# OffGrid Messenger — 1.4.5.1 USB Handshake Hotfix
+# OffGrid Messenger — Phase 1.4.5.2 (Watchdog Fix)
 
-## What this fixes
+## What caused the failure
 
-The 1.4.5 release removed the READY beacon loop from earlier connecting releases. A board can boot before Web Serial opens, leaving its one-time READY unseen. If the ESP32 does not see the browser's STATUS command, both screens remain on “Checking firmware” indefinitely. This release re-announces READY every 2.5 seconds, even after browser reconnects, and displays real USB diagnostics. The radio transport, payload size, Web Crypto, and NVS key storage are unchanged.
+The diagnostic log reports the Task Watchdog timing out because CPU0's idle task is starved while `dispatch` runs. `pdMS_TO_TICKS(5)` rounds **down to zero** when `CONFIG_FREERTOS_HZ=100` (one tick = 10 ms). The event-loop queue therefore did not actually block while idle. This starved other work.
 
-## Firmware update
+## Changes (firmware ONLY)
 
-Flash **both** ESP32-C3 boards with the same project, ESP-IDF target `esp32c3`.
-Use **Flash**, not **Erase Flash**. A full erase deletes your NVS pairing keys. If ESP-IDF reports an NVS partition migration or partition change, back up the key before any erase and re-pair afterward.
+- `xQueueReceive(..., pdMS_TO_TICKS(5) + 1)` ensures a positive queue wait at any typical FreeRTOS tick rate.
+- `vTaskDelay(1)` at the end of the dispatcher loop guarantees that the idle task can run even under heavy traffic.
+- A boot-version label updated to identify the build.
 
-Build from VS Code ESP-IDF extension, or an activated ESP-IDF terminal:
+**Unchanged:** ESP-NOW broadcast frame format, channel 6, 1 Mbps conservative PHY, 160-byte browser fragment size, delivery/read receipts, NVS key commands, AES-256-GCM browser encryption, web UI, photo gallery, and stored chat formats. No change to the browser assets is needed.
+
+## Flash
+
+Flash this project onto **both ESP32-C3 boards** with VS Code ESP-IDF. Select `esp32c3` as target, then Build and Flash. Use standard Flash, **not Erase Flash**, to retain stored pairing keys in NVS.
+
+Optional CLI from ESP-IDF terminal:
 
 ```bash
-idf.py set-target esp32c3
 idf.py build
 idf.py -p /dev/ttyACM0 flash
 ```
 
-If you already selected the target and have existing `sdkconfig`, `set-target` is not necessary. Ensure the console uses the ESP32-C3 USB Serial/JTAG port; `sdkconfig.defaults` is only applied when a new `sdkconfig` is generated.
+If using an existing `sdkconfig`, ensure USB Serial/JTAG is selected as the ESP console.
 
-## Web app
+## Browser
 
-Run from this exact new folder:
+Use the **same approved 1.4.5.1 web UI** packaged in `web/`; its code is unchanged. Close old tabs, start the server in this project's root:
 
 ```bash
 python3 -m http.server 8765 --directory web
 ```
 
-Open two tabs at `http://localhost:8765/?v=1.4.5.1-stable`. Connect each tab to a different board. Keep the same localhost origin and port for encrypted local history. Hard-refresh if needed.
+Open `http://localhost:8765/?v=1.4.5.2`, hard refresh and connect both boards.
 
-Expected line (every 2.5 seconds and after STATUS):
+## Essential acceptance test
 
-```
-READY|1C:DB:D4:3B:00:FC|CHANNEL=6|SESSION=123456|PROTO=2|CAP=180|STABLE=1|NVSKEY=1|FROM=BEACON
-```
+1. Connect each ESP32 via separate USB ports to separate tabs.
+2. Open Settings → Radio diagnostics or an ESP-IDF monitor. Verify `READY|...|PROTO=2|CAP=180|STABLE=1|NVSKEY=1`.
+3. Leave the boards idle for **more than 30 seconds**; there should be **no more** `task_wdt` or `IDLE (CPU 0)` warnings.
+4. Send `Hello` in both directions, checking delivery and read receipts.
+5. Send 10 short texts, then a small photo. Larger transfers should only be tested once the fundamentals pass.
 
-If both boards connect, confirm the node keys load, then test a **short encrypted text both ways**, before sending photos. The ESP32 still does NOT encrypt chat data: the browser does AES-256-GCM; the node stores the key in NVS.
+**Troubleshooting:** If watchdog warnings remain, preserve the full new `task_wdt` log; a different task could be starving CPU0. Do not disable the task watchdog. Don't share any `KEYDATA|...` lines: they contain the pairing key.
 
-## Diagnostics if it still waits
-
-Click **Diagnostics** beside the USB connection warning. A serial log is now collected, with `KEYDATA` redacted. It differentiates:
-
-- **No incoming serial lines:** firmware may not have booted, USB console may be configured for UART instead of USB Serial/JTAG, or wrong port/cable was selected.
-- **Incompatible READY:** old firmware or stale browser bundle. Look for the `PROTO`, `CAP`, `STABLE`, `NVSKEY` markers.
-- **READY arrives but node key doesn't load:** USB output works; `KEYGET` command input/firmware processing needs investigation.
-
-A fast check without reflashing: connect the old 1.4.5 browser and press your ESP32 reset button once. If `READY` then appears, a missed boot announcement is strongly implicated.
-
-If even this version does not show `READY`, open the board with an ESP-IDF serial monitor (closing the browser's port first) and copy the boot log. Do not copy any `KEYDATA` line, as that would expose the shared key.
-
-## Validation
-
-Syntax, source-level handshake, and existing protocol unit tests can be run with:
+## Tests
 
 ```bash
 node --check web/app.js
 node tests/test-protocol.cjs
-python3 tests/test-stable-contract.py
 python3 tests/test-handshake.py
+python3 tests/test-stable-contract.py
+python3 tests/test-watchdog-fix.py
 ```
 
-This environment cannot compile the ESP-IDF project or measure ESP-NOW latency on the real boards. Treat hardware results as unverified until both boards connect and exchange messages.
+Source-level tests are not ESP-IDF compilation or physical radio tests. ESP-IDF is not installed in this environment.
