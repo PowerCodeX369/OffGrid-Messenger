@@ -1,6 +1,6 @@
-# Phase 1.4.11 — Local validation record
+# Phase 1.4.11.1 — Local validation record
 
-**Status:** Experimental, awaiting ESP-IDF hardware build and outdoor range tests.
+**Status:** Experimental web-only manual-LR control patch. The 1.4.11 LR firmware still requires real ESP-IDF build and radio confirmation.
 
 Validated locally:
 
@@ -16,3 +16,13 @@ Validated locally:
 **Not validated here:** full ESP-IDF build, actual `esp_now_set_peer_rate_config()` success with LR phy/rate on device, control ACKs at distance, multi-minute radio stability, real throughput or claimed range.
 
 **Do not promote this experimental build to the frozen baseline until the tests in README.md pass on both boards.**
+
+## Phase 1.4.11.1 additional validation
+
+- Isolated Chromium DOM test with simulated Web Serial confirmed emitted commands `RATE LR500`, `RATE LR250`, and `RATE AUTO` in sequence.
+- Simulated `LINK` telemetry correctly displays confirmed 500/250 Kbps only when the firmware-reported MODE and PHY agree with the requested rate.
+- The quick switch and the existing Settings selector stay in sync.
+- UI showed no horizontal overflow at 1920, 850, 590 or 390 pixel widths in isolated Chromium rendering.
+- Existing Node.js encrypted message / 96-KiB photo, selective ACK, diagnostics and adaptive photo tests passed.
+- Firmware, rate policy, USB driver, cryptographic protocol, and project configuration remain byte-for-byte identical to experimental Phase 1.4.11.
+- **Not validated:** connection to physical ESP32-C3 boards, successful per-peer PHY configuration in ESP-IDF, LR delivery and acknowledgments, outdoor distance, or real RF throughput.

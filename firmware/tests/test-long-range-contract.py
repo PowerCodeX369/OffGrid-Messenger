@@ -2,7 +2,6 @@
 from pathlib import Path
 import hashlib
 ROOT=Path(__file__).resolve().parents[1]
-BASE=Path('/mnt/data/OffGridMessenger_Phase1_4_10_4_AutoScroll')
 S=(ROOT/'main/main.c').read_text()
 WEB=(ROOT/'web/app.js').read_text()
 checks={
@@ -23,6 +22,9 @@ checks={
 }
 for name,good in checks.items(): print(('PASS' if good else 'FAIL')+': '+name)
 assert all(checks.values())
-for name in ('web/protocol.js','web/styles.css','web/adaptive.js','web/logo.svg','main/Kconfig.projbuild','main/CMakeLists.txt','sdkconfig.defaults'):
-    assert (ROOT/name).read_bytes()==(BASE/name).read_bytes(), f'baseline changed: {name}'
-print('PASS: core UI, encryption implementation, USB config and visual styling identical to 1.4.10.4')
+# Portable SHA-256 checks for components intentionally kept unchanged by the UI patch.
+expected={'main/main.c': '5ba1a3ad84f8c24f9c646578423701fb6c0d74e02af9bfa0437799a61026a8b0', 'main/link_rate_policy.h': '85d6346846fb5d8c96efc131b36e8c5167b8738b0fd466f36068275c29f19c44', 'main/Kconfig.projbuild': '8e60879148e28ab24d0a577c78a2fa123f4ed35e7d2f06c8c8800b3acd8c06d1', 'main/CMakeLists.txt': 'c46684d574a03293e32257d859d456943bbd6859371e6c3fc2f8ebccde1a5dce', 'sdkconfig.defaults': 'c8bfd8deca28f70f84a784e7eb297f080ae1f67dc2f550e9db7ce9b78d6c6cb0', 'web/protocol.js': 'd8ce13d3f7e4a9b43bca5528ccef8102cb34c7e73d93842f4f2d28e64f5718d8', 'web/adaptive.js': '90073923f1b54502819c8e30faf9075905bf2bd49d24fb8958f887cc62a89f86', 'web/logo.svg': 'ff03904fa9c8e21817768419f37fea2633b1963b43299cd3be913f3ebb82f594'}
+for path,digest in expected.items():
+    actual=hashlib.sha256((ROOT/path).read_bytes()).hexdigest()
+    assert actual==digest, f'preserved firmware/protocol file was modified: {path}'
+print('PASS: firmware, crypto protocol, adaptive photo logic and project configuration unchanged')
