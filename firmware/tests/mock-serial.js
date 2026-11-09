@@ -10,8 +10,8 @@
   const channel=new BroadcastChannel('offgrid-fake-radio-v144');
   const kvKey='__testNvs_'+node;
   function push(line){port?._push(line);}
-  function status(){push(`READY|${ownMac}|CHANNEL=6|SESSION=${session}|PROTO=2|CAP=228|TXDONE=1|DISC=1|NVSKEY=1|FROM=STATUS`);
-    push(`LINK|${otherMac}|RSSI=-35|PHY=1|MODE=AUTO|OK=1|RETRY=0|FAIL=0|TXOK=10|TXFAIL=0|RX=4|HELLO=4`);}
+  function status(){push(`READY|${ownMac}|CHANNEL=6|SESSION=${session}|PROTO=2|CAP=180|STABLE=1|NVSKEY=1|FROM=STATUS`);
+    push(`LINK|${otherMac}|RSSI=-35|PHY=1|MODE=STABLE|OK=1|RETRY=0|FAIL=0|TXOK=10|TXFAIL=0|RX=4|HELLO=4`);}
   channel.onmessage=event=>{
     const e=event.data;
     if(!port||e.to!==node)return;

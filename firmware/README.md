@@ -1,96 +1,93 @@
-# OffGrid Messenger — Phase 1.4.4
+# OffGrid Messenger — Phase 1.4.5 STABLE (recovery)
 
-**Recovery release: independent ESP-NOW discovery + per-node persistent pairing key.** The approved full-width web design, gallery, image encoding, AES-256-GCM protocol, photo chunk size (208 bytes per app packet), and adaptive 1/6/12 Mbps unicast rate selection remain unchanged.
+**Reason for this release:** Phase 1.4.4 connected over USB but made even short encrypted text messages and acknowledgements unacceptably slow. This package intentionally **rolls the ESP-NOW radio transport back to the Phase 1.4 broadcast protocol** that worked on both ESP32-C3 Super Minis, while retaining the modern web UI/gallery and the NVS pairing key you requested. It is a recovery build, not a new feature phase.
 
-## Why this release exists
+## What changed
 
-Phase 1.4.3.1 can show **USB Connected** while neither radio has learned a peer. The `LINK|NONE|RSSI=-127...` report is a radio-link problem, not a USB-connection success. The previous firmware learned a peer only after receiving an actual chat frame. In 1.4.4, both nodes independently transmit a small discovery beacon approximately every 1.4 seconds at the default broadcast rate, then learn the other MAC and use unicast to exchange chat frames.
+- **Restored the Phase 1.4 radio path:** broadcast sends, no peer discovery/beacon traffic, no adaptive unicast/PHY switching, no 300-ms per-packet radio callback wait. The receiver's browser still sends an application-level ACK and the sender still retries lost packets.
+- **Reduced the original fixed TX gap** from 65 ms to **8 ms**, with **one browser fragment outstanding at a time**. This is a conservative performance experiment, not a promised photo-transfer speed; the actual hardware must verify it.
+- **Return to 180-byte USB-to-radio data frames:** encrypted OGM4 fragments are **160 bytes of ciphertext + 20-byte fragment header**. Phase 1.4.3/1.4.4's 228-byte frames are intentionally rejected by the browser handshake for safety.
+- **AES-256-GCM still happens in the BROWSER**, through Web Crypto; the ESP32 does **no message encryption or decryption**. The ESP32 acts as a ciphertext relay.
+- **Persistent pairing key remains on each ESP32** in NVS, using the existing `offgrid/pairkey` 32-byte blob. A new browser session reads the key over physical USB into RAM only; it doesn't save a new browser key.
+- Approved full-screen web UI, light/dark themes, contact naming, encrypted IndexedDB history, 500-character text, overlapped ticks, and in-app photo viewer remain.
+- In the stable release, **radio PHY is fixed to 1 Mbps**. This is intentional and doesn't mean every text should take a second. The measured throughput depends on USB traffic, application ACK round trips, congestion and retries. Dynamic rate control can be reintroduced separately only after a validated latency/packet-loss baseline.
+- Photo encoding targets ~32 KB in weak/range mode, ~48 KB normally, and ~60 KB in quality mode, subject to source image and actual compression. These modes may resize/lossily compress the photo.
 
-The firmware additionally exports TX/RX and discovery counters so a failed radio link is diagnosable. The browser prevents falsely adding a sent message when it knows that peer discovery has not yet succeeded.
+## Critical: Flash BOTH ESP32s
 
-**Caution:** This code is not compiled or tested on physical ESP32-C3 hardware in the development environment. JavaScript/unit/static checks cannot establish that the radio regression is fixed on your boards. Do not consider the release accepted until both directions work physically.
+The firmware and web app must match. Do not mix 1.4.4 firmware with the 1.4.5 web app, or 1.4.5 firmware with older 228-byte browsers.
 
-## 1. Flash both boards (mandatory)
+Use ESP-IDF in VS Code, target `esp32c3`. Build and flash the **same code to both nodes**. **Do not use `erase-flash`**: it clears NVS and your existing saved 256-bit key. A normal `idf.py flash` should preserve NVS as long as your partition layout remains compatible.
 
-Open the folder in VS Code with ESP-IDF 5.2+ installed, choose target `esp32c3`, build and flash **the same firmware** to both Super Minis. Use normal *flash*, not *erase-flash*, because erasing NVS deletes any saved pairing key.
-
-If using a terminal with ESP-IDF installed:
+Terminal equivalent if your ESP-IDF environment is already activated:
 
 ```bash
 idf.py set-target esp32c3
 idf.py build
 idf.py -p /dev/ttyACM0 flash
-# Flash the second board on its actual USB port as well.
+# Flash the other ESP32-C3 too (use its actual port).
 ```
 
-Native USB Serial/JTAG console is configured in `sdkconfig.defaults`. If you have an old `sdkconfig`, verify that `CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y` is in effect.
+Native USB Serial/JTAG console configuration lives in `sdkconfig.defaults`. Check its settings if the serial console is not detected.
 
-## 2. Run the existing web app
+## Start the browser app
 
-**Keep the localhost hostname and port consistent** so previous encrypted chat history is accessible in the same browser origin.
+In the NEW project directory:
 
 ```bash
 python3 -m http.server 8765 --directory web
 ```
 
-Open two tabs with `http://localhost:8765/?v=1.4.4`; hard-refresh both and connect each to its corresponding USB board.
-
-Expected READY report:
+Then open two tabs:
 
 ```text
-READY|1C:DB:D4:3B:00:FC|CHANNEL=6|SESSION=...|PROTO=2|CAP=228|TXDONE=1|DISC=1|NVSKEY=1|FROM=STATUS
+http://localhost:8765/?v=1.4.5-stable
 ```
 
-## 3. Verify radio discovery *before* chatting
+Close old tabs and hard refresh both. Keep the **same localhost origin and port** so the previous encrypted IndexedDB history can be accessed. Each tab should connect to a DIFFERENT board through the port picker.
 
-Within a few seconds, the link badge should report the **other** ESP32 as the learned peer with a valid RSSI, not `signal —`. Find diagnostics in **Settings → Radio diagnostics**, then inspect these fields:
+Expected `STATUS` response:
 
 ```text
-LINK|1C:DB:D4:3B:36:10|RSSI=-38|PHY=1|MODE=AUTO|OK=0|RETRY=0|FAIL=0|TXOK=3|TXFAIL=0|RX=2|HELLO=2
+READY|1C:DB:D4:3B:00:FC|CHANNEL=6|SESSION=<varies>|PROTO=2|CAP=180|STABLE=1|NVSKEY=1
 ```
 
-Numbers are only illustrative. If `LINK|NONE` persists, report TXOK/TXFAIL/RX/HELLO from both boards **before trying images**. If TXOK increases but RX/HELLO stay zero on both, investigate matching channel and radio reception, not AES keys. If TXFAIL grows, inspect the ESP-IDF serial monitor output.
+The firmware also emits `LINK|...|PHY=1|MODE=STABLE` for diagnostics. A known remote MAC and RSSI are only shown after a valid packet arrives; unlike the experimental release, discovery is **not** required before sending the first text.
 
-## 4. Configure keys ONCE per ESP32
+## Encryption and key pairing
 
-This version stores a 32-byte key in **each ESP32's NVS**, not in browser IndexedDB or localStorage.
+- Existing Phase 1.4.4 keys are read from **the same ESP32 NVS namespace and key name**, so a **normal flash** should preserve them.
+- If either node has no key: generate a new 256-bit key on Node A and **install the same key on Node B** via the pairing screen. The node stores it in NVS.
+- Every browser connected to a trusted node over physical USB can request the key. This is convenient but **not** robust physical-device security. NVS is not automatically flash-encrypted, and a compromised node or connected host can expose the key. Do not send secrets until this threat model is addressed.
+- Chat history remains **per-browser**, stored encrypted in IndexedDB. It is not automatically synchronized to another browser.
 
-- Connect Node A and choose **Generate and save** on the pairing screen.
-- Click **Copy key**, switch to the Node B tab, paste into **Save pasted key**.
-- Both nodes now contain the same key. For a **later browser, computer, or fresh browser profile**, connect over USB and the browser will automatically import the node's key into its **RAM only**. You no longer need to pair it again.
-- To pair a replacement board, use **Node pairing key → Show node key** on a connected original board and copy it to the replacement.
+## Required acceptance tests (do them IN ORDER)
 
-### Migrating previous Phase 1.4.x chat history
+1. Both boards: connect, confirm `PROTO=2`, `CAP=180`, `STABLE=1`, and saved key loading. If connection is stuck, use the USB diagnostic panel.
+2. Send `HELLO A` once from A to B; verify a received bubble and actual double-grey delivered tick. Use a stopwatch to measure end-to-end latency.
+3. Send `HELLO B` once from B to A; verify reverse delivery.
+4. Repeat 20 short messages each direction, one at a time. Count failures and delays. Do **not** move on until text/ACKs are dependable.
+5. Test a 5–10 KB optimized photo, then a 30–50 KB photo. Record KB/s and elapsed seconds. Photo transport still uses fragment ACKs, so **do not assume 1-Mbps PHY implies 125 KB/s application throughput**.
+6. Reload one browser and reconnect its ESP32; verify that the saved node key is imported, no new pairing required, and its local chat history decrypts.
+7. Test with boards farther apart only after close-range behavior is stable.
 
-Previously, the browser stored a non-exportable CryptoKey in IndexedDB. It cannot simply copy those key bytes to NVS. Instead, generate a new node key and pair both boards as described above. When you connect in the **original browser profile**, this update tries to decrypt existing records with that prior CryptoKey and re-encrypt them under the node key, then deletes the prior browser key record. Preserve your original browser profile until migration succeeds. A completely new browser won't have access to your earlier encrypted history, even though it can now send and receive new messages through the node.
+## What was verified here
 
-**Storage security limitation:** NVS is persistent but not automatically protected against flash extraction. This prototype does **not** enable NVS/flash encryption or secure boot. Any device with physical USB access can request the key (`KEYGET`), so a node must be treated as a trusted key-holding device; encryption remains AES-256-GCM on the radio but the system does not provide secrecy from someone who compromises an ESP32 node. See Espressif's NVS encryption and secure boot guidance before protecting sensitive real-world data.
+- JavaScript syntax and browser encryption/fragment unit tests: PASS.
+- Cross-check of firmware/client protocol size, handshake, NVS API, and rollback path: PASS (static tests only).
+- ZIP integrity: PASS.
+- **Not yet verified:** actual ESP-IDF compilation, real ESP-NOW wireless traffic, Bluetooth, or physical latency. This environment does not have your two boards or ESP-IDF. A browser E2E test was attempted, but localhost browser navigation was blocked by the execution environment. This release must be physically tested before it can be called fixed.
 
-## 5. Radio test, then photo test
-
-1. Both tabs: USB Connected, peer MAC learned, RSSI present.
-2. Same 256-bit key installed on both boards.
-3. Send `Hello A → B`; verify receiver bubble and double-grey tick.
-4. Send `Hello B → A`; verify the reverse direction.
-5. Focus receiving chat for blue seen ticks.
-6. Only then send a 5–10 KB photo; next try a 40–60 KB photo.
-7. Reconnect one node from a **new browser**: verify it loads the stored node key without pairing again.
-
-## Source and testing
-
-- `main/main.c`: ESP-IDF 5.2+ firmware, discovery, NVS storage, diagnostics and existing PHY adaptation.
-- `web/app.js`: NVS key handshake, previous-history re-encryption migration, same encrypted messaging UI.
-- `web/protocol.js`: unchanged AES-256-GCM, fragment/reassembly and image data envelopes.
-- `tests/test-protocol.cjs`: crypto and fragment unit tests using Node.js.
-- `tests/test-144-static.py`: firmware/API and web/client contract checks; **not** a substitute for compiling/physical tests.
-- `tests/mock-serial.js`: simulated radio bridge for browser developers. This is **not loaded by the actual application**.
-
-Run local tests:
+Run source tests:
 
 ```bash
 node --check web/app.js
 node tests/test-protocol.cjs
-python3 tests/test-144-static.py
+python3 tests/test-stable-contract.py
 ```
 
-No Android Studio work was added; that phase remains last.
+`tests/mock-serial.js` is **test-only** and is never loaded in the actual app.
+
+## Rollback
+
+If text still misbehaves, use your archived Phase 1.4 firmware/web pair as a **known-good text-only baseline**. That old version stores the key in browser storage; it is not a drop-in replacement for the NVS key workflow. Retain the Phase 1.4.4 ZIP and your original browser profile until encrypted-history migration has been checked.

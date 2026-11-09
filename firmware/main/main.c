@@ -1,7 +1,9 @@
-/* OffGrid Messenger Phase 1.4.4: ESP-IDF 5.2+ on ESP32-C3.
- * Same firmware on both radios. Protocol OGM2 unchanged for web encryption.
- * Bootstrap with broadcast at 1 Mbps; learn peer, send unicast with adaptive PHY.
- * The RADIO is an untrusted encrypted-payload carrier (AES-GCM lives in browser).
+/* OffGrid Messenger Phase 1.4.5 STABLE — ESP-IDF 5.x / ESP32-C3.
+ * Rollback to tested Phase 1.4 broadcast ESP-NOW transport.
+ * AES-256-GCM encryption/decryption is in the browser, NOT in the ESP32.
+ * Node only forwards ciphertext and stores the pairing key in NVS.
+ * Application-level ACKs still prove remote browser received the fragment.
+ * Radio PHY deliberately stays at the safe default 1 Mbps until link is stable.
  */
 #include <stdio.h>
 #include <string.h>
@@ -14,7 +16,6 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/queue.h"
-#include "freertos/semphr.h"
 #include "esp_err.h"
 #include "esp_log.h"
 #include "esp_mac.h"
@@ -24,58 +25,30 @@
 #include "esp_netif.h"
 #include "esp_random.h"
 #include "esp_timer.h"
-#include "esp_idf_version.h"
 #include "nvs_flash.h"
 #include "nvs.h"
 
 #define CHANNEL 6
-#define MAX_TEXT 228
+#define MAX_TEXT 180
 #define MAX_PENDING 8
 #define RX_HISTORY 24
 #define MAX_ATTEMPTS 7
 #define RETRY_MS 850
-#define SEND_GAP_MS 4
+#define SEND_GAP_MS 8 /* less than old 65ms; only one browser fragment in flight */
 #define PROTOCOL_MAGIC 0x4F474D32u /* OGM2; intentionally incompatible with Phase 1 */
 #define PROTOCOL_VERSION 2
 #define TYPE_TEXT 1
 #define TYPE_RECEIPT 2
 #define TYPE_READ 3
-#define TYPE_HELLO 4 /* discovery only, never a chat payload */
-#define DISCOVERY_MS 1400
-#define NVS_KEY_NS "offgrid"
-#define NVS_KEY_NAME "pairkey"
 #define EVENT_QUEUE_LEN 32
 #define SERIAL_LINE 512
-#define LINK_REPORT_MS 1800
-#define BOOT_BEACON_MS 3000
-#define RATE_COOLDOWN_MS 4500
-#define PEER_EXPIRE_MS 90000
-#define RSSI_UNKNOWN (-127)
-#if ESP_IDF_VERSION_MAJOR < 5 || (ESP_IDF_VERSION_MAJOR == 5 && ESP_IDF_VERSION_MINOR < 2)
-#error "Adaptive ESP-NOW PHY rates require ESP-IDF 5.2 or later"
-#endif
+#define LINK_REPORT_MS 2500
 
 static const uint8_t BROADCAST[6] = {255,255,255,255,255,255};
 static uint8_t own_mac[6];
 static uint32_t boot_session;
 static uint32_t next_id = 1;
 static QueueHandle_t event_queue;
-static SemaphoreHandle_t tx_done;
-/* The Wi-Fi send callback is short and never sends data itself. */
-static volatile esp_now_send_status_t tx_last_status=ESP_NOW_SEND_FAIL;
-#if ESP_IDF_VERSION_MAJOR > 5 || (ESP_IDF_VERSION_MAJOR==5 && ESP_IDF_VERSION_MINOR>=5)
-static void on_send(const esp_now_send_info_t *info, esp_now_send_status_t status) {
-    (void)info;
-    tx_last_status=status;
-    if(tx_done)xSemaphoreGive(tx_done);
-}
-#else
-static void on_send(const uint8_t *mac, esp_now_send_status_t status) {
-    (void)mac;
-    tx_last_status=status;
-    if(tx_done)xSemaphoreGive(tx_done);
-}
-#endif
 
 /* Identical wire structure on all ESP32-C3 boards. Explicit length validation. */
 typedef struct __attribute__((packed)) {
@@ -88,15 +61,12 @@ typedef struct __attribute__((packed)) {
     uint16_t length;
     uint8_t text[MAX_TEXT];
 } frame_t;
-_Static_assert(offsetof(frame_t,text)+MAX_TEXT <= ESP_NOW_MAX_DATA_LEN,
-               "Frame exceeds the compatible ESP-NOW v1 250-byte payload");
 
 typedef enum { EV_RX = 1, EV_SEND, EV_APPACK, EV_STATUS, EV_READ, EV_RATE } event_type_t;
 typedef struct {
     event_type_t type;
     uint8_t mac[6];
     int8_t rssi;
-    uint8_t mode;
     uint32_t session;
     uint32_t id;
     uint16_t length;
@@ -108,7 +78,6 @@ typedef struct {
     frame_t frame;
     int attempts;
     int64_t last_send_ms;
-    bool noted_retries;
 } outgoing_t;
 typedef struct {
     bool active;
@@ -122,117 +91,70 @@ static outgoing_t pending[MAX_PENDING];
 static received_t history[RX_HISTORY];
 static size_t history_next;
 static int64_t last_radio_ms;
-/* 1 Mbps conservative, 6 and 12 Mbps supported 802.11g rates.
-   This is a TX rate; it is NOT an estimate of useful application throughput. */
-typedef enum { LINK_AUTO=0, LINK_RANGE=1, LINK_SPEED=2 } link_mode_t;
-static link_mode_t link_mode=LINK_AUTO;
-static bool peer_known=false;
-static uint8_t known_peer[6];
-static int32_t rssi_ema=RSSI_UNKNOWN;
-static uint8_t phy_mbps=1;
-static uint32_t good_deliveries=0, total_deliveries=0, total_retries=0, total_failures=0;
-static int64_t last_rate_change_ms=0, last_peer_ms=0, last_report_ms=0;
-/* STATUS confirms the USB host can send commands, not merely read boot output. */
-static volatile bool serial_status_seen=false;
-static int64_t last_boot_beacon_ms=0, last_discovery_ms=0;
-static uint32_t radio_tx_ok=0, radio_tx_fail=0, radio_rx_ok=0, hello_rx=0, hello_tx=0;
+/* Diagnostics never affect the radio routing or rate. */
+static uint8_t last_remote_mac[6];
+static bool have_remote=false;
+static int32_t remote_rssi=-127;
+static uint32_t tx_ok=0,tx_fail=0,rx_ok=0,delivery_count=0,retry_count=0,failure_count=0;
+static int64_t last_report_ms=0;
 static uint8_t pairing_key[32];
 static bool pairing_key_present=false;
-static bool read_pair_key(void) {
-    nvs_handle_t handle;
-    if(nvs_open(NVS_KEY_NS,NVS_READONLY,&handle)!=ESP_OK)return false;
-    size_t n=sizeof(pairing_key);
-    esp_err_t e=nvs_get_blob(handle,NVS_KEY_NAME,pairing_key,&n);
-    nvs_close(handle);
-    return e==ESP_OK && n==sizeof(pairing_key);
+static bool key_from_nvs(void){
+    nvs_handle_t h;
+    if(nvs_open("offgrid",NVS_READONLY,&h)!=ESP_OK)return false;
+    size_t size=sizeof(pairing_key);
+    esp_err_t e=nvs_get_blob(h,"pairkey",pairing_key,&size);
+    nvs_close(h);
+    return e==ESP_OK&&size==sizeof(pairing_key);
 }
-static bool save_pair_key(const uint8_t *raw) {
-    nvs_handle_t handle;
-    if(nvs_open(NVS_KEY_NS,NVS_READWRITE,&handle)!=ESP_OK)return false;
-    esp_err_t e=nvs_set_blob(handle,NVS_KEY_NAME,raw,32);
-    if(e==ESP_OK)e=nvs_commit(handle);
-    nvs_close(handle);
+static bool key_to_nvs(const uint8_t *raw){
+    nvs_handle_t h;
+    if(nvs_open("offgrid",NVS_READWRITE,&h)!=ESP_OK)return false;
+    esp_err_t e=nvs_set_blob(h,"pairkey",raw,32);
+    if(e==ESP_OK)e=nvs_commit(h);
+    nvs_close(h);
     if(e!=ESP_OK)return false;
-    memcpy(pairing_key,raw,32);pairing_key_present=true;
+    memcpy(pairing_key,raw,32);
+    pairing_key_present=true;
     return true;
 }
-
+static void print_key(void){
+    if(!pairing_key_present){puts("KEYEMPTY");return;}
+    char line[74];
+    const char *digits="0123456789ABCDEF";
+    memcpy(line,"KEYDATA|",8);
+    for(int i=0;i<32;i++){
+        line[8+i*2]=digits[pairing_key[i]>>4];
+        line[8+i*2+1]=digits[pairing_key[i]&15];
+    }
+    line[72]='\0';
+    puts(line);
+    memset(line,0,sizeof(line));
+}
 
 
 static int64_t now_ms(void) { return esp_timer_get_time() / 1000; }
 static void print_mac(const uint8_t *m) {
     printf("%02X:%02X:%02X:%02X:%02X:%02X",m[0],m[1],m[2],m[3],m[4],m[5]);
 }
-static bool ensure_peer(const uint8_t *mac);
-static const char *mode_name(void) {
-    return link_mode==LINK_RANGE?"RANGE":link_mode==LINK_SPEED?"SPEED":"AUTO";
-}
-static void emit_link(void) {
-    char macbuf[20];
-    if(peer_known)snprintf(macbuf,sizeof(macbuf),"%02X:%02X:%02X:%02X:%02X:%02X",
-        known_peer[0],known_peer[1],known_peer[2],known_peer[3],known_peer[4],known_peer[5]);
-    else snprintf(macbuf,sizeof(macbuf),"NONE");
-    printf("LINK|%s|RSSI=%ld|PHY=%u|MODE=%s|OK=%" PRIu32 "|RETRY=%" PRIu32 "|FAIL=%" PRIu32 "|TXOK=%" PRIu32 "|TXFAIL=%" PRIu32 "|RX=%" PRIu32 "|HELLO=%" PRIu32 "\n",
-         macbuf,(long)rssi_ema,(unsigned)phy_mbps,mode_name(),total_deliveries,total_retries,total_failures,radio_tx_ok,radio_tx_fail,radio_rx_ok,hello_rx);
-}
-static bool set_phy(uint8_t desired) {
-    if(!peer_known)return false;
-    if(desired!=1&&desired!=6&&desired!=12)return false;
-    if(phy_mbps==desired)return true;
-    esp_now_rate_config_t config={0};
-    config.phymode=desired==1?WIFI_PHY_MODE_11B:WIFI_PHY_MODE_11G;
-    config.rate=desired==1?WIFI_PHY_RATE_1M_L:(desired==6?WIFI_PHY_RATE_6M:WIFI_PHY_RATE_12M);
-    esp_err_t err=esp_now_set_peer_rate_config(known_peer,&config);
-    if(err!=ESP_OK){
-        printf("RATE_ERROR|%u|%s\n",(unsigned)desired,esp_err_to_name(err));
-        return false;
-    }
-    phy_mbps=desired;
-    last_rate_change_ms=now_ms();
-    printf("RATE|%u|%s\n",(unsigned)phy_mbps,mode_name());
-    return true;
-}
-/* Only change rate from the dispatcher (never the high-priority Wi-Fi callback). */
-static void adjust_phy(bool force_downgrade) {
-    if(!peer_known)return;
-    int64_t now=now_ms();
-    if(link_mode==LINK_RANGE){(void)set_phy(1);return;}
-    if(force_downgrade) {
-        good_deliveries=0;
-        if(phy_mbps>1)(void)set_phy(1);
-        return;
-    }
-    if(now-last_rate_change_ms<RATE_COOLDOWN_MS)return;
-    int32_t rssi=rssi_ema;
-    if(rssi!=RSSI_UNKNOWN && rssi<-76){good_deliveries=0;(void)set_phy(1);return;}
-    /* Always require proven reliability, not RSSI alone. "Speed" is still safe. */
-    if(phy_mbps==1 && good_deliveries >= (link_mode==LINK_SPEED?5u:9u) && rssi>=-65){
-        if(set_phy(6))good_deliveries=0;
-    } else if(phy_mbps==6 && good_deliveries >= (link_mode==LINK_SPEED?8u:14u) && rssi>=-52){
-        if(set_phy(12))good_deliveries=0;
-    }
-}
-static void learn_peer(const uint8_t *mac,int8_t rssi) {
-    if(!peer_known) {
-        if(!ensure_peer(mac)){puts("ERROR|LEARN_PEER");return;}
-        memcpy(known_peer,mac,6);peer_known=true;phy_mbps=1;
-        /* A new unicast peer must begin at 1 Mbps, the discovery rate. */
-        esp_now_rate_config_t config={0};
-        config.phymode=WIFI_PHY_MODE_11B;config.rate=WIFI_PHY_RATE_1M_L;
-        esp_err_t err=esp_now_set_peer_rate_config(known_peer,&config);
-        if(err!=ESP_OK)printf("RATE_ERROR|1|%s\n",esp_err_to_name(err));
-        last_rate_change_ms=now_ms();
-        printf("PEER|");print_mac(known_peer);putchar('\n');
-    }
-    if(memcmp(known_peer,mac,6)!=0)return;
-    last_peer_ms=now_ms();
-    if(rssi>=-110 && rssi<=-10){
-        rssi_ema=rssi_ema==RSSI_UNKNOWN?rssi:(int32_t)((rssi_ema*7+rssi*3)/10);
-    }
-}
 static void print_hex(const uint8_t *p, size_t n) {
     static const char h[]="0123456789ABCDEF";
     for (size_t i=0;i<n;i++) { putchar(h[p[i]>>4]); putchar(h[p[i]&15]); }
+}
+static void emit_link(void){
+    char peer[20];
+    if(have_remote){
+        snprintf(peer,sizeof(peer),"%02X:%02X:%02X:%02X:%02X:%02X",
+            last_remote_mac[0],last_remote_mac[1],last_remote_mac[2],
+            last_remote_mac[3],last_remote_mac[4],last_remote_mac[5]);
+    }else{
+        snprintf(peer,sizeof(peer),"BROADCAST");
+    }
+    printf("LINK|%s|RSSI=%ld|PHY=1|MODE=STABLE|OK=%" PRIu32
+           "|RETRY=%" PRIu32 "|FAIL=%" PRIu32 "|TXOK=%" PRIu32
+           "|TXFAIL=%" PRIu32 "|RX=%" PRIu32 "|HELLO=0\n",
+           peer,(long)remote_rssi,delivery_count,retry_count,failure_count,
+           tx_ok,tx_fail,rx_ok);
 }
 static bool parse_mac(const char *s, uint8_t *m) {
     unsigned a[6]; int end = 0;
@@ -257,22 +179,24 @@ static bool read_hex(const char *s,uint8_t *dst,uint16_t *len) {
     *len=(uint16_t)(n/2);
     return true;
 }
-static void show_ready(const char *source) {
-    printf("READY|%02X:%02X:%02X:%02X:%02X:%02X|CHANNEL=%d|SESSION=%" PRIu32 "|PROTO=2|CAP=228|TXDONE=1|DISC=1|NVSKEY=1|FROM=%s\n",
-        own_mac[0],own_mac[1],own_mac[2],own_mac[3],own_mac[4],own_mac[5],CHANNEL,boot_session,source);
+static void show_ready(void) {
+    printf("READY|%02X:%02X:%02X:%02X:%02X:%02X|CHANNEL=%d|SESSION=%" PRIu32
+           "|PROTO=2|CAP=180|STABLE=1|NVSKEY=1\n",
+           own_mac[0],own_mac[1],own_mac[2],own_mac[3],own_mac[4],own_mac[5],
+           CHANNEL,boot_session);
 }
 static void on_receive(const esp_now_recv_info_t *info,const uint8_t *data,int len) {
     const size_t base=offsetof(frame_t,text);
     if(!info||!info->src_addr||!data||len<(int)base||len>(int)sizeof(frame_t))return;
     event_t ev={0};ev.type=EV_RX;
     memcpy(ev.mac,info->src_addr,6);
-    ev.rssi=info->rx_ctrl?info->rx_ctrl->rssi:RSSI_UNKNOWN;
+    ev.rssi=info->rx_ctrl ? info->rx_ctrl->rssi : -127;
     memcpy(&ev.frame,data,(size_t)len);
     frame_t *f=&ev.frame;
     if(f->magic!=PROTOCOL_MAGIC||f->version!=PROTOCOL_VERSION)return;
     if(f->length>MAX_TEXT||(size_t)len!=base+f->length)return;
-    if(f->type!=TYPE_TEXT&&f->type!=TYPE_RECEIPT&&f->type!=TYPE_READ&&f->type!=TYPE_HELLO)return;
-    if((f->type==TYPE_RECEIPT||f->type==TYPE_READ||f->type==TYPE_HELLO)&&f->length!=0)return;
+    if(f->type!=TYPE_TEXT&&f->type!=TYPE_RECEIPT&&f->type!=TYPE_READ)return;
+    if((f->type==TYPE_RECEIPT||f->type==TYPE_READ)&&f->length!=0)return;
     if(memcmp(f->sender,ev.mac,6)!=0||memcmp(f->sender,own_mac,6)==0)return;
     (void)xQueueSend(event_queue,&ev,0); /* Wi-Fi callback must never block */
 }
@@ -284,21 +208,12 @@ static bool ensure_peer(const uint8_t *mac) {
     return e==ESP_OK||e==ESP_ERR_ESPNOW_EXIST;
 }
 static esp_err_t send_frame(const uint8_t *dest, const frame_t *f) {
-    /* Always serialize hardware TX and wait for the radio callback.
-       Fixed 65 ms sleeps previously dominated small photo fragments.
-       The callback indicates only MAC-layer success, not app delivery. */
     int64_t pause=SEND_GAP_MS-(now_ms()-last_radio_ms);
     if(pause>0)vTaskDelay(pdMS_TO_TICKS(pause)+1);
-    /* No other task calls esp_now_send: only the dispatcher owns this semaphore. */
-    while(xSemaphoreTake(tx_done,0)==pdTRUE){} /* discard stale notifications */
-    tx_last_status=ESP_NOW_SEND_FAIL;
     esp_err_t err=esp_now_send(dest,(const uint8_t*)f,offsetof(frame_t,text)+f->length);
-    if(err!=ESP_OK){radio_tx_fail++;return err;}
-    /* The send-callback is posted from the Wi-Fi task. */
-    if(xSemaphoreTake(tx_done,pdMS_TO_TICKS(300))!=pdTRUE){radio_tx_fail++;return ESP_ERR_TIMEOUT;}
     last_radio_ms=now_ms();
-    if(tx_last_status==ESP_NOW_SEND_SUCCESS){radio_tx_ok++;return ESP_OK;}
-    radio_tx_fail++;return ESP_FAIL;
+    if(err==ESP_OK)tx_ok++;else tx_fail++;
+    return err;
 }
 static received_t *find_history(const uint8_t *mac,uint32_t session,uint32_t id) {
     for(int i=0;i<RX_HISTORY;i++)if(history[i].active&&history[i].session==session&&history[i].id==id&&memcmp(history[i].mac,mac,6)==0)return &history[i];
@@ -312,30 +227,16 @@ static void receipt(const received_t *r) {
     (void)send_frame(r->mac,&ack); /* sender retries if receipt is lost */
 }
 static void display_rx(const frame_t *f,const uint8_t *mac) {
-    char line[520];
-    int n=snprintf(line,sizeof(line),"RX|%02X:%02X:%02X:%02X:%02X:%02X|%" PRIu32 "|%" PRIu32 "|",
-        mac[0],mac[1],mac[2],mac[3],mac[4],mac[5],f->session,f->id);
-    if(n<0||(size_t)n+f->length*2>=sizeof(line))return;
-    const char hex[]="0123456789ABCDEF";
-    for(size_t i=0;i<f->length;i++){
-        line[n+i*2]=hex[f->text[i]>>4];
-        line[n+i*2+1]=hex[f->text[i]&15];
-    }
-    line[n+f->length*2]='\0';
-    puts(line);
+    printf("RX|");print_mac(mac);
+    printf("|%" PRIu32 "|%" PRIu32 "|",f->session,f->id);
+    print_hex(f->text,f->length);putchar('\n');
 }
 static void process_event(const event_t *e) {
-    if(e->type==EV_STATUS){
-        serial_status_seen=true;
-        show_ready("STATUS");
+    if(e->type==EV_STATUS){show_ready();emit_link();return;}
+    if(e->type==EV_RATE){
+        /* Kept for web settings compatibility. STABLE intentionally fixes radio PHY. */
         emit_link();
         return;
-    }
-    if(e->type==EV_RATE){
-        link_mode=(link_mode_t)e->mode;
-        good_deliveries=0;
-        if(peer_known && (link_mode==LINK_RANGE||phy_mbps>1)) (void)set_phy(1);
-        emit_link();return;
     }
     if(e->type==EV_SEND) {
         outgoing_t *slot=NULL;
@@ -346,17 +247,8 @@ static void process_event(const event_t *e) {
         f->magic=PROTOCOL_MAGIC;f->version=PROTOCOL_VERSION;f->type=TYPE_TEXT;
         memcpy(f->sender,own_mac,6);f->session=boot_session;f->id=next_id++;
         f->length=e->length;memcpy(f->text,e->text,e->length);
-        char qline[520];
-        int n=snprintf(qline,sizeof(qline),"QUEUED|%" PRIu32 "|%" PRIu32 "|",f->session,f->id);
-        if(n>0&&(size_t)n+f->length*2<sizeof(qline)){
-            const char hx[]="0123456789ABCDEF";
-            for(size_t j=0;j<f->length;j++){
-                qline[n+j*2]=hx[f->text[j]>>4];
-                qline[n+j*2+1]=hx[f->text[j]&15];
-            }
-            qline[n+f->length*2]='\0';
-            puts(qline);
-        }
+        printf("QUEUED|%" PRIu32 "|%" PRIu32 "|",f->session,f->id);
+        print_hex(f->text,f->length);putchar('\n');
         return;
     }
     if(e->type==EV_READ) {
@@ -380,11 +272,12 @@ static void process_event(const event_t *e) {
         return;
     }
     if(e->type!=EV_RX)return;
-    if(peer_known && memcmp(e->mac,known_peer,6)!=0)return; /* only 1 peer in Phase 1.4.x */
-    learn_peer(e->mac,e->rssi);
     const frame_t *f=&e->frame;
-    radio_rx_ok++;
-    if(f->type==TYPE_HELLO){hello_rx++;return;}
+    rx_ok++;
+    memcpy(last_remote_mac,e->mac,6);have_remote=true;
+    if(e->rssi>=-110&&e->rssi<=-10){
+        remote_rssi=(remote_rssi==-127)?e->rssi:(remote_rssi*7+e->rssi*3)/10;
+    }
     if(f->type==TYPE_READ) {
         /* Sender browser decides whether this ID belongs to its outgoing chat. */
         printf("READ|%" PRIu32 "|%" PRIu32 "\n",f->session,f->id);
@@ -395,12 +288,7 @@ static void process_event(const event_t *e) {
             outgoing_t *o=&pending[i];
             if(o->active&&o->frame.session==f->session&&o->frame.id==f->id) {
                 printf("DELIVERED|%" PRIu32 "|%" PRIu32 "\n",f->session,f->id);
-                o->active=false;
-                total_deliveries++;
-                if(o->attempts==1)good_deliveries++;
-                else good_deliveries=0;
-                adjust_phy(false);
-                break;
+                o->active=false;delivery_count++;break;
             }
         }
         return;
@@ -417,50 +305,22 @@ static void process_event(const event_t *e) {
     display_rx(f,e->mac);
     /* No receipt until receiving browser sends APPACK! */
 }
-/* Discovery does not depend on a user sending a chat message.
-   It remains at the broadcast PHY and contains no secret material. */
-static void broadcast_hello(void) {
-    frame_t frame={0};
-    frame.magic=PROTOCOL_MAGIC;frame.version=PROTOCOL_VERSION;
-    frame.type=TYPE_HELLO;memcpy(frame.sender,own_mac,6);
-    frame.session=boot_session;
-    if(send_frame(BROADCAST,&frame)==ESP_OK)hello_tx++;
-}
 static void dispatcher(void *arg) {
     event_t e;
     while(true) {
-        if(xQueueReceive(event_queue,&e,pdMS_TO_TICKS(2))==pdTRUE)process_event(&e);
+        if(xQueueReceive(event_queue,&e,pdMS_TO_TICKS(5))==pdTRUE)process_event(&e);
         int64_t t=now_ms();
-        if(t-last_discovery_ms>=DISCOVERY_MS){
-            last_discovery_ms=t;
-            broadcast_hello();
-        }
         if(t-last_report_ms>=LINK_REPORT_MS){last_report_ms=t;emit_link();}
-        /* The native USB Serial/JTAG console may open after BOOT/READY was printed.
-           Re-announce readiness until a STATUS command is received from the browser.
-           Do not require a reset every time a browser opens the serial port. */
-        if(!serial_status_seen && t-last_boot_beacon_ms>=BOOT_BEACON_MS){
-            last_boot_beacon_ms=t;
-            show_ready("BEACON");
-        }
-        if(peer_known && (t-last_peer_ms>PEER_EXPIRE_MS) && !total_deliveries)adjust_phy(true);
         for(int i=0;i<MAX_PENDING;i++) {
             outgoing_t *o=&pending[i];if(!o->active)continue;
             if(o->attempts>0 && t-o->last_send_ms<RETRY_MS)continue;
             if(o->attempts>=MAX_ATTEMPTS) {
                 printf("FAILED|%" PRIu32 "|%" PRIu32 "|NO_APP_RECEIPT\n",o->frame.session,o->frame.id);
-                o->active=false;total_failures++;adjust_phy(true);continue;
+                o->active=false;failure_count++;continue;
             }
-            if(o->attempts==1 && !o->noted_retries){
-                o->noted_retries=true;total_retries++;good_deliveries=0;
-                adjust_phy(true); /* retry at baseline PHY first */
-            }
-            if(o->attempts>1)total_retries++;
-            /* At start or after several unanswered unicast attempts, use 1 Mbps broadcast
-               for rediscovery. Broadcast always uses the default PHY, never our peer rate. */
-            const uint8_t *dest=(!peer_known||o->attempts>=4)?BROADCAST:known_peer;
-            esp_err_t err=send_frame(dest,&o->frame);
+            esp_err_t err=send_frame(BROADCAST,&o->frame);
             o->last_send_ms=now_ms();o->attempts++;
+            if(o->attempts>1)retry_count++;
             if(err==ESP_OK) {
                 if(o->attempts==1)printf("SENT|%" PRIu32 "|%" PRIu32 "\n",o->frame.session,o->frame.id);
                 else printf("RETRY|%" PRIu32 "|%" PRIu32 "|%d\n",o->frame.session,o->frame.id,o->attempts);
@@ -469,38 +329,28 @@ static void dispatcher(void *arg) {
         }
     }
 }
-/* Key commands are intentionally accepted only on the native USB console.
-   Every USB host with physical access to the node can retrieve this key. */
-static void emit_pair_key(void) {
-    if(!pairing_key_present){puts("KEYEMPTY");return;}
-    char hex[65];
-    const char digits[]="0123456789ABCDEF";
-    for(size_t i=0;i<32;i++){
-        hex[i*2]=digits[pairing_key[i]>>4];
-        hex[i*2+1]=digits[pairing_key[i]&15];
-    }
-    hex[64]='\0';
-    /* Single output operation prevents a concurrent LINK line splitting key data. */
-    printf("KEYDATA|%s\n",hex);
-    memset(hex,0,sizeof(hex));
-}
 static void serial_task(void *arg) {
     char line[SERIAL_LINE];size_t used=0;
-    puts("HELP|MSGHEX, STATUS, RATE AUTO/RANGE/SPEED, APPACK, READ, KEYGET, KEYSET <64 HEX>");
+    puts("HELP|MSGHEX, STATUS, APPACK, READ, KEYGET, KEYSET <64 HEX>, RATE AUTO/RANGE/SPEED");
     while(true) {
         int ch=getchar();
         if(ch==EOF){clearerr(stdin);vTaskDelay(pdMS_TO_TICKS(20));continue;}
         if(ch=='\r')continue;
         if(ch=='\n') {
             line[used]=0;event_t e={0};bool send=false;
-            if(strcmp(line,"KEYGET")==0){emit_pair_key();}
+            if(strcmp(line,"KEYGET")==0){print_key();}
             else if(strcmp(line,"KEYSTATUS")==0){puts(pairing_key_present?"KEYSTATUS|PRESENT":"KEYSTATUS|EMPTY");}
             else if(strncmp(line,"KEYSET ",7)==0){
-                uint8_t buf[32];uint16_t n=0;
-                if(strlen(line+7)!=64||!read_hex(line+7,buf,&n)||n!=32)puts("KEYERROR|INVALID_HEX");
-                else if(save_pair_key(buf))puts("KEYSTORED");
+                uint8_t raw[32];uint16_t n=0;
+                if(strlen(line+7)!=64||!read_hex(line+7,raw,&n)||n!=32)puts("KEYERROR|INVALID_HEX");
+                else if(key_to_nvs(raw))puts("KEYSTORED");
                 else puts("KEYERROR|NVS_WRITE_FAILED");
-                memset(buf,0,sizeof(buf));
+                memset(raw,0,sizeof(raw));
+            }
+            else if(strncmp(line,"RATE ",5)==0){
+                if(strcmp(line+5,"AUTO")==0||strcmp(line+5,"RANGE")==0||strcmp(line+5,"SPEED")==0){
+                    e.type=EV_RATE;send=true;
+                }else puts("ERROR|BAD_RATE_MODE");
             }
             else if(strncmp(line,"MSGHEX ",7)==0) {
                 e.type=EV_SEND;
@@ -523,13 +373,8 @@ static void serial_task(void *arg) {
                    session<=UINT32_MAX&&id<=UINT32_MAX&&parse_mac(mac_str,e.mac)) {
                     e.type=EV_READ;e.session=(uint32_t)session;e.id=(uint32_t)id;send=true;
                 }else puts("ERROR|BAD_READ");
-            }else if(strncmp(line,"RATE ",5)==0){
-                if(strcmp(line+5,"AUTO")==0){e.type=EV_RATE;e.mode=LINK_AUTO;send=true;}
-                else if(strcmp(line+5,"RANGE")==0){e.type=EV_RATE;e.mode=LINK_RANGE;send=true;}
-                else if(strcmp(line+5,"SPEED")==0){e.type=EV_RATE;e.mode=LINK_SPEED;send=true;}
-                else puts("ERROR|BAD_RATE_MODE");
             }else if(strcmp(line,"STATUS")==0) {e.type=EV_STATUS;send=true;}
-            else if(strcmp(line,"HELP")==0)puts("HELP|MSGHEX <UTF8-HEX>, MSG <text>, STATUS, RATE AUTO/RANGE/SPEED, APPACK, READ, KEYGET, KEYSET <64 HEX>");
+            else if(strcmp(line,"HELP")==0)puts("HELP|MSGHEX <UTF8-HEX>, MSG <text>, STATUS, APPACK <MAC> <SESSION> <ID>, READ <MAC> <SESSION> <ID>");
             else if(used)puts("ERROR|UNKNOWN_COMMAND");
             if(send&&!xQueueSend(event_queue,&e,pdMS_TO_TICKS(100)))puts("ERROR|EVENT_QUEUE_FULL");
             used=0;
@@ -539,11 +384,11 @@ static void serial_task(void *arg) {
 }
 void app_main(void) {
     setvbuf(stdout,NULL,_IONBF,0);
-    puts("BOOT|OffGrid Messenger Phase 1.4.4 / discovery + NVS pairing key");
+    puts("BOOT|OffGrid Messenger Phase 1.4.5 STABLE / broadcast protocol 2");
     esp_err_t e=nvs_flash_init();
     if(e==ESP_ERR_NVS_NO_FREE_PAGES||e==ESP_ERR_NVS_NEW_VERSION_FOUND){ESP_ERROR_CHECK(nvs_flash_erase());e=nvs_flash_init();}
     ESP_ERROR_CHECK(e);
-    pairing_key_present=read_pair_key();
+    pairing_key_present=key_from_nvs();
     ESP_ERROR_CHECK(esp_netif_init());ESP_ERROR_CHECK(esp_event_loop_create_default());
     wifi_init_config_t cfg=WIFI_INIT_CONFIG_DEFAULT();
     ESP_ERROR_CHECK(esp_wifi_init(&cfg));
@@ -554,20 +399,11 @@ void app_main(void) {
     ESP_ERROR_CHECK(esp_wifi_set_ps(WIFI_PS_NONE));
     ESP_ERROR_CHECK(esp_read_mac(own_mac,ESP_MAC_WIFI_STA));
     boot_session=esp_random();if(!boot_session)boot_session=1;
-    last_discovery_ms=now_ms()-DISCOVERY_MS+(int64_t)(esp_random()%700);
     event_queue=xQueueCreate(EVENT_QUEUE_LEN,sizeof(event_t));if(!event_queue)abort();
-    tx_done=xSemaphoreCreateBinary();if(!tx_done)abort();
     ESP_ERROR_CHECK(esp_now_init());
     ESP_ERROR_CHECK(esp_now_register_recv_cb(on_receive));
-    ESP_ERROR_CHECK(esp_now_register_send_cb(on_send));
     if(!ensure_peer(BROADCAST))abort();
-    /* Tasks must exist before we announce the device as ready to the browser. */
-    BaseType_t d=xTaskCreate(dispatcher,"dispatch",6144,NULL,5,NULL);
-    BaseType_t c=xTaskCreate(serial_task,"serial",4096,NULL,4,NULL);
-    if(d!=pdPASS || c!=pdPASS){
-        printf("FATAL|TASK_CREATE_FAILED|DISPATCH=%d|SERIAL=%d\n",(int)d,(int)c);
-        abort();
-    }
-    show_ready("BOOT");
-    emit_link();
+    show_ready();
+    xTaskCreate(dispatcher,"dispatch",6144,NULL,5,NULL);
+    xTaskCreate(serial_task,"serial",4096,NULL,4,NULL);
 }
