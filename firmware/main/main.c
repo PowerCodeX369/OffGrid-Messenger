@@ -1,4 +1,4 @@
-/* OffGrid Messenger Phase 1.4.10.3 photo selective ACK — ESP-IDF >= 5.2 / ESP32-C3.
+/* OffGrid Messenger Phase 1.4.11 experimental LR, ESP-IDF >= 5.2 / ESP32-C3.
  * Experimental extension of the frozen, measured-working 1.4.10.2 USB IRQ baseline.
  * AES-256-GCM runs in the BROWSER. NVS key management unchanged.
  * 1 Mbps broadcast HELLO/recovery; peer-aware 1/6/12 Mbps unicast for data.
@@ -66,6 +66,10 @@
 #define BENCH_MAX_PACKETS 128
 #define BENCH_TIMEOUT_MS 1000
 #define HELLO_MS 1800
+#define LR_PROBE_MS 2600
+#define LR_PROBE_DELAY_MS 5000
+#define LR_HELLO_ID 0x4C523235u /* LR25, proprietary probe flag */
+#define LR_PERSISTED_PEER_KEY "peer_mac"
 #define PEER_TIMEOUT_MS 12000
 #define PHY_DWELL_MS 4200
 #define PHY_HOLD_MS 10000
@@ -131,7 +135,15 @@ static uint32_t tx_ok=0,tx_fail=0,rx_ok=0,delivery_count=0,retry_count=0,failure
 static uint8_t peer_mac[6];
 static bool peer_known=false;
 static int64_t peer_last_seen_ms=0, last_hello_ms=0, last_phy_change_ms=0;
+static int64_t last_lr_probe_ms=0;
+static bool lr_supported=false;
+static bool peer_persisted=false;
+static uint8_t saved_peer_mac[6];
+static uint32_t lr_probe_tx=0,lr_probe_rx=0,lr_fallbacks=0;
+static uint8_t consecutive_no_ack=0;
 static int64_t rate_hold_until_ms=0, rate_error_until_ms=0;
+/* 1, 6, 12 are Mbps; 50=0.50 Mbps LR, 25=0.25 Mbps LR.
+   This keeps the proven numeric short-range modes unchanged. */
 static uint8_t phy_mbps=1;
 static uint8_t link_mode=OG_RATE_AUTO;
 static uint32_t hello_rx=0, hello_tx=0, valid_rssi_samples=0;
@@ -201,6 +213,41 @@ static int serial_receive_batch(uint8_t *dst, size_t capacity) {
     dst[0] = (uint8_t)ch;
     return 1;
 }
+/* The previously discovered peer can be reached with LR unicast after restart.
+ * This is a transport hint, NOT a cryptographic identity: NVS pairing keys remain
+ * separate and the receiving browser authenticates application data. */
+static bool read_saved_peer(void) {
+    nvs_handle_t h;
+    if(nvs_open("offgrid", NVS_READONLY, &h)!=ESP_OK)return false;
+    size_t n=sizeof(saved_peer_mac);
+    esp_err_t e=nvs_get_blob(h,LR_PERSISTED_PEER_KEY,saved_peer_mac,&n);
+    nvs_close(h);
+    if(e!=ESP_OK||n!=6)return false;
+    if(!memcmp(saved_peer_mac,BROADCAST,6)||!(saved_peer_mac[0]|saved_peer_mac[1]|saved_peer_mac[2]|saved_peer_mac[3]|saved_peer_mac[4]|saved_peer_mac[5]))return false;
+    return true;
+}
+static bool save_peer_once(const uint8_t *mac) {
+    if(peer_persisted)return memcmp(saved_peer_mac,mac,6)==0;
+    nvs_handle_t h;
+    if(nvs_open("offgrid", NVS_READWRITE, &h)!=ESP_OK)return false;
+    esp_err_t e=nvs_set_blob(h,LR_PERSISTED_PEER_KEY,mac,6);
+    if(e==ESP_OK)e=nvs_commit(h);
+    nvs_close(h);
+    if(e!=ESP_OK)return false;
+    memcpy(saved_peer_mac,mac,6);peer_persisted=true;return true;
+}
+static const char *phy_label(void) {
+    if(phy_mbps==25)return "0.25";
+    if(phy_mbps==50)return "0.5";
+    if(phy_mbps==6)return "6";
+    if(phy_mbps==12)return "12";
+    return "1";
+}
+static const char *phy_mode_label(void) {
+    if(phy_mbps==25)return "LR250";
+    if(phy_mbps==50)return "LR500";
+    return "NORMAL";
+}
 static bool key_from_nvs(void){
     nvs_handle_t h;
     if(nvs_open("offgrid",NVS_READONLY,&h)!=ESP_OK)return false;
@@ -262,7 +309,7 @@ static void emit_hex_record(const char *prefix, const uint8_t *payload, size_t l
     (void)fwrite(line, 1, bytes, stdout);
 }
 static const char *link_mode_name(void) {
-    return link_mode==OG_RATE_RANGE?"RANGE":link_mode==OG_RATE_SPEED?"SPEED":"AUTO";
+    return link_mode==OG_RATE_LR250?"LR250":link_mode==OG_RATE_LR500?"LR500":link_mode==OG_RATE_RANGE?"RANGE":link_mode==OG_RATE_SPEED?"SPEED":"AUTO";
 }
 static void emit_link(void){
     char peer[20];
@@ -273,11 +320,13 @@ static void emit_link(void){
     }else{
         snprintf(peer,sizeof(peer),"BROADCAST");
     }
-    printf("LINK|%s|RSSI=%ld|PHY=%u|MODE=%s|OK=%" PRIu32
+    printf("LINK|%s|RSSI=%ld|PHY=%s|MODE=%s|OK=%" PRIu32
            "|RETRY=%" PRIu32 "|FAIL=%" PRIu32 "|TXOK=%" PRIu32
-           "|TXFAIL=%" PRIu32 "|RX=%" PRIu32 "|HELLO=%" PRIu32 "|CHANGES=%" PRIu32 "\n",
-           peer,(long)remote_rssi,(unsigned)(peer_known?phy_mbps:1),link_mode_name(),
-           delivery_count,retry_count,failure_count,tx_ok,tx_fail,rx_ok,hello_rx,phy_changes);
+           "|TXFAIL=%" PRIu32 "|RX=%" PRIu32 "|HELLO=%" PRIu32 "|CHANGES=%" PRIu32
+           "|LR=%u|LRPROBE=%" PRIu32 "|LRRX=%" PRIu32 "|LRFALLBACK=%" PRIu32 "|PHYMODE=%s\n",
+           peer,(long)remote_rssi,peer_known?phy_label():"1",link_mode_name(),
+           delivery_count,retry_count,failure_count,tx_ok,tx_fail,rx_ok,hello_rx,phy_changes,
+           (unsigned)lr_supported,lr_probe_tx,lr_probe_rx,lr_fallbacks,phy_mode_label());
 }
 static bool parse_mac(const char *s, uint8_t *m) {
     unsigned a[6]; int end = 0;
@@ -308,9 +357,9 @@ static bool read_hex(const char *s,uint8_t *dst,uint16_t *len) {
  * IMPORTANT: single printf to avoid splitting the READY frame over lines. */
 static void show_ready(const char *source) {
     printf("READY|%02X:%02X:%02X:%02X:%02X:%02X|CHANNEL=%d|SESSION=%" PRIu32
-           "|PROTO=2|CAP=180|STABLE=1|NVSKEY=1|ADAPTIVEPHY=1|DIAG=1|SACK=1|FROM=%s\n",
+           "|PROTO=2|CAP=180|STABLE=1|NVSKEY=1|ADAPTIVEPHY=1|DIAG=1|SACK=1|LR=%u|FROM=%s\n",
            own_mac[0],own_mac[1],own_mac[2],own_mac[3],own_mac[4],own_mac[5],
-           CHANNEL,boot_session,source);
+           CHANNEL,boot_session,(unsigned)lr_supported,source);
 }
 static void on_receive(const esp_now_recv_info_t *info,const uint8_t *data,int len) {
     const size_t base=offsetof(frame_t,text);
@@ -349,22 +398,27 @@ static esp_err_t send_frame(const uint8_t *dest, const frame_t *f) {
 
 /* Called ONLY on dispatcher task. Never perform rate changes in a Wi-Fi callback. */
 static bool set_peer_phy(uint8_t rate) {
-    if(!peer_known || (rate!=1 && rate!=6 && rate!=12))return false;
+    if(!peer_known || (rate!=1 && rate!=6 && rate!=12 && rate!=50 && rate!=25))return false;
+    if((rate==25 || rate==50) && !lr_supported)return false;
     if(phy_configured && phy_mbps==rate)return true;
     if(now_ms()<rate_error_until_ms)return false;
     esp_now_rate_config_t cfg={0};
-    cfg.phymode=(rate==1)?WIFI_PHY_MODE_11B:WIFI_PHY_MODE_11G;
-    cfg.rate=(rate==1)?WIFI_PHY_RATE_1M_L:(rate==6?WIFI_PHY_RATE_6M:WIFI_PHY_RATE_12M);
+    cfg.phymode=(rate==25 || rate==50)?WIFI_PHY_MODE_LR:
+                (rate==1?WIFI_PHY_MODE_11B:WIFI_PHY_MODE_11G);
+    cfg.rate=(rate==25)?WIFI_PHY_RATE_LORA_250K:
+             (rate==50)?WIFI_PHY_RATE_LORA_500K:
+             (rate==1)?WIFI_PHY_RATE_1M_L:
+             (rate==6?WIFI_PHY_RATE_6M:WIFI_PHY_RATE_12M);
     esp_err_t err=esp_now_set_peer_rate_config(peer_mac,&cfg);
     if(err!=ESP_OK){
         rate_errors++;
         rate_error_until_ms=now_ms()+5000;
-        printf("RATE_ERROR|%u|%s\n",(unsigned)rate,esp_err_to_name(err));
+        printf("RATE_ERROR|%s|%s\n",rate==25?"0.25":rate==50?"0.5":rate==6?"6":rate==12?"12":"1",esp_err_to_name(err));
         return false;
     }
     phy_configured=true;phy_mbps=rate;
     last_phy_change_ms=now_ms();phy_changes++;
-    printf("RATE|%u|%s\n",(unsigned)rate,link_mode_name());
+    printf("RATE|%s|%s\n",phy_label(),link_mode_name());
     return true;
 }
 static bool any_pending(void) {
@@ -381,7 +435,11 @@ static bool learn_or_observe_peer(const uint8_t *mac, int8_t rssi) {
         phy_configured=false;phy_mbps=1;
         remote_rssi=-127;valid_rssi_samples=0;
         rate_hold_until_ms=0;last_phy_change_ms=now_ms();
+        /* Keep first-time nearby discovery at the original 1-Mbps rate.
+         * An explicit LR recovery probe will select 250 Kbps before replying. */
         (void)set_peer_phy(1);
+        if(!save_peer_once(mac) && peer_persisted && memcmp(saved_peer_mac,mac,6)!=0)
+            puts("PEER_WARNING|NEW_MAC_NOT_PERSISTED");
         printf("PEER|");print_mac(peer_mac);putchar('\n');
     }
     if(memcmp(mac,peer_mac,6)!=0)return false;
@@ -392,39 +450,66 @@ static bool learn_or_observe_peer(const uint8_t *mac, int8_t rssi) {
     }
     return true;
 }
+/* Rate fallback follows the measured packet delivery result rather than
+ * attempting to infer distance from an RSSI number alone. A weak link is
+ * progressively stepped down to LR and never forcibly reset to 1 Mbps. */
 static void downgrade_on_missing_ack(void) {
     rate_hold_until_ms=now_ms()+PHY_HOLD_MS;
-    if(peer_known && phy_mbps!=1)(void)set_peer_phy(1);
+    if(!peer_known)return;
+    uint8_t next=og_lr_fallback(phy_mbps,lr_supported);
+    if(next!=phy_mbps){
+        if(next==50||next==25)lr_fallbacks++;
+        (void)set_peer_phy(next);
+    }
+}
+static uint8_t target_phy_for_link(void) {
+    if(link_mode==OG_RATE_LR250)return 25;
+    if(link_mode==OG_RATE_LR500)return 50;
+    if(link_mode==OG_RATE_RANGE)return 1;
+    if(remote_rssi==-127 || valid_rssi_samples<3)return phy_mbps;
+    return og_lr_target(phy_mbps,remote_rssi,link_mode);
 }
 static void adjust_phy(void) {
     if(!peer_known)return;
-    const int64_t now=now_ms();
-    if(now-peer_last_seen_ms>PEER_TIMEOUT_MS){
-        (void)set_peer_phy(1);
-        /* Rediscover peer through low-rate HELLO; broadcast text remains usable. */
-        peer_known=false;phy_configured=false;phy_mbps=1;
-        remote_rssi=-127;have_remote=false;valid_rssi_samples=0;
+    const int64_t t=now_ms();
+    if(t-peer_last_seen_ms>PEER_TIMEOUT_MS){
+        /* Do NOT forget the MAC: at distances beyond normal 1 Mbps we need
+         * LR unicast to a known peer for reconnect and ACK recovery. */
+        rate_hold_until_ms=t+PHY_HOLD_MS;
+        if(lr_supported && phy_mbps!=25)(void)set_peer_phy(25);
         return;
     }
-    if(link_mode==OG_RATE_RANGE){if(phy_mbps!=1)(void)set_peer_phy(1);return;}
-    if(remote_rssi==-127 || valid_rssi_samples<3)return;
-    if(now<rate_hold_until_ms)return;
-    uint8_t desired=og_rate_target(phy_mbps,remote_rssi,link_mode);
+    uint8_t desired=target_phy_for_link();
     if(desired==phy_mbps)return;
-    /* Downgrade without delay. On upgrade, use a dwell interval to prevent flapping. */
-    if(desired>phy_mbps){
-        if(now-last_phy_change_ms<PHY_DWELL_MS || any_pending())return;
-    }
+    const bool upgrading=og_lr_rank(desired)>og_lr_rank(phy_mbps);
+    if(t<rate_hold_until_ms && upgrading)return;
+    /* Increasing rate requires stable samples, dwell time and empty queue. */
+    if(upgrading && (t-last_phy_change_ms<PHY_DWELL_MS || any_pending()))return;
     (void)set_peer_phy(desired);
 }
 static void send_hello(void) {
-    /* Discovery remains broadcast/default-1-Mbps; unicast rate config never
-     * changes it. Ignore busy errors; next periodic HELLO will retry. */
     frame_t hello={0};
     hello.magic=PROTOCOL_MAGIC;hello.version=PROTOCOL_VERSION;
     hello.type=TYPE_HELLO;memcpy(hello.sender,own_mac,6);
     hello.session=boot_session;
+    /* 1 Mbps discovery remains available for first pairing nearby. */
     if(send_frame(BROADCAST,&hello)==ESP_OK)hello_tx++;
+}
+static void send_lr_probe(void) {
+    if(!lr_supported || !peer_known ||
+       (now_ms()-peer_last_seen_ms<LR_PROBE_DELAY_MS && link_mode!=OG_RATE_LR250 && link_mode!=OG_RATE_LR500))return;
+    if(now_ms()-last_lr_probe_ms<LR_PROBE_MS)return;
+    last_lr_probe_ms=now_ms();
+    /* Only set the LR rate when the link is actually stale; manual LR modes
+     * were already selected by RATE. Do not change the rate immediately
+     * after sending, because the radio transmission is asynchronous. */
+    if(link_mode==OG_RATE_LR250)(void)set_peer_phy(25);
+    else if(link_mode==OG_RATE_LR500)(void)set_peer_phy(50);
+    else if(phy_mbps!=25)(void)set_peer_phy(25);
+    frame_t hello={0};hello.magic=PROTOCOL_MAGIC;hello.version=PROTOCOL_VERSION;
+    hello.type=TYPE_HELLO;memcpy(hello.sender,own_mac,6);
+    hello.session=boot_session;hello.id=LR_HELLO_ID;
+    if(send_frame(peer_mac,&hello)==ESP_OK)lr_probe_tx++;
 }
 
 /* Radio benchmark uses independent packet types and MCU-level acknowledgments.
@@ -432,11 +517,11 @@ static void send_hello(void) {
 static void radio_bench_finish(void) {
     int64_t elapsed=now_ms()-radio_bench.start_ms;
     if(elapsed<1)elapsed=1;
-    printf("RBENCH_DONE|%" PRIu32 "|%" PRIu32 "|%" PRIu32 "|%" PRIu32 "|%" PRIu32 "|%" PRIu32 "|%" PRIu32 "|%" PRIu32 "|%u|%ld\n",
+    printf("RBENCH_DONE|%" PRIu32 "|%" PRIu32 "|%" PRIu32 "|%" PRIu32 "|%" PRIu32 "|%" PRIu32 "|%" PRIu32 "|%" PRIu32 "|%s|%ld\n",
         radio_bench.token,radio_bench.count,radio_bench.ok,radio_bench.lost,
         radio_bench.retries,radio_bench.ok*BENCH_PAYLOAD_BYTES,
         (uint32_t)elapsed,(uint32_t)(radio_bench.ok ? radio_bench.sum_rtt_ms / radio_bench.ok : 0),
-        (unsigned)(peer_known?phy_mbps:1),(long)remote_rssi);
+        peer_known?phy_label():"1",(long)remote_rssi);
     radio_bench.active=false;radio_bench.awaiting=false;
 }
 static void radio_bench_drive(void) {
@@ -491,10 +576,9 @@ static void receipt(const received_t *r) {
     frame_t ack={0};ack.magic=PROTOCOL_MAGIC;ack.version=PROTOCOL_VERSION;
     ack.type=TYPE_RECEIPT;memcpy(ack.sender,own_mac,6);
     ack.session=r->session;ack.id=r->id;
-    /* Keep ACK frames at the reliable 1-Mbps broadcast PHY, independent of
-     * the other node's current unicast data rate. This prevents an asymmetric
-     * high-rate link from losing all confirmations after a sender downgrade. */
-    (void)send_frame(BROADCAST,&ack);
+    /* At LR distance, 1-Mbps broadcast confirmations cannot reach the peer.
+     * Use learned peer unicast at its negotiated PHY instead. */
+    (void)send_frame(peer_known?r->mac:BROADCAST,&ack);
 }
 static void display_rx(const frame_t *f,const uint8_t *mac) {
     char prefix[128];
@@ -528,8 +612,8 @@ static void send_batch_receipt(const event_t *e) {
     }
     if(!count)return;
     f.text[0]=(uint8_t)count;f.length=(uint16_t)(1+4*count);
-    /* All control/ACK traffic stays on robust broadcast 1 Mbps. */
-    (void)send_frame(BROADCAST,&f);
+    /* Batch receipts must also work at LR rates. */
+    (void)send_frame(peer_known?e->mac:BROADCAST,&f);
 }
 static void process_event(const event_t *e) {
     if(e->type==EV_STATUS){show_ready("STATUS");emit_link();return;}
@@ -551,16 +635,14 @@ static void process_event(const event_t *e) {
         return;
     }
     if(e->type==EV_RATE){
-        link_mode=e->rate_mode;
-        if(link_mode==OG_RATE_RANGE){
-            rate_hold_until_ms=now_ms()+PHY_HOLD_MS;
-            if(peer_known)(void)set_peer_phy(1);
-        }else{
-            rate_hold_until_ms=0;
-            /* Allow immediate signal-based update, but never bypass 3 RSSI samples. */
-            last_phy_change_ms=now_ms()-PHY_DWELL_MS;
-            adjust_phy();
+        if((e->rate_mode==OG_RATE_LR500||e->rate_mode==OG_RATE_LR250)&&!lr_supported){
+            puts("ERROR|LR_NOT_SUPPORTED_BY_WIFI_DRIVER");return;
         }
+        link_mode=e->rate_mode;
+        rate_hold_until_ms=0;
+        last_phy_change_ms=now_ms()-PHY_DWELL_MS;
+        adjust_phy();
+        if(!peer_known)puts("LRINFO|WAITING_FOR_PEER_DISCOVERY");
         emit_link();return;
     }
     if(e->type==EV_SEND) {
@@ -586,8 +668,7 @@ static void process_event(const event_t *e) {
         read_frame.type=TYPE_READ;memcpy(read_frame.sender,own_mac,6);
         read_frame.session=e->session;read_frame.id=e->id;
         for(int n=0;n<3;n++) {
-            /* Read control stays on the robust broadcast PHY. */
-            if(send_frame(BROADCAST,&read_frame)!=ESP_OK)puts("ERROR|READ_SEND");
+            if(send_frame(peer_known?e->mac:BROADCAST,&read_frame)!=ESP_OK)puts("ERROR|READ_SEND");
             vTaskDelay(pdMS_TO_TICKS(35));
         }
         return;
@@ -603,7 +684,26 @@ static void process_event(const event_t *e) {
     if(e->type!=EV_RX)return;
     const frame_t *f=&e->frame;
     if(!learn_or_observe_peer(e->mac,e->rssi))return;
-    if(f->type==TYPE_HELLO){hello_rx++;return;}
+    if(f->type==TYPE_HELLO){
+        hello_rx++;
+        if(f->id==LR_HELLO_ID){
+            lr_probe_rx++;
+            if(link_mode==OG_RATE_AUTO && lr_supported){
+                /* An LR recovery probe needs an LR reply, not a 1-Mbps
+                 * broadcast that may be below the distant peer's sensitivity. */
+                rate_hold_until_ms=now_ms()+PHY_HOLD_MS;
+                (void)set_peer_phy(25);
+            }
+            if(lr_supported){
+                frame_t reply={0};
+                reply.magic=PROTOCOL_MAGIC;reply.version=PROTOCOL_VERSION;
+                reply.type=TYPE_HELLO;memcpy(reply.sender,own_mac,6);
+                reply.session=boot_session;reply.id=LR_HELLO_ID+1;
+                (void)send_frame(e->mac,&reply);
+            }
+        }
+        return;
+    }
     if(f->type==TYPE_BENCH_DATA){
         /* ACK at the remote ESP32, without USB or browser involvement. */
         frame_t ack={0};
@@ -611,7 +711,7 @@ static void process_event(const event_t *e) {
         ack.type=TYPE_BENCH_ACK;
         memcpy(ack.sender,own_mac,6);
         ack.session=f->session;ack.id=f->id;
-        (void)send_frame(BROADCAST,&ack);
+        (void)send_frame(peer_known?e->mac:BROADCAST,&ack);
         return;
     }
     if(f->type==TYPE_BENCH_ACK){
@@ -676,6 +776,7 @@ static void dispatcher(void *arg) {
         if(t-last_report_ms>=LINK_REPORT_MS){last_report_ms=t;emit_link();}
         if(t-last_hello_ms>=HELLO_MS){last_hello_ms=t;send_hello();}
         adjust_phy();
+        send_lr_probe();
         radio_bench_drive();
         /* USB handshake resilience: no dependency on STATUS arriving intact. */
         if(t-last_ready_beacon_ms>=READY_BEACON_MS){
@@ -689,12 +790,10 @@ static void dispatcher(void *arg) {
                 printf("FAILED|%" PRIu32 "|%" PRIu32 "|NO_APP_RECEIPT\n",o->frame.session,o->frame.id);
                 o->active=false;failure_count++;downgrade_on_missing_ack();continue;
             }
-            if(o->attempts==1){retry_count++;downgrade_on_missing_ack();}
-            else if(o->attempts>1){retry_count++;}
-            /* Once discovered, unicast uses adaptive rate. On repeated missing
-             * ACKs recover using the original 1 Mbps broadcast route. */
-            const uint8_t *dest=(peer_known && t-peer_last_seen_ms<PEER_TIMEOUT_MS && o->attempts<2)
-                ?peer_mac:BROADCAST;
+            if(o->attempts>=1){retry_count++;downgrade_on_missing_ack();}
+            /* Never switch an LR recovery retry to 1 Mbps broadcast just
+             * because earlier ACKs were lost. Persist the known peer MAC. */
+            const uint8_t *dest=peer_known?peer_mac:BROADCAST;
             esp_err_t err=send_frame(dest,&o->frame);
             o->last_send_ms=now_ms();o->attempts++;
             if(err==ESP_OK) {
@@ -736,7 +835,7 @@ static bool parse_batch_ack(char *line,event_t *e) {
 static void serial_task(void *arg) {
     char line[SERIAL_LINE];size_t used=0;
     uint8_t rx_batch[256];
-    puts("HELP|MSGHEX, STATUS, APPACK, APPACKB, READ, KEYGET, KEYSET, RATE, USBOUT, USBIN_BEGIN/USBIN/USBIN_END, RBENCH");
+    puts("HELP|MSGHEX, STATUS, APPACK, APPACKB, READ, KEYGET, KEYSET, RATE AUTO/RANGE/SPEED/LR500/LR250, USBOUT, USBIN_BEGIN/USBIN/USBIN_END, RBENCH");
     while (true) {
         int count=serial_receive_batch(rx_batch,sizeof(rx_batch));
         if (count<=0)continue;
@@ -800,9 +899,12 @@ static void serial_task(void *arg) {
                 memset(raw,0,sizeof(raw));
             }
             else if(strncmp(line,"RATE ",5)==0){
-                if(strcmp(line+5,"AUTO")==0||strcmp(line+5,"RANGE")==0||strcmp(line+5,"SPEED")==0){
+                if(strcmp(line+5,"AUTO")==0||strcmp(line+5,"RANGE")==0||strcmp(line+5,"SPEED")==0||
+                   strcmp(line+5,"LR500")==0||strcmp(line+5,"LR250")==0){
                     e.type=EV_RATE;
-                    e.rate_mode=!strcmp(line+5,"RANGE")?OG_RATE_RANGE:
+                    e.rate_mode=!strcmp(line+5,"LR250")?OG_RATE_LR250:
+                        !strcmp(line+5,"LR500")?OG_RATE_LR500:
+                        !strcmp(line+5,"RANGE")?OG_RATE_RANGE:
                         (!strcmp(line+5,"SPEED")?OG_RATE_SPEED:OG_RATE_AUTO);
                     send=true;
                 }else puts("ERROR|BAD_RATE_MODE");
@@ -850,11 +952,12 @@ void app_main(void) {
 #else
     puts("USBMODE|LEGACY|BUILD_SETTING");
 #endif
-    puts("BOOT|OffGrid Messenger Phase 1.4.10.2 USB IRQ test / adaptive PHY, NVS, ACK");
+    puts("BOOT|OffGrid Messenger Phase 1.4.11 experimental LR / USB IRQ / NVS / ACK");
     esp_err_t e=nvs_flash_init();
     if(e==ESP_ERR_NVS_NO_FREE_PAGES||e==ESP_ERR_NVS_NEW_VERSION_FOUND){ESP_ERROR_CHECK(nvs_flash_erase());e=nvs_flash_init();}
     ESP_ERROR_CHECK(e);
     pairing_key_present=key_from_nvs();
+    peer_persisted=read_saved_peer();
     ESP_ERROR_CHECK(esp_netif_init());ESP_ERROR_CHECK(esp_event_loop_create_default());
     wifi_init_config_t cfg=WIFI_INIT_CONFIG_DEFAULT();
     ESP_ERROR_CHECK(esp_wifi_init(&cfg));
@@ -862,6 +965,12 @@ void app_main(void) {
     ESP_ERROR_CHECK(esp_wifi_set_storage(WIFI_STORAGE_RAM));
     ESP_ERROR_CHECK(esp_wifi_start());
     ESP_ERROR_CHECK(esp_wifi_set_channel(CHANNEL,WIFI_SECOND_CHAN_NONE));
+    /* Official ESP-IDF ESP-NOW LR example enables both standard B/G/N and
+     * Espressif LR to preserve close-range interoperability. */
+    esp_err_t lr_err=esp_wifi_set_protocol(WIFI_IF_STA,
+        WIFI_PROTOCOL_11B | WIFI_PROTOCOL_11G | WIFI_PROTOCOL_11N | WIFI_PROTOCOL_LR);
+    if(lr_err==ESP_OK){lr_supported=true;puts("LRMODE|ENABLED|BGNLR");}
+    else{lr_supported=false;printf("LRMODE|UNAVAILABLE|%s\n",esp_err_to_name(lr_err));}
     ESP_ERROR_CHECK(esp_wifi_set_ps(WIFI_PS_NONE));
     ESP_ERROR_CHECK(esp_read_mac(own_mac,ESP_MAC_WIFI_STA));
     boot_session=esp_random();if(!boot_session)boot_session=1;
@@ -869,6 +978,15 @@ void app_main(void) {
     ESP_ERROR_CHECK(esp_now_init());
     ESP_ERROR_CHECK(esp_now_register_recv_cb(on_receive));
     if(!ensure_peer(BROADCAST))abort();
+    if(peer_persisted && memcmp(saved_peer_mac,own_mac,6)!=0){
+        if(ensure_peer(saved_peer_mac)){
+            memcpy(peer_mac,saved_peer_mac,6);peer_known=true;
+            memcpy(last_remote_mac,saved_peer_mac,6);have_remote=true;
+            peer_last_seen_ms=now_ms()-PEER_TIMEOUT_MS;
+            (void)set_peer_phy(lr_supported?25:1);
+            puts("LRPEER|RESTORED_FROM_NVS");
+        }
+    }
     show_ready("BOOT");
     /* Make resource failures explicit instead of silently losing USB input. */
     if(xTaskCreate(dispatcher,"dispatch",6144,NULL,5,NULL)!=pdPASS){

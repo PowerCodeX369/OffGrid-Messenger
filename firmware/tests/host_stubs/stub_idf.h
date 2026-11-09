@@ -1,5 +1,6 @@
 #ifndef HOST_IDF_STUB
 #define HOST_IDF_STUB
+const char *esp_err_to_name(int err);
 #include <stdint.h>
 #include <stdbool.h>
 #include <stddef.h>
@@ -28,6 +29,13 @@ typedef struct {const uint8_t *src_addr;const host_rxctrl_t *rx_ctrl;} esp_now_r
 #define ESP_MAC_WIFI_STA 0
 #define WIFI_PHY_MODE_11B 0
 #define WIFI_PHY_MODE_11G 1
+#define WIFI_PHY_MODE_LR 2
+#define WIFI_PHY_RATE_LORA_250K 0x29
+#define WIFI_PHY_RATE_LORA_500K 0x2A
+#define WIFI_PROTOCOL_11B 1
+#define WIFI_PROTOCOL_11G 2
+#define WIFI_PROTOCOL_11N 4
+#define WIFI_PROTOCOL_LR 8
 #define WIFI_PHY_RATE_1M_L 0
 #define WIFI_PHY_RATE_6M 6
 #define WIFI_PHY_RATE_12M 12
