@@ -1,0 +1,23 @@
+# Build products and local settings
+**/build/
+**/.gradle/
+**/.idea/
+**/node_modules/
+**/__pycache__/
+*.pyc
+*.apk
+*.aab
+*.bin
+*.elf
+*.map
+*.log
+local.properties
+*.jks
+*.keystore
+*.pem
+*.p12
+.env
+.env.*
+!*.example
+sdkconfig
+sdkconfig.old
