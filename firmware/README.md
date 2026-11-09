@@ -1,3 +1,23 @@
+# Phase 1.1.1 browser compatibility fix
+
+**Issue fixed:** On one browser tab, a cached Phase 1 `app.js` could load with the new Phase 1.1 HTML. That old script renders session/id/hex as raw chat text and never sends `APPACK`, causing all outgoing messages to fail. The HTML now includes a versioned JavaScript URL, visibly identifies the web build, and blocks sending until the board reports `PROTO=2`. The browser retries `STATUS` until it receives that response.
+
+## Upgrade steps
+
+1. Close **both** previous chat tabs and stop the old `python3 -m http.server` process.
+2. Extract this ZIP into a **new** folder; run `python3 -m http.server 8765 --directory web` from its project root.
+3. In Chrome/Chromium open `http://localhost:8765/?v=1.1.1` in two separate tabs. Force-refresh **both** using Ctrl+Shift+R.
+4. Plug in both boards, click Connect USB in each tab and select different serial ports.
+5. Wait until **both** show `Connected • MAC • channel 6 • protocol 2`, and `Your board` displays the actual MAC address. Do **not** send messages while the page says checking firmware or waiting for ESP32.
+6. Send 'yes' from the left and 'hello' from the right. Both should show readable text and two gray ticks after the remote browser confirms.
+7. If any page still displays `session|id|HEX` instead of the message, check DevTools > Network and verify that `app.js?v=1.1.1-fix-20261107` is loaded, not cached Phase 1 `app.js`.
+
+Both ESP32 boards must be running the **same Phase 1.1 protocol 2 firmware**. If they already are, you can **skip reflashing**: only the browser files need replacement. If one page reports a firmware protocol mismatch, reflash that ESP32 with the `main/` firmware in this ZIP.
+
+This is test-only firmware; messages are **not encrypted**. Sender `SENT` means accepted by the radio API, not delivered to the person. `DELIVERED` confirms receipt by the remote browser. The recipient must have the browser tab connected for a delivery receipt.
+
+---
+
 # OffGrid Messenger — Phase 1.1 (reliable text transport)
 
 **Hardware:** two ESP32-C3 Super Mini boards connected via USB-C to one laptop.  

@@ -26,15 +26,15 @@
 <body>
   <main class="app">
     <header>
-      <div><h1>◉ OffGrid Messenger</h1><div class="sub">Phase 1.1 • Reliable ESP-NOW • ESP32-C3 • USB ↔ ESP-NOW • No internet</div></div>
+      <div><h1>◉ OffGrid Messenger</h1><div class="sub">Phase 1.1.1 • Reliable ESP-NOW • ESP32-C3 • USB ↔ ESP-NOW • No internet</div></div>
       <div class="toolbar"><button id="connect">Connect USB</button><button class="secondary" id="disconnect" disabled>Disconnect</button></div>
     </header>
     <div class="status"><span id="dot" class="dot"></span><span id="status">Not connected — connect an ESP32-C3 over USB</span></div>
-    <div class="status">Your board: <strong id="device">—</strong> · Delivery confirms receipt by the remote browser, not just the remote radio.</div>
+    <div class="status">Your board: <strong id="device">—</strong> <span id="webVersion" style="font-size:11px;color:#9eb7c2">· Web v1.1.1</span> · Delivery confirms receipt by the remote browser, not just the remote radio.</div>
     <section id="messages" aria-live="polite"><div class="bubble system">Connect your board, then send a test message. The other board will receive it over ESP-NOW.</div></section>
     <form id="sendForm"><input id="message" autocomplete="off" placeholder="Type a message (max 180 UTF-8 bytes)" maxlength="180" disabled><button id="send" disabled>Send ➤</button></form>
     <div class="foot">TEST BUILD — No encryption yet. ✓ = sent to radio; ✓✓ = remote browser confirmed. No internet or server required.</div>
   </main>
-  <script src="./app.js"></script>
+  <script src="./app.js?v=1.1.1-fix-20261107"></script>
 </body>
 </html>
