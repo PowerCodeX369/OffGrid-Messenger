@@ -22,6 +22,6 @@ assert.ok(a(ctl)>=2,'eventually recover');
 ctl.success(2700,1);assert.equal(a(ctl),1,'slow ack demotes');
 const app=fs.readFileSync(require('node:path').join(__dirname,'../web/app.js'),'utf8');
 assert(app.includes("chosenWindow(job)"),'scheduler must consult adaptive window');
-assert(app.includes("job.kind==='image'&&!job.control"),'only photo ACKs train the controller');
+assert(app.includes("['image','voice'].includes(job.kind)&&!job.control"),'only media ACKs train the controller; text remains isolated');
 assert(app.includes("kind:rssi")===false); // smoke test actual invocation is explicit
 console.log('PASS adaptive photo ACK/RSSI controller, conservative fallback and text isolation');
