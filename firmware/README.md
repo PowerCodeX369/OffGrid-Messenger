@@ -1,86 +1,108 @@
-# OffGrid Messenger — Phase 1.4.10.4 Auto-scroll (web-only patch to experimental Selective ACK)
+# OffGrid Messenger — Phase 1.4.11 (Experimental ESP-NOW Long Range)
 
-**Authoritative frozen baseline: Phase 1.4.10.2_InterruptUSB.** This new release is a *separate, reversible experiment*, not a replacement for that measured-working version.
+**Hardware:** two ESP32-C3 Super Minis, one laptop, USB-C cables. **Firmware:** ESP-IDF 5.2+ (ESP32-C3 target) in VS Code. **Web app:** local Chromium Web Serial. **No LoRa radio, Wi-Fi AP, router, cloud server, or GPS required.**
 
-## Phase 1.4.10.4 changes — only Web UI
+> **IMPORTANT:** This is an **experimental branch**, not a proven outdoor-range release. I verified the source against Espressif documentation, compiled C syntax using host stubs, and ran local policy, cryptographic, and packet tests. The actual firmware has **not** been built using the ESP-IDF toolchain or tested on physical ESP32s in this environment. The user-verified **1.4.10.2 InterruptUSB baseline is frozen and not replaced**.
 
-- **Incoming and outgoing messages automatically scroll to the latest bubble** on arrival.
-- **Incoming photos stay in view after decoding/rendering** using a `ResizeObserver` and image-load event.
-- **Restoring chat history** and **opening a chat on a narrow/mobile screen** scroll to its latest message.
-- When the reader intentionally scrolls up through history, automatic scrolling caused by *layout resize alone* pauses. A genuinely new message resumes auto-follow.
-- The approved visual design, encryption, stored keys, original message protocol, photo transfer protocol, diagnostics, and ESP32 firmware are unchanged.
-- **GPS/location sharing has been removed from the project scope and future roadmap**, per user request.
-- **Next planned radio phase:** ESP-NOW Long Range (LR), as a separate hardware-tested experiment. See [ROADMAP.md](ROADMAP.md) for the revised plan with GPS removed. Actual outdoor range is not yet established.
+## What this phase adds
 
-### Install without reflashing
+- Enables both ordinary 802.11 b/g/n and Espressif proprietary **Wi-Fi Long Range (LR)** on ESP32-C3.
+- Supports real peer transmission rates **12, 6, 1 Mbps; LR 500 kbps; LR 250 kbps** using `esp_now_set_peer_rate_config()` after registering the peer.
+- Settings -> Transfer profile now has **Auto, Standard 1 Mbps, Speed first, Manual LR 500 kbps, Manual LR 250 kbps**.
+- Automatic selection considers RSSI and retry/ACK failures. It cannot directly measure distance.
+- LR **unicast** transports application receipts, selective photo receipts, read receipts, and radio benchmark ACKs whenever the peer MAC is known. Normal-rate broadcast ACKs cannot sustain communication beyond ordinary range.
+- ESP32 retains the first discovered peer's MAC address in its existing `offgrid` NVS namespace under the new key `peer_mac` (not an encryption key). It can send 250 kbps LR recovery probes after a restart or interruption, even if ordinary broadcast discovery no longer reaches the other node.
+- Maintains normal 1 Mbps broadcast HELLO for nearby first discovery and backwards-compatible ordinary rates.
+- Reuses the **same IRQ-driven USB Serial/JTAG receive path**, firmware protocol `PROTO=2`, browser-side **AES-256-GCM**, NVS pairing keys, photo/gallery, selective ACKs, and auto-scroll.
 
-Keep both ESP32 boards on the **Phase 1.4.10.3 firmware** if you are testing Selective ACK; or retain the frozen **Phase 1.4.10.2 firmware** with Legacy photo receipt mode.
+## Hardware setup and first pairing
 
-Run `python3 -m http.server 8765 --directory web` from this project directory. Open `http://localhost:8765/?v=1.4.10.4` in both tabs and hard-refresh. No changes to NVS, pairing, or the radio firmware are required for auto-scroll.
-
-### Selective ACK performance observation
-
-Observed real photo speed improved from **7.2 KiB/s (1.4.10.2)** to **7.7 KiB/s (1.4.10.3)**, only about 7%. The selective ACK implementation is still experimental and is **not promoted to stable**. Keep the frozen 1.4.10.2 rollback separately.
-
-## Why this version exists
-
-On two ESP32-C3 Super Minis, Phase 1.4.10.2 was measured at **215.83 KiB/s USB upload**, **42.16 KiB/s USB download**, **15.15 KiB/s ESP-NOW-only**, **4.11 KiB/s encrypted browser-to-browser** with 37 ms fragment ACKs, and about **7.2 KiB/s actual photo transfer**. The radio was running up to 12 Mbps PHY.
-
-Espressif notes that the MAC send callback does not prove the application received data, and recommends application acknowledgments, sequence numbers, and retransmissions. See the ESP32-C3 ESP-NOW documentation: <https://docs.espressif.com/projects/esp-idf/en/latest/esp32c3/api-reference/network/esp_now.html>.
-
-We therefore reduce acknowledgment overhead for *photos only*, without weakening authenticated whole-message delivery.
-
-## What is new
-
-- Each encrypted photo uses an optional new **OGB5** fragment marker, with exactly the same 20-byte frame header and up to 160 ciphertext bytes as the existing **OGC4** frames. This flag only identifies a bulk transfer; the photo remains encrypted in the browser with AES-256-GCM. It does not reveal photo contents.
-- The receiving browser groups up to **six received radio packet IDs** (not necessarily consecutive) from the same sender MAC and boot session. It sends a single `APPACKB` USB command, flushing a partial group after **75 ms**.
-- The receiving ESP32 sends one low-rate (1 Mbps) `TYPE_BATCH_RECEIPT` ESP-NOW packet containing those specific packet IDs. The sending ESP32 reports `DELIVERED` for each included ID, and the browser can advance its photo upload window.
-- Up to **six fragments can be in flight** on strong links, staying below the existing firmware limit of eight pending messages. Weak links use a smaller window.
-- Missing batch ACK: the sender's **existing 850 ms firmware retry** resends outstanding fragments. The receiver's original duplicate-processing path issues a single legacy ACK for duplicates, so lost batch receipts are recoverable. The normal three-attempt browser retransmission and progress/status handling remain in place.
-- Text, delivery/read receipts, pairing, NVS keys, AES-256-GCM, USB interrupt-driven driver, watchdog fix, adaptive PHY, image compression and gallery are otherwise unchanged.
-- Settings now includes **Photo receipt protocol**: `Selective batch ACK` or `Legacy` (immediate fallback for new photo transfers). Disabling automatic photo throughput also restores legacy single-fragment behavior.
-- Speed diagnostics now compare **two encrypted 8 KiB tests**: legacy versus selective ACK, while preserving the original USB and ESP-NOW-only tests.
-
-**Status integrity:** A fragment ACK only means the receiving browser accepted a structurally valid encrypted fragment. The sender's *chat* double-grey tick still requires the final encrypted, authenticated, receiver-generated `delivered` message after complete reassembly. Read receipts are unchanged. Radio acknowledgment frames themselves are not end-to-end authenticated; final delivery is.
-
-## Install carefully
-
-1. Save a copy of your **Phase 1.4.10.2_InterruptUSB.zip**. Do not overwrite it.
-2. Open this Phase 1.4.10.3 project in VS Code + ESP-IDF 5.2+ and select the `esp32c3` target.
-3. Build the firmware. **A complete ESP-IDF build has not been performed by the project authoring environment**; fix any local build error before flashing.
-4. Flash **both** ESP32-C3 Super Minis using normal `flash` — **not `erase-flash`**. The NVS pairing keys must be preserved.
-5. Stop any ESP-IDF serial monitors, then start the web UI from this project directory:
+1. **Back up** your original Phase 1.4.10.2 baseline ZIP and keep it untouched.
+2. Place **both ESP32-C3 boards about 1–3 meters apart** initially. Very close proximity can sometimes distort RSSI readings.
+3. In VS Code open this project, select target `esp32c3`, build and flash **both** ESP32 boards. Use normal Flash; **do not erase flash / NVS**. Select ESP-IDF 5.2+ (prefer a recent stable 5.x version).
+4. Close ESP-IDF monitor processes, then from this extracted project's root run:
 
    ```bash
    python3 -m http.server 8765 --directory web
    ```
 
-6. Open `http://localhost:8765/?v=1.4.10.4` in **both tabs**, hard-refresh Ctrl+Shift+R, and connect one ESP32 per tab. Keep the same localhost origin and port to preserve existing encrypted chat history.
-7. `READY` must include `PROTO=2|CAP=180|...|DIAG=1|SACK=1`. Check both connections before testing photos.
+5. Open `http://localhost:8765/?v=1.4.11` in two Chromium tabs (each tab connects to a different ESP32). Hard refresh with Ctrl+Shift+R.
+6. Confirm both connections show `PROTO=2` and the diagnostic serial console includes `LRMODE|ENABLED|BGNLR`. If LR initialization fails, regular text remains available and the web app warns that LR was not enabled.
+7. Let the two ESP32s **discover each other at normal range** before walking farther away. Once a node learns a peer, it saves the MAC in NVS. This is needed for LR recovery after restarting outside the reach of 1 Mbps broadcast.
+8. Test ordinary encrypted text **both directions**. Confirm single, delivered, and read ticks. If the key isn't already installed, pair the two boards with the same key before messaging.
 
-## Test checklist
+## Manual LR radio tests (do these before Auto outdoors)
 
-1. **Ordinary encrypted text**: send 10 messages in each direction; verify immediate two-way delivery and read receipts. This uses the unchanged original protocol.
-2. **Legacy photo**: Settings → Photo receipt protocol → Legacy. Send a known photo and record KB/s and actual duration. Make sure the receiver sees the photo and that Delivered ticks appear only when it arrives.
-3. **Selective photo**: Change setting to Selective batch ACK on the **sending browser**. Send the same source photo and compare time, transfer KB/s, output size, success and image integrity.
-4. **Range test**: Increase physical separation, watch PHY/RSSI, and confirm retries recover missing packets. Verify that a lost/incomplete photo is *never* marked Delivered.
-5. **Speed diagnostics**: Run all tests in one tab with the other connected; new output includes `Encrypted browser-to-browser (legacy)` and `(selective ACK)` and the measured speedup ratio. The remote browser must also run this release.
-6. **Instant fallback**: Select Legacy again to revert all *new* photo transfers to the proven per-fragment protocol, without reflashing. If text/USB/radio regression occurs, flash both nodes back to the frozen **1.4.10.2 firmware**.
+On **both browser tabs**, open **Settings -> Transfer profile**:
 
-### Important compatibility detail
+- Choose **Manual LR 500 kbps** on both; verify the live telemetry shows `PHY=0.5` (Mbps), send 5 short texts both ways.
+- Choose **Manual LR 250 kbps** on both; verify `PHY=0.25`, send 5 short texts both ways and check delivery/read receipts.
+- Select **Auto** on both. At strong signal it may transition back through 1, 6 and 12 Mbps after a dwell period. The firmware holds lower speeds temporarily after failures.
+- After nearby manual LR tests pass, gradually increase separation outdoors. Record RSSI, selected PHY rate, delivery success, latency, and any recovered failures at each distance.
 
-Old web browsers do not understand the `OGB5` bulk-frame marker, and old firmware does not understand `APPACKB`. **Both boards and both browser clients must be upgraded** for the fast photo mode. Legacy text is unchanged. Use Legacy photo mode for mixed-version testing.
+**Do not assume a particular maximum range:** Espressif's LR mode is designed for greater reception sensitivity and offers a roughly 1 km line-of-sight *capability* under suitable conditions, not a guarantee for the small PCB antennas of a Super Mini.
 
-## Testing performed here
+## How connection recovery works
 
-- JavaScript syntax checks and the existing AES-GCM/500-char/photo protocol/regression suites.
-- Real Web Crypto AES-GCM: encrypted 45 KB simulated photo; 289 frames; randomized omissions/reordering; selective retransmission; exact image reconstruction; altered ciphertext rejected.
-- C host compiler: actual ID parsing/packing helpers and command parser; overflow, negative ID, unknown MAC, too many IDs rejected.
-- Full firmware host-stub syntax-only validation with both IRQ and legacy USB configurations.
-- Actual browser-side ACK grouping function exercised in Node with a simulated Web Serial writer: six-ID flush, timeout flush, duplicate prevention, sender session separation.
-- Source comparison confirms the original USB driver, adaptive-PHY policy, UI styling, key handling and watchdog fix were retained.
-- **Not tested here:** full ESP-IDF build, physical ESP-NOW performance, real browser-to-browser operation, packet-loss behavior on hardware or a measured speedup. The environment blocks local Chromium navigation. Please share real diagnostics before promoting this version to stable.
+- The boards always broadcast ordinary 1 Mbps `HELLO` packets for first discovery nearby.
+- On the first valid peer, the MAC is stored in NVS. For a later startup, saved peer information lets the radio add the same peer *before* hearing ordinary discovery.
+- On missed application ACKs, transmit rate backs down progressively: **12 -> 6 -> 1 Mbps -> LR 500 -> LR 250 kbps**. The retry is **unicast to the saved/learned peer**, not converted to short-range broadcast.
+- If the link becomes stale, the node also sends a short `HELLO` **unicast at LR 250 kbps**, and the receiving node answers with LR unicast. This recovery does not require the browser to run a discovery protocol.
+- Periodic normal HELLO remains active for ordinary nearby rediscovery. Automatic upgrades require RSSI samples, a dwell interval and an empty pending queue.
 
-## Next planned release — ESP-NOW-LR
+**Known limitation:** First-time discovery beyond 1 Mbps range is not guaranteed without the nodes learning each other nearby first. Peer discovery is not cryptographically authenticated at the radio layer; end-to-end application payload encryption still requires the valid shared AES-256-GCM key. Reprovisioning a different peer may require clearing the saved `peer_mac` NVS entry or flashing a specially prepared provisioning tool; do not erase all NVS unless you're prepared to re-pair keys.
 
-Once this extension is demonstrated reliable, research and test the ESP32-C3's ESP-NOW Long Range mode **as a separate experimental firmware branch**, comparing range, latency and throughput against frozen 1.4.10.2. Do not mix an unverified LR change into this transfer-speed release.
+## Important USB / radio diagnostics
+
+Examples (values are illustrations, **not observed measurements**):
+
+```text
+LRMODE|ENABLED|BGNLR
+READY|...|PROTO=2|CAP=180|...|LR=1|FROM=STATUS
+LINK|...|RSSI=-86|PHY=0.5|MODE=AUTO|...|LR=1|LRPROBE=3|LRRX=2|LRFALLBACK=1|PHYMODE=LR500
+RATE|0.25|LR250
+```
+
+- `PHY=0.25` means **250 kbps PHY**, not file throughput. The photo-transfer rate may be far smaller because of application ACKs, encryption envelopes, and USB/network overhead.
+- `LR=1` shows the Wi-Fi driver enabled LR capability; `RATE_ERROR|...` means an actual per-peer radio configuration failed.
+- `LRPROBE` / `LRRX` are counts of LR recovery probes sent / received, useful during outdoor testing.
+- If either board gets stuck on `READY`, inspect the serial diagnostics and **do not assume it is an LR range issue**. The USB IRQ path and watchdog safeguards remain unchanged.
+
+## Performance acceptance tests
+
+1. Reconnect the browser 3 times: no stuck `READY` handshake or watchdog warning.
+2. Near range Auto: 20 encrypted text messages in each direction, checking delivery and read receipts.
+3. Manual LR 500 and manual LR 250: 5 texts each direction, each with correct delivery receipts.
+4. Test photo transfer in **Stable/Legacy ACK** mode first, then optional Selective ACK. Slow photo throughput in LR is expected.
+5. Disconnect and restart the nodes **after first nearby peer discovery**, then confirm LR recovery probes and messages at a distance that is still within tested range.
+6. Run existing Speed diagnostics and record USB upload/download, ESP-NOW-only, encrypted full-path and actual photo speed, plus PHY and RSSI.
+
+## Local tests
+
+Run from the project directory (requires C compiler, Node.js and Python):
+
+```bash
+cc -std=c11 -Wall -Wextra -Werror tests/test-lr-policy.c -o /tmp/offgrid-lr-test
+/tmp/offgrid-lr-test
+python3 tests/test-long-range-contract.py
+node tests/test-protocol.cjs
+node tests/test-selective-ack.cjs
+node --check web/app.js
+```
+
+**Note:** Host-stub C syntax tests are not equivalent to compiling against ESP-IDF. Build the project in VS Code before flashing. If the full build fails, share the build error rather than flashing partial firmware.
+
+## Rollback
+
+The stable baseline is `/OffGridMessenger_Phase1_4_10_2_InterruptUSB.zip` (distributed separately). Keep that ZIP safe; flash its firmware on both boards to restore the previous known-good radio behavior. Its older firmware ignores the extra `peer_mac` NVS key. Your original AES pairing keys remain preserved when you use normal Flash rather than Erase Flash.
+
+## Documentation used
+
+- [Espressif ESP-NOW, ESP32-C3](https://docs.espressif.com/projects/esp-idf/en/latest/esp32c3/api-reference/network/esp_now.html)
+- [Espressif Wi-Fi LR overview, ESP32-C3](https://docs.espressif.com/projects/esp-idf/en/latest/esp32c3/api-guides/wifi-driver/overview.html)
+- [Espressif official ESP-NOW example](https://github.com/espressif/esp-idf/tree/master/examples/wifi/espnow)
+- [ESP-IDF 5.4.2 Wi-Fi PHY rate definitions](https://docs.espressif.com/projects/esp-idf/en/v5.4.2/esp32c3/api-reference/network/esp_wifi.html)
+
+## Next roadmap
+
+After LR is validated on the two actual boards: short encrypted voice notes, offline notifications and reconnect polish, followed by Android Studio / Kotlin app **last**. GPS/location sharing remains removed from scope.
