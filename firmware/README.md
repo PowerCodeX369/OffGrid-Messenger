@@ -1,69 +1,43 @@
-# OffGrid Messenger — Phase 1.4.9.1 Diagnostics Compile Fix
+# OffGrid Messenger — Phase 1.4.10 USB Input Throughput
 
-**Compile fix:** Corrected `RBENCH_DONE` format argument for average RTT in `main/main.c` (line ~374). Uses `PRIu32` plus explicit `(uint32_t)` cast, resolving ESP-IDF `-Werror=format`. **No protocol, radio, encryption, UI, or diagnostic behavior changes.**
+**Experimental performance branch.** Based directly on **Phase 1.4.9.1 CompileFix** (measured 1.18 KiB/s browser-to-ESP32 USB; 109.01 KiB/s reverse; 15.15 KiB/s radio-only; 0.92 KiB/s encrypted end-to-end). The **Phase 1.4.5.2 WatchdogFix** remains frozen and untouched.
 
-**Purpose:** Measure, before changing the working photo transfer protocol, where its ~1.1 KB/s throughput bottleneck lies.
+## Exact firmware change
 
-## Baselines and safety
+- `serial_task()` no longer reads one character with `getchar()` and sleeps for 20 ms after empty reads. It now processes up to **256 USB console bytes at a time** with `read(STDIN_FILENO, ...)`, retaining partial commands until `\n` and correctly handling multiple commands in one batch.
+- On an empty console read, it yields one FreeRTOS tick (`vTaskDelay(1)`) to avoid starving CPU0 idle, which previously caused watchdog issues. Even under continuous incoming data, it yields after four read batches to keep the task watchdog healthy.
+- If an overlong command arrives, bytes are discarded to its terminating newline rather than being misinterpreted as new commands.
+- `READY` includes an additional optional `USBRX=BATCH256` field. All existing protocol-2 fields remain identical.
+- No changes to radio firmware logic, 1/6/12 Mbps PHY adaptation, photo fragmentation, ACKs, browser-side AES-256-GCM, NVS key persistence, or the UI.
 
-- **Frozen recovery baseline:** `OffGridMessenger_Phase1_4_5_2_WatchdogFix.zip` (unchanged; keep a copy).
-- **Direct parent:** Phase 1.4.8 USBOutput. This release retains its adaptive 1 / 6 / 12 Mbps PHY, NVS pairing key, 500-character text, Web Crypto AES-256-GCM, photo gallery, existing chat ACK/retry format, and watchdog task fix.
-- This is a **diagnostic build**, NOT a photo-speed fix. It does not use batched photo acknowledgments yet. The benchmark radio frames are used exclusively for tests.
-- Both ESP32-C3 boards must be flashed with the Phase 1.4.9 firmware. Otherwise USB diagnostic commands and radio-only packets will not work.
+**Why not replace the USB console driver?** ESP-IDF's standard USB Serial/JTAG VFS performs nonblocking console reads. The known bottleneck was repeated 20 ms sleeps between small chunks. This build removes that specific delay and keeps the already proven fast USB download path intact. Installing a second USB driver alongside the VFS could cause a hardware conflict, while switching the entire VFS driver could change TX behavior. An interrupt-driven redesign can be evaluated *separately* only if this low-risk change is insufficient. See Espressif's ESP32-C3 Standard I/O documentation.
 
-## Installation
+## Installation (both boards)
 
-1. Extract ZIP and open the containing directory as an ESP-IDF project in VS Code.
-2. ESP-IDF target: `esp32c3`. Flash **both** boards using ordinary Flash, **not** Erase Flash; this preserves their NVS pairing keys.
-3. Quit other serial monitors; connect both boards by native USB.
-4. From this project directory run:
+1. Open project in VS Code/ESP-IDF, set target `esp32c3`. Build and flash both Super Minis. **Do not choose Erase Flash**; existing pairing keys are in NVS.
+2. Close ESP-IDF serial monitors and the previous localhost web server. From this project folder, run:
+   `python3 -m http.server 8765 --directory web`
+3. Open `http://localhost:8765/?v=1.4.10` in two Chromium tabs. Hard-refresh both and connect one board per tab.
+4. Test a few encrypted short messages and double ticks **before** diagnostics.
+5. Settings → Speed diagnostics → Run all tests. Keep the other board's browser connected for the full encrypted-path test.
+6. Compare results directly with the previous 1.4.9.1 hardware measurements. Repeat in the reverse direction if desired.
 
-   ```bash
-   python3 -m http.server 8765 --directory web
-   ```
+Expected `READY` includes: `PROTO=2|CAP=180|STABLE=1|NVSKEY=1|ADAPTIVEPHY=1|DIAG=1|USBRX=BATCH256`.
 
-5. Open two Chromium tabs at `http://localhost:8765/?v=1.4.9`, hard-refresh, and connect **one distinct board per tab**. Use the same `localhost` address/port as your earlier version to preserve browser-stored encrypted chat history. The AES key itself is loaded into RAM from ESP32 NVS over local USB.
-6. Confirm normal **encrypted Hello** messages work both ways **before** benchmarking.
-7. Open **Settings (gear) → Speed diagnostics → Run all tests** in only the sender's tab. Keep the other tab connected with the same AES key. Do not send chats during the benchmark.
-8. Click **Copy results** and paste them into ChatGPT. Repeat from the other side if comparing directions.
+## What success looks like
 
-## What the four tests mean
+The goal is to improve the measured **USB PC → ESP32** speed from **1.18 KiB/s**, and then see whether **full encrypted browser-to-browser** rises beyond **0.92 KiB/s**. The radio-only test should remain around its previously observed level, although results vary. No new throughput is guaranteed before physical testing.
 
-1. **USB PC → ESP32:** 96 × 160-byte hex records written to the device; firmware checks the bytes and returns one summary. No ESP-NOW or browser ACK per packet. Includes console command parsing and USB serial transfer, not just PHY USB line rate.
-2. **USB ESP32 → PC:** firmware streams 96 × 160-byte hex records and a final summary. No radio involved. Measures browser-visible USB receive speed.
-3. **ESP-NOW radio only:** 32 × 160-byte data packets sent by the sender ESP32. The remote ESP32 sends an MCU-level ACK for each. **No browser involvement on either side during this test.** The data PHY may use the current adaptive 1/6/12 Mbps peer rate; acknowledgments stay at low-rate broadcast. The measured value includes conservative per-packet scheduler delays and MCU ACKs; it is **not** the raw PHY bitrate.
-4. **Full encrypted path:** 8 KiB of random diagnostic data encrypted using the existing AES-256-GCM browser key, segmented and transmitted over the same normal fragment/APPACK route used by photos. The remote browser authenticates the complete payload and responds with an encrypted final acknowledgment. Neither test payload nor ACK is stored in chat history.
+## Tests run here
 
-The diagnostic results show KiB/s, elapsed milliseconds, direct-radio packet losses/retries, ACK round trips, and a suggested next investigation. None of these results are fabricated or inferred from RSSI.
+- Browser JS syntax and previous encryption/protocol tests
+- Existing firmware diagnostic contracts
+- Host-side C syntax check using the provided ESP-IDF header stubs (not a full ESP-IDF compile)
+- Additional source-level regression assertions: bounded USB batches, newline reassembly, preserved outgoing radio/crypto code, no `getchar()` or 20 ms fallback
+- ZIP extraction/integrity
 
-## Interpretation
-
-- USB tests much faster than radio only: investigate radio send/receive scheduling and retransmissions.
-- Radio-only fast but full encrypted path slow: investigate the per-fragment browser ACK path, Web Serial framing, browser scheduling and batching acknowledgments.
-- USB slower than radio-only: investigate native USB serial console handling.
-- The 12 Mbps PHY rate alone does **not** imply 12 Mbps file throughput.
-
-## Protocol changes (diagnostic only)
-
-Additional newline-delimited USB commands:
-
-- `USBIN_BEGIN <token>` / `USBIN <token> <seq> <160 bytes hex>` / `USBIN_END <token>` → `USBIN_DONE|token|count|bytes|duration_ms`.
-- `USBOUT <token> <count>` → `USBOUT|token|seq|hex` lines, followed by `USBOUT_DONE|token|count|bytes|duration_ms`.
-- `RBENCH <token> <count>` → `RBENCH_START`, then `RBENCH_DONE|token|count|ok|lost|retries|bytes|duration_ms|avg_ack_ms|phy|rssi`.
-
-ESP-NOW frame types 5 and 6 are strictly diagnostic. **Types 1–4, the existing message format, ACKs, keys, and chat logic are unchanged.** `READY` includes `DIAG=1` in addition to its original fields. Browser app envelope adds experimental type 5 (probe) and type 6 (probe acknowledgment); normal envelope types 1–4 are unchanged.
-
-## Verification performed in this build environment
-
-- `node --check web/app.js` and `node --check web/protocol.js`
-- `node tests/test-diagnostic-protocol.cjs` (encrypted probe reassembly and tamper rejection)
-- `python tests/test-diagnostic-contract.py` (firmware/client contract, existing watchdog/key/rate paths)
-- Existing protocol and adaptive-controller tests
-- C syntax-only check with host-type stubs (not an ESP-IDF compile)
-- Dialog render smoke test (local page navigation blocked by browser policy; loaded HTML/scripts directly for UI check)
-
-**Not performed:** actual ESP-IDF build, physical board testing, USB throughput measurements, or real radio throughput measurements. If firmware compilation fails, send the actual error output; do not assume the build is validated by these tests.
+**Not tested in this environment:** ESP-IDF build, USB connection to your boards, radio traffic, or real throughput. If the firmware fails to compile, paste the full compiler error.
 
 ## Rollback
 
-Keep both the original frozen 1.4.5.2 ZIP and the working 1.4.8 ZIP. If the diagnostic release destabilizes chatting, stop testing, flash both boards back to the known-good firmware, and restore its bundled web app. Do not use Erase Flash unless you intend to erase stored pairing keys.
+To restore the exact previous diagnostic behavior, flash Phase 1.4.9.1. To return to the frozen stable system, flash Phase 1.4.5.2 and use its bundled web app. Never use "Erase Flash" for rollback, since it would delete keys.
