@@ -10,6 +10,7 @@ import android.companion.BluetoothLeDeviceFilter
 import android.companion.CompanionDeviceManager
 import android.content.Intent
 import android.net.Uri
+import android.provider.Settings
 import android.media.MediaPlayer
 import android.graphics.BitmapFactory
 import java.io.File
@@ -111,6 +112,7 @@ class MainActivity : ComponentActivity() {
     )
     private var ackTimeout: Runnable? = null
     private var connected by mutableStateOf(false)
+    private var radioLink by mutableStateOf<RadioLink?>(null)
     private var state by mutableStateOf("Not connected")
     private var trustedAddress by mutableStateOf<String?>(null)
     private var pairingSaved by mutableStateOf(false)
@@ -198,6 +200,7 @@ class MainActivity : ComponentActivity() {
         BleSessionHolder.attach(this, {s,ready ->
             state=s;connected=ready
             if(ready) startNext() else {
+                radioLink=null
                 activeMedia?.cancelTransfer(); activeMedia=null
                 pending.forEach { it.mediaWindow=null; it.index=0 }
                 mediaAcks.clear()
@@ -260,12 +263,15 @@ class MainActivity : ComponentActivity() {
         if(enable && !hasBluetoothPermission()){
             state="Grant Nearby devices permission before enabling background connection";return
         }
+        val prefs=getSharedPreferences("offgrid_premium_24",MODE_PRIVATE)
         try {
+            // Save before starting: onStartCommand can run before this method returns.
+            prefs.edit().putBoolean("ble_background",enable).apply()
             if(enable) ContextCompat.startForegroundService(this,Intent(this,OffGridConnectionService::class.java))
             else stopService(Intent(this,OffGridConnectionService::class.java))
             keepBleBackground=enable
-            getSharedPreferences("offgrid_premium_24",MODE_PRIVATE).edit().putBoolean("ble_background",enable).apply()
         } catch(ex:Exception){
+            prefs.edit().putBoolean("ble_background",false).apply()
             state="Background service unavailable: ${ex.message}"
             keepBleBackground=false
         }
@@ -583,7 +589,13 @@ class MainActivity : ComponentActivity() {
         val split=line.split('|')
         when(split.firstOrNull()) {
             "READY" -> state="ESP32 ready · channel 6"
-            "LINK" -> if(connected)state="Connected · encrypted · adaptive LR"
+            "LINK" -> {
+                radioLink=RadioLink.parse(line)
+                // Do not replace the actual authenticated BLE connection state.
+            }
+            "RATE" -> {
+                bleTrace("ESP32 radio setting: ${split.drop(1).joinToString(" ")}")
+            }
             "BQUEUED" -> if(isSending){
                 val reply=BleBinaryCodec.queued(line) ?: return
                 if(activeMedia != null) {
@@ -686,7 +698,12 @@ class MainActivity : ComponentActivity() {
                     }
                 } catch (ex: Exception) { Log.w("OffGrid", "Rejected invalid encrypted frame",ex) }
             }
-            "ERROR" -> state="Node: ${split.getOrNull(1) ?: "error"}"
+            "ERROR" -> {
+                val error=split.getOrNull(1) ?: "error"
+                state=if(error in setOf("LR_NOT_SUPPORTED_BY_WIFI_DRIVER","BAD_RATE_MODE","BLE_DENIED"))
+                    "Radio control rejected: $error" else "Node: $error"
+                bleTrace(state)
+            }
         }
     }
 
@@ -845,6 +862,7 @@ class MainActivity : ComponentActivity() {
                 )
             } else PremiumMessenger(
                 items=items.toList(),connected=connected,status=state,nodeAddress=trustedAddress,
+                radioLink=radioLink,
                 dark=dark,fastPhotos=fastPhotos,notifications=notificationsEnabled,
                 privatePreview=notificationPreview,backgroundEnabled=keepBleBackground,
                 recording=recording,playingId=playingId,appVisible=appResumed,
@@ -872,7 +890,19 @@ class MainActivity : ComponentActivity() {
                         else if(trustedAddress==null)startSystemPairing(systemPicker::launch)
                         else reconnectIfPermitted()
                     },
-                    disconnect={link?.stop();state="Disconnected"},
+                    disconnect={link?.stop();state="Disconnected";radioLink=null},
+                    setRadioMode={mode ->
+                        if(connected && mode in RadioLink.choices) {
+                            link?.send("RATE $mode")
+                            // A LINK response reports the applied mode; do not fake the result.
+                            mainHandler.postDelayed({if(connected)link?.send("STATUS")},450)
+                        }
+                    },
+                    batterySettings={
+                        val intent=Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                            Uri.parse("package:$packageName"))
+                        runCatching {startActivity(intent)}.onFailure {bleTrace("Battery settings unavailable")}
+                    },
                     chooseNode={startSystemPairing(systemPicker::launch)},
                     forgetNode={
                         link?.stop();secure.clearNodeAddress();trustedAddress=null

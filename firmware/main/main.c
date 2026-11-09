@@ -678,13 +678,13 @@ static void process_event(const event_t *e) {
     }
     if(e->type==EV_RATE){
         if((e->rate_mode==OG_RATE_LR500||e->rate_mode==OG_RATE_LR250)&&!lr_supported){
-            puts("ERROR|LR_NOT_SUPPORTED_BY_WIFI_DRIVER");return;
+            ble_printf("ERROR|LR_NOT_SUPPORTED_BY_WIFI_DRIVER\n");return;
         }
         link_mode=e->rate_mode;
         rate_hold_until_ms=0;
         last_phy_change_ms=now_ms()-PHY_DWELL_MS;
         adjust_phy();
-        if(!peer_known)puts("LRINFO|WAITING_FOR_PEER_DISCOVERY");
+        if(!peer_known)ble_printf("LRINFO|WAITING_FOR_PEER_DISCOVERY\n");
         emit_link();return;
     }
     if(e->type==EV_SEND) {
@@ -906,6 +906,19 @@ static void ble_commands(void *arg){
   }else{
   char *line=cmd.data.text;
   if(!strcmp(line,"STATUS")){e.type=EV_STATUS;send=true;}
+  else if(!strncmp(line,"RATE ",5)){
+   /* Only the authenticated BLE bridge can submit these five fixed tokens.
+    * Match the USB RATE command semantics; never expose KEYSET/KEYGET here. */
+   if(!strcmp(line+5,"AUTO")||!strcmp(line+5,"SPEED")||!strcmp(line+5,"RANGE")||
+      !strcmp(line+5,"LR500")||!strcmp(line+5,"LR250")){
+    e.type=EV_RATE;
+    e.rate_mode=!strcmp(line+5,"LR250")?OG_RATE_LR250:
+                !strcmp(line+5,"LR500")?OG_RATE_LR500:
+                !strcmp(line+5,"RANGE")?OG_RATE_RANGE:
+                !strcmp(line+5,"SPEED")?OG_RATE_SPEED:OG_RATE_AUTO;
+    send=true;
+   }else offgrid_ble_publish("ERROR|BAD_RATE_MODE");
+  }
   else if(!strncmp(line,"MSGHEX ",7)){e.type=EV_SEND;if(read_hex(line+7,e.text,&e.length))send=true;else offgrid_ble_publish("ERROR|BAD_HEX");}
   else if(!strncmp(line,"APPACKB ",8)){if(parse_batch_ack(line+8,&e))send=true;else offgrid_ble_publish("ERROR|BAD_BATCH_ACK");}
   else if(!strncmp(line,"APPACK ",7)||!strncmp(line,"READ ",5)){
