@@ -4,7 +4,7 @@
 const enc=new TextEncoder(), dec=new TextDecoder('utf-8',{fatal:true});
 const HEX='0123456789ABCDEF';
 const CHUNK=160, FRAME_HEADER=20, FRAME_MAX=180, MAX_BLOB=104000, MAX_PACKET=105000;
-const types=Object.freeze({text:1,image:2,delivered:3,read:4});
+const types=Object.freeze({text:1,image:2,delivered:3,read:4,probe:5,probeAck:6});
 const randomBytes=(n)=>{const b=new Uint8Array(n);for(let i=0;i<n;i+=65536)crypto.getRandomValues(b.subarray(i,Math.min(i+65536,n)));return b;};
 const hex=(bytes)=>Array.from(bytes,b=>HEX[b>>4]+HEX[b&15]).join('');
 function unhex(value){if(typeof value!=='string'||value.length%2||!/^[a-f0-9]*$/i.test(value))throw Error('Invalid hex');const a=new Uint8Array(value.length/2);for(let i=0;i<a.length;i++)a[i]=parseInt(value.slice(i*2,i*2+2),16);return a;}
