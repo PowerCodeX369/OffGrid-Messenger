@@ -4,12 +4,12 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#101b21">
-  <title>OffGrid Messenger — Phase 1.5 Voice &amp; Reliable LR</title>
+  <title>OffGrid Messenger</title>
   <link rel="icon" href="logo.svg" type="image/svg+xml">
-  <link rel="stylesheet" href="styles.css?v=1.5">
-  <script src="protocol.js?v=1.5" defer></script>
-  <script src="adaptive.js?v=1.5" defer></script>
-  <script src="app.js?v=1.5" defer></script>
+  <link rel="stylesheet" href="styles.css?v=1.6.1">
+  <script src="protocol.js?v=1.6.1" defer></script>
+  <script src="adaptive.js?v=1.6.1" defer></script>
+  <script src="app.js?v=1.6.1" defer></script>
 </head>
 <body>
 <div class="app" id="app">
@@ -20,7 +20,7 @@
         <div><strong>OffGrid</strong><small>MESSENGER</small></div>
       </div>
       <div class="side-actions">
-        <button class="icon-button" id="themeToggle" title="Toggle appearance" aria-label="Toggle appearance">◐</button>
+        <button class="icon-button notification-button" id="notificationButton" type="button" title="Enable desktop notifications" aria-label="Enable desktop notifications" aria-pressed="false"><svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9ZM10 21h4"/></svg><span class="notification-dot" aria-hidden="true"></span></button><button class="icon-button" id="themeToggle" title="Toggle appearance" aria-label="Toggle appearance">◐</button>
         <button class="icon-button" id="settingsButton" title="Settings" aria-label="Settings">⚙</button>
       </div>
     </header>
@@ -41,14 +41,14 @@
       <div class="link-health" title="Link profile uses acknowledgment latency and retries, not physical distance"><span class="link-health-dot"></span><span id="linkModeLabel">Auto · learning link quality</span></div>
       <button class="security-line" id="securityButton" type="button"><span id="securityIcon">♢</span><span id="securityLabel">Connect to configure encryption</span><span class="security-chevron">›</span></button>
     </div>
-    <div class="chats-heading"><h2>Chats</h2><span class="tiny-badge">1</span></div>
+    <div class="chats-heading"><h2>Chats</h2><span class="tiny-badge unread-badge" id="unreadBadge" hidden aria-label="Unread messages">0</span></div>
     <button class="contact active" id="contactButton" type="button">
       <span class="avatar" id="contactAvatar">N</span>
-      <span class="contact-body"><span class="contact-top"><strong id="contactSidebarName">Nearby node</strong><span class="contact-time" id="lastChatTime"></span></span><span class="contact-preview" id="lastChatPreview">Your off-grid conversation</span></span>
+      <span class="contact-body"><span class="contact-top"><strong id="contactSidebarName">Nearby node</strong><span class="contact-time" id="lastChatTime"></span></span><span class="contact-preview" id="lastChatPreview">Your off-grid conversation</span></span><span class="contact-unread" id="contactUnreadBadge" hidden aria-label="Unread messages">0</span>
     </button>
     <div class="phase-banner">
-      <span>Phase 1.5 · Voice &amp; Reliable LR</span>
-      <strong>Encrypted chat · voice notes · adaptive Long Range · photo gallery</strong>
+      <span>OffGrid · Private messenger</span>
+      <strong>Encrypted conversations with a quieter, more personal interface</strong>
       <small>No cloud. No server. No internet.</small>
     </div>
     <div class="side-foot"><span class="tiny-offline">◆</span> Peer-to-peer radio • USB Serial + ESP-NOW <small>Encrypted messages · keys stored on ESP32</small></div>

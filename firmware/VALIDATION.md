@@ -1,21 +1,26 @@
-# Phase 1.5.1 validation record
+# Phase 1.6.1 validation
 
-**Source**: byte-for-byte firmware copy of working Phase 1.5 (`main/` unchanged), originally based on official stable Phase 1.4.11. No ManualLR / RFTest code included. The `web/` source adds the 120-second recording limit and authenticated `played` receipt type.
+## Local checks
 
-## Automated tests
+- JavaScript syntax validation for `web/app.js`, `web/protocol.js`, `web/adaptive.js`.
+- Existing Node protocol, selective ACK, voice and diagnostic unit tests.
+- Existing Playwright/Chromium voice recording (short and two-minute), played receipts, and auto-scroll regression tests.
+- New Chromium tests at desktop and narrow-screen sizes:
+  - Notification permission requested only on clicking the bell; default off.
+  - Unread badges in sidebar and contact; encrypted local viewing state; title count.
+  - One alert per new message while tab is in background; no alerts while foreground.
+  - No duplicate notifications on duplicate messages; preview private by default.
+  - Badges clear upon foreground viewing, and outbound read receipts remain independent.
+  - Notification toggle-off and theme stability.
+  - Mic-to-send transition, text send and revert to mic, blank input safety.
+- Firmware and crypto source files compared by SHA-256 to the user-approved 1.6 build; expected to be byte-for-byte identical.
+- Host-side C syntax checks and pure C policy tests.
+- ZIP CRC and archive integrity.
 
-- Node WebCrypto AES-256-GCM: 12/105/120-second voice durations (including >65535-ms metadata), 32 KiB/250000 B/384 KiB payloads across three codecs, chunk reassembly, tamper rejection, correct played receipt type, and compatibility with original 30-second Phase 1.5 notes.
-- Headless Chromium at 1100 px and 390 px: start/stop/cancel capture (mock MediaRecorder), 120-second simulated recording acceptance, `playing` event (not `play`) triggers local blue mic and one receipt, sender preview cannot falsely mark remote play, authenticated-style receipt marks sender icon, state persisted in encrypted record payload, old ticks unaffected, and no browser exceptions.
-- Original 1.5 firmware, AES, photo, auto-scroll, radio rate, USB, watchdog, and selective-ACK regression suite.
-- ZIP integrity and SHA-256 comparison of unchanged firmware against 1.5.
+## Not verified here
 
-## Limitations
+- Physical ESP32 throughput, range or RF loss recovery (no radio changes were made).
+- Native KDE/Windows/macOS notification-daemon delivery, because automation uses a mocked browser Notification implementation.
+- User's acceptance of visual refinements; actual UI should be reviewed in Chromium.
 
-Automated browser events are simulated. **No actual ESP32 radio, physical microphone, 2-minute real-Opus capture, or ESP-IDF compiler is available in this runtime.** An encoded voice note exceeding 384 KiB is rejected rather than truncated. `played` signifies audio playback started; it does not prove the entire recording was listened to. Both web tabs must run Phase 1.5.1 to exchange the new receipt.
-
-## API documentation
-
-- Media `playing` event: https://developer.mozilla.org/en-US/docs/Web/API/HTMLMediaElement/playing_event
-- Media `play` event: https://developer.mozilla.org/en-US/docs/Web/API/HTMLMediaElement/play_event
-- MediaRecorder capture: https://developer.mozilla.org/en-US/docs/Web/API/MediaRecorder/start
-- ESP-NOW application-level receipts: https://docs.espressif.com/projects/esp-idf/en/latest/esp32c3/api-reference/network/esp_now.html
+**No ESP32 firmware flash required.**

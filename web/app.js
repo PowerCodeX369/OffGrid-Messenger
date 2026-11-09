@@ -3,7 +3,7 @@
    Keys are stored on each ESP32 and imported only into browser RAM over physical USB. No external servers. */
 const P=globalThis.OGP,$=id=>document.getElementById(id);
 const MAX_CHARS=500,MAX_PHOTO=96*1024,MAX_VOICE_MS=P.VOICE_MAX_MS,STORE='OffGridMessengerV14';
-const APP_VERSION='1.5.1-voice120-played';
+const APP_VERSION='1.6.1-refined-notifications';
 /* Played is a separate state for voice notes: reading the chat must never
  * imply that audio was listened to. Message tick status remains unchanged. */
 const stateRank={sending:0,queued:0,sent:1,failed:1,delivered:2,read:3};
@@ -53,6 +53,11 @@ const photoFlow=new globalThis.OffGridAdaptive.PhotoFlowController();
 let adaptivePhotos=true;
 let queuedReceipts=new Set(),pendingReads=new Set(),theme='dark';
 let imageMode='hq';
+/* Browser-only desktop notifications. Consent requires an explicit user click.
+   No keys or private message content are ever stored in notification settings. */
+let desktopNotificationsEnabled=false, desktopNotificationPreview=false;
+const recentlyNotified=new Set();
+const APP_TITLE='OffGrid Messenger';
 let radioTelemetry={peer:'NONE',rssi:null,phy:1,mode:'AUTO',delivered:0,retries:0,failures:0,txok:0,txfail:0,rx:0,hello:0,healthGood:0,pingOk:0,pingLost:0,available:false};
 let selectedPhotoId=null,viewerZoomed=false,viewerTouchX=null,viewerPreviousFocus=null;
 /* Isolated benchmark state; measurements never enter message history. */
@@ -201,7 +206,7 @@ async function runDiagnostics(){
  speedDiagnostics.busy=false;if(speedDiagnostics.runButton)speedDiagnostics.runButton.disabled=false;
 }
 
-try{theme=localStorage.getItem('offgrid_theme')==='light'?'light':'dark';imageMode=localStorage.getItem('offgrid_image_mode')==='lossless'?'lossless':'hq';linkPreference=['auto','range','speed','lr500','lr250'].includes(localStorage.getItem('offgrid_link_preference'))?localStorage.getItem('offgrid_link_preference'):'auto';adaptivePhotos=localStorage.getItem('offgrid_adaptive_photos')!=='off';selectivePhotoAcks=localStorage.getItem('offgrid_sack_photos')!=='off';}catch{}
+try{theme=localStorage.getItem('offgrid_theme')==='light'?'light':'dark';desktopNotificationsEnabled=localStorage.getItem('offgrid_desktop_notifications')==='on';desktopNotificationPreview=localStorage.getItem('offgrid_notification_previews')==='on';imageMode=localStorage.getItem('offgrid_image_mode')==='lossless'?'lossless':'hq';linkPreference=['auto','range','speed','lr500','lr250'].includes(localStorage.getItem('offgrid_link_preference'))?localStorage.getItem('offgrid_link_preference'):'auto';adaptivePhotos=localStorage.getItem('offgrid_adaptive_photos')!=='off';selectivePhotoAcks=localStorage.getItem('offgrid_sack_photos')!=='off';}catch{}
 document.body.classList.toggle('light',theme==='light');
 const macKey=()=>localMac||'unknown';
 const nameKey=()=>`offgrid_phase14_name_${macKey()}`;
@@ -211,6 +216,74 @@ const wait=ms=>new Promise(r=>setTimeout(r,ms));
 const formatBytes=n=>n<1024?`${n} B`:`${(n/1024).toFixed(1)} KB`;
 function toast(text){const d=document.createElement('div');d.className='toast';d.textContent=text;$('toastHost').append(d);setTimeout(()=>d.remove(),4200);}
 function isVisible(){return !document.hidden&&document.hasFocus()&&(innerWidth>590||document.body.classList.contains('mobile-chat'));}
+
+/* Unread is a local viewing state; readSent means a radio receipt reached the
+   sender, which can legitimately be delayed by a weak LR link. Do not mix them. */
+function unreadTotal(){return records.reduce((count,r)=>count+(r.dir==='in'&&!r.seenLocally?1:0),0);}
+function updateUnreadBadge(){
+ const count=unreadTotal(),label=count>99?'99+':String(count);
+ for(const id of ['unreadBadge','contactUnreadBadge']){
+  const element=$(id);if(!element)continue;
+  element.hidden=count===0;element.textContent=label;
+  element.setAttribute('aria-label',count===1?'1 unread message':`${count} unread messages`);
+ }
+ document.title=count?`(${count}) ${APP_TITLE}`:APP_TITLE;
+ const contact=$('contactButton');if(contact)contact.classList.toggle('has-unread',count>0);
+}
+function notificationAvailable(){return typeof Notification!=='undefined'&&window.isSecureContext;}
+function notificationActive(){return notificationAvailable()&&Notification.permission==='granted'&&desktopNotificationsEnabled;}
+function updateNotificationButton(){
+ const btn=$('notificationButton');if(!btn)return;
+ const active=notificationActive();btn.classList.toggle('notifications-active',active);
+ btn.setAttribute('aria-pressed',String(active));
+ btn.title=active?'Disable desktop alerts':'Enable desktop alerts';
+ btn.setAttribute('aria-label',active?'Disable desktop notifications':'Enable desktop notifications');
+}
+async function toggleDesktopNotifications(){
+ if(notificationActive()){
+  desktopNotificationsEnabled=false;
+  try{localStorage.setItem('offgrid_desktop_notifications','off');}catch{}
+  updateNotificationButton();toast('Desktop notifications turned off.');return;
+ }
+ if(!notificationAvailable()){
+  toast('Desktop notifications require Chromium on localhost or HTTPS.');return;
+ }
+ // This function is called only from an actual click. Do not request permission
+ // during page load or when receiving an unsolicited radio packet.
+ let permission=Notification.permission;
+ if(permission==='default'){
+  try{permission=await Notification.requestPermission();}
+  catch(e){toast('Could not request notification permission.');return;}
+ }
+ if(permission!=='granted'){
+  desktopNotificationsEnabled=false;updateNotificationButton();
+  toast('Notification permission is blocked; check Chromium site settings.');return;
+ }
+ desktopNotificationsEnabled=true;
+ try{localStorage.setItem('offgrid_desktop_notifications','on');}catch{}
+ updateNotificationButton();toast('Desktop notifications enabled.');
+}
+function notificationTextFor(r){
+ if(r.kind==='image')return 'An encrypted photo arrived';
+ if(r.kind==='voice')return 'An encrypted voice note arrived';
+ return desktopNotificationPreview?(r.text||'New message').slice(0,110):'New encrypted message';
+}
+function notifyIncoming(r){
+ if(r.dir!=='in'||!notificationActive()||(!document.hidden&&document.hasFocus()))return;
+ if(recentlyNotified.has(r.id))return;
+ recentlyNotified.add(r.id);
+ if(recentlyNotified.size>120)recentlyNotified.delete(recentlyNotified.values().next().value);
+ try{
+  const notice=new Notification(APP_TITLE,{
+   body:notificationTextFor(r),icon:new URL('logo.svg',document.baseURI).href,
+   tag:'offgrid-'+r.id
+  });
+  notice.onclick=()=>{
+   try{window.focus();document.body.classList.add('mobile-chat');scrollToNewest(true);sendReadReceipts();notice.close();}catch(e){console.warn('Notification activation',e);}
+  };
+ }catch(e){console.warn('Native desktop notification unavailable:',e);}
+}
+
 function safeText(s){return typeof s==='string'?s:'';}
 function openDb(){return new Promise((resolve,reject)=>{
  const req=indexedDB.open(STORE,1);
@@ -391,7 +464,12 @@ function makeBubble(record,animate=true){
  bubble.append(meta);row.append(bubble);$('messages').append(row);updateBubble(record);
  if(animate)scrollToNewest(true);return row;
 }
-function updateBubble(r){const row=Array.from($('messages').children).find(el=>el.dataset.mid===r.id);if(!row)return;row.dataset.status=r.status||'';
+function updateBubble(r){const row=Array.from($('messages').children).find(el=>el.dataset.mid===r.id);if(!row)return;
+ const previousStatus=row.dataset.status;row.dataset.status=r.status||'';
+ if(r.dir==='out'&&previousStatus&&previousStatus!==r.status&&['delivered','read'].includes(r.status)){
+  row.classList.remove('receipt-pop');void row.offsetWidth;row.classList.add('receipt-pop');
+  setTimeout(()=>row.classList.remove('receipt-pop'),530);
+ }
  const receipt=row.querySelector('[data-role="tick"]');if(receipt){receipt.className='receipt-icon '+(r.status||'sending');receipt.setAttribute('aria-label',r.status||'Sending');}
  const voiceIcon=row.querySelector('[data-role="voice-played"]');if(voiceIcon){
    voiceIcon.classList.toggle('played',!!r.played);
@@ -403,7 +481,7 @@ function updateBubble(r){const row=Array.from($('messages').children).find(el=>e
 }
 function revokePhotos(){closePhotoViewer();for(const url of photoUrls.values())URL.revokeObjectURL(url);photoUrls.clear();
  for(const url of voiceUrls.values())URL.revokeObjectURL(url);voiceUrls.clear();}
-function renderHistory(){revokePhotos();$('messages').replaceChildren();for(const r of records)makeBubble(r,false);updateSidebar();scrollToNewest(true);}
+function renderHistory(){revokePhotos();$('messages').replaceChildren();for(const r of records)makeBubble(r,false);updateSidebar();updateUnreadBadge();scrollToNewest(true);}
 /* In-app viewer. Photo blobs are already authenticated, decrypted and locally stored. */
 function galleryPhotos(){return records.filter(r=>r.kind==='image'&&r.bytes?.length>0);}
 function showSelectedPhoto(animated=true){
@@ -449,14 +527,14 @@ function togglePhotoZoom(){
  if($('photoViewer').classList.contains('hidden'))return;
  viewerZoomed=!viewerZoomed;$('viewerCanvas').classList.toggle('zoomed',viewerZoomed);
 }
-function serializeRecord(r){return {id:r.id,kind:r.kind,dir:r.dir,ts:r.ts,text:r.text||'',mime:r.mime||'',width:r.width||0,height:r.height||0,durationMs:r.durationMs||0,bytes:r.bytes?P.base64url(r.bytes):'',readSent:!!r.readSent,deliveredAckSent:!!r.deliveredAckSent,played:!!r.played,playedSent:!!r.playedSent,peerMac:r.peerMac||null};}
+function serializeRecord(r){return {id:r.id,kind:r.kind,dir:r.dir,ts:r.ts,text:r.text||'',mime:r.mime||'',width:r.width||0,height:r.height||0,durationMs:r.durationMs||0,bytes:r.bytes?P.base64url(r.bytes):'',readSent:!!r.readSent,deliveredAckSent:!!r.deliveredAckSent,played:!!r.played,playedSent:!!r.playedSent,seenLocally:!!r.seenLocally,peerMac:r.peerMac||null};}
 async function storeRecord(r){if(!secretKey||!localMac)return;const payload=P.textBytes(JSON.stringify(serializeRecord(r)));const sealed=await P.sealAtRest(secretKey,payload,macKey(),r.id);await dbPut('messages',{pk:macKey()+'/'+r.id,owner:macKey(),id:r.id,ts:r.ts,dir:r.dir,status:r.status,seal:sealed});}
 async function storeStatus(r){if(!secretKey||!localMac)return;const old=await dbGet('messages',macKey()+'/'+r.id);if(old){old.status=r.status;await dbPut('messages',old);}else await storeRecord(r);}
-async function hydrateHistory(){records=[];recordMap.clear();const rows=await listStored();for(const row of rows){try{const bytes=await P.openAtRest(secretKey,row.seal,macKey(),row.id);const d=JSON.parse(P.textFrom(bytes));d.bytes=d.bytes?P.fromBase64urlRaw(d.bytes):null;d.status=row.status||'sent';if(d.status==='sending'||d.status==='queued')d.status='failed';d.progress=0;records.push(d);recordMap.set(d.id,d);}catch(e){console.warn('Cannot decrypt stored record',row.id,e.message);}}
+async function hydrateHistory(){records=[];recordMap.clear();const rows=await listStored();for(const row of rows){try{const bytes=await P.openAtRest(secretKey,row.seal,macKey(),row.id);const d=JSON.parse(P.textFrom(bytes));d.bytes=d.bytes?P.fromBase64urlRaw(d.bytes):null;d.status=row.status||'sent';d.seenLocally=typeof d.seenLocally==='boolean'?d.seenLocally:!!d.readSent;if(d.status==='sending'||d.status==='queued')d.status='failed';d.progress=0;records.push(d);recordMap.set(d.id,d);}catch(e){console.warn('Cannot decrypt stored record',row.id,e.message);}}
  records.sort((a,b)=>a.ts-b.ts);renderHistory();}
 /* Stored image data is base64url; unlike pairing keys, image byte length is arbitrary. */
 P.fromBase64urlRaw=function(s){const fixed=s.replace(/-/g,'+').replace(/_/g,'/');const bin=atob(fixed+'='.repeat((4-fixed.length%4)%4));return Uint8Array.from(bin,c=>c.charCodeAt(0));};
-async function appendRecord(r){records.push(r);recordMap.set(r.id,r);makeBubble(r);updateSidebar();try{await storeRecord(r);}catch(e){toast('Could not store encrypted chat history: '+e.message);} }
+async function appendRecord(r){if(r.dir==='in'&&typeof r.seenLocally!=='boolean')r.seenLocally=false;records.push(r);recordMap.set(r.id,r);makeBubble(r);updateSidebar();updateUnreadBadge();try{await storeRecord(r);}catch(e){toast('Could not store encrypted chat history: '+e.message);} }
 /* Played receipts are encrypted application messages, independent of read
  * ticks. A replay or repeated playback cannot enqueue duplicate receipts.
  * If delivery fails, playedSent remains false for retry after reconnect. */
@@ -623,11 +701,24 @@ async function handleEnvelope(env,mac){
  peerMac=mac;
  await appendRecord(r);
  enqueueReceipt('delivered',r.id);
- if(isVisible())sendReadReceipts();
+ if(isVisible())sendReadReceipts();else notifyIncoming(r);
 }
 function enqueueReceipt(kind,targetId){const key=kind+':'+targetId;if(queuedReceipts.has(key)||!secretKey)return;queuedReceipts.add(key);
  const job={kind,control:true,targetId,created:Date.now()};transferQueue.unshift(job);runTransfers();}
-function sendReadReceipts(){if(!secretKey||!verified||!isVisible())return;for(const r of records){if(r.dir==='in'&&!r.readSent&&!pendingReads.has(r.id)){pendingReads.add(r.id);enqueueReceipt('read',r.id);}}}
+function sendReadReceipts(){
+ if(!secretKey||!verified||!isVisible())return;
+ for(const r of records){
+  if(r.dir!=='in')continue;
+  if(!r.seenLocally){
+   r.seenLocally=true;
+   void storeRecord(r).catch(e=>console.warn('Could not save local unread state:',e));
+  }
+  if(!r.readSent&&!pendingReads.has(r.id)){
+   pendingReads.add(r.id);enqueueReceipt('read',r.id);
+  }
+ }
+ updateUnreadBadge();
+}
 function makeJob(r){return {kind:r.kind,control:false,record:r,created:Date.now()};}
 async function sealJob(job){
  const transferId=P.newId(),id=job.control?P.newId():(job.kind==='probe'?job.probeId:job.record.id);
@@ -807,7 +898,8 @@ async function disconnect(){if(closing)return;closing=true;stopVoiceRecording(tr
 async function sendText(){const input=$('messageInput'),text=input.value.trim();if(!verified||!secretKey||!text)return;
  if(countChars(text)>MAX_CHARS){toast('Maximum 500 characters per text message.');return;}
  const r={id:P.newId(),kind:'text',dir:'out',ts:Date.now(),text,status:'sending',progress:0};await appendRecord(r);input.value='';updateByteCount();transferQueue.push(makeJob(r));runTransfers();}
-function updateByteCount(){const input=$('messageInput'),n=countChars(input.value);$('byteCount').textContent=`${n}/${MAX_CHARS}`;$('byteCount').classList.toggle('over',n>MAX_CHARS);input.style.height='36px';input.style.height=Math.min(120,input.scrollHeight)+'px';$('sendButton').disabled=!verified||!secretKey||!input.value.trim()||n>MAX_CHARS;}
+function updatePrimaryAction(){const composer=$('composer'),input=$('messageInput'),voice=$('voiceButton'),send=$('sendButton');if(!composer||!input||!voice||!send)return;const hasText=!!input.value.trim();const recording=!!currentVoiceRecording;composer.classList.toggle('show-send',!recording&&hasText);composer.classList.toggle('show-voice',recording||!hasText);composer.classList.toggle('recording-mode',recording);voice.setAttribute('aria-hidden',(!recording&&hasText)?'true':'false');send.setAttribute('aria-hidden',(recording||!hasText)?'true':'false');}
+function updateByteCount(){const input=$('messageInput'),n=countChars(input.value);$('byteCount').textContent=`${n}/${MAX_CHARS}`;$('byteCount').classList.toggle('over',n>MAX_CHARS);input.style.height='36px';input.style.height=Math.min(120,input.scrollHeight)+'px';$('sendButton').disabled=!verified||!secretKey||!input.value.trim()||n>MAX_CHARS;updatePrimaryAction();}
 function convertCanvas(canvas,type,q){return new Promise(resolve=>canvas.toBlob(resolve,type,q));}
 async function preparePhoto(file){if(!file||!file.type.startsWith('image/'))throw Error('Select a picture.');if(file.size>25*1024*1024)throw Error('Original photo is too large to process (25 MB maximum).');
  let bitmap;try{bitmap=await createImageBitmap(file);}catch{throw Error('Your browser cannot decode this photo format. Try JPEG or PNG.');}
@@ -859,6 +951,7 @@ function voiceButtonState(){
  }else if(verified&&secretKey){
   $('composerStatus').textContent='Enter to send · 🎤 tap microphone for voice note';
  }
+ updatePrimaryAction();
 }
 function stopVoiceRecording(cancel=false){
  const v=currentVoiceRecording;if(!v)return;
@@ -971,7 +1064,23 @@ function showRename(){showDialog('Contact name',body=>{body.append(el('p','','Th
 async function clearHistory(){if(!verified||!secretKey)return;if(runningTransfers||pendingRadio()||transferQueue.length){toast('Finish active transfers before clearing history.');return;}if(!confirm('Delete encrypted chat history for this ESP32 from this browser? This cannot be undone.'))return;
  await wipeStored();records=[];recordMap.clear();revokePhotos();renderHistory();toast('Local chat history cleared.');closeDialog();}
 function showInfo(){showDialog('Chat information',body=>{[['Contact',activeContact],['Your ESP32',localMac||'Disconnected'],['Protocol','ESP-NOW firmware protocol 2 / encrypted app protocol OGM4'],['Security',secretKey?'AES-256-GCM, 256-bit random shared key':'Not paired'],['Photo target',`${Math.round(photoBudget()/1024)} KB optimized, 96 KB absolute`],['Voice notes','Up to 2 minutes and 384 KiB, encrypted and stored locally; blue microphone means played'],['Radio PHY',radioTelemetry.available?`${radioTelemetry.phy} Mbps TX, RSSI ${radioTelemetry.rssi===null?'unknown':radioTelemetry.rssi+' dBm'}`:'Waiting for telemetry'],['Link profile',`${linkPreference}; adaptive PHY; media window ${chosenWindow({kind:'image',control:false})}; auto ${adaptivePhotos?'on':'off'}`],['Radio liveness',`${radioTelemetry.pingOk||0} confirmed peer probes · ${radioTelemetry.pingLost||0} missed · clean streak ${radioTelemetry.healthGood||0}`],['Key storage','ESP32 NVS, browser RAM only'],['History','AES-GCM encrypted IndexedDB']].forEach(([a,b])=>{const line=el('div','info-line');line.append(el('span','',a),el('strong','',b));body.append(line);});body.append(el('p','','Grey single tick = transmitted; grey double tick = peer decrypted and confirmed; blue double tick = peer app reported it was viewed. Browser history is stored encrypted at rest.'));});}
-function showSettings(){showDialog('Settings',body=>{body.append(el('p','','Phase 1.5: confirmed-probe-based adaptive LR with AES-256-GCM voice notes. Espressif LR 500/250 kbps with existing 1/6/12 Mbps adaptive modes. 1.4.11 remains the frozen stable baseline. Test text before photos and voice.'));
+function showSettings(){showDialog('Settings',body=>{body.append(el('p','','Phase 1.6: premium glass UI on top of the confirmed-probe-based adaptive LR and AES-256-GCM voice notes. Espressif LR 500/250 kbps with existing 1/6/12 Mbps adaptive modes. 1.4.11 remains the frozen stable baseline. Test text before photos and voice.'));
+ const notifLabel=el('label','','Desktop notifications');body.append(notifLabel);
+ const notifBox=el('div','notification-settings');
+ const notifToggle=el('button','quiet-button notification-setting-button','');
+ const notifHint=el('p','notification-settings-hint','');
+ const syncNotif=()=>{
+  const permission=notificationAvailable()?Notification.permission:'unavailable';
+  notifToggle.textContent=notificationActive()?'Notifications: On':'Notifications: Off';
+  notifHint.textContent=permission==='unavailable'?'Requires Chromium on localhost or HTTPS.':permission==='denied'?'Blocked in browser settings.':notificationActive()?'Shows an alert for each new message while this tab is in the background.':'Enable to receive alerts while this connected browser tab runs.';
+ };
+ notifToggle.onclick=async()=>{await toggleDesktopNotifications();syncNotif();};
+ notifBox.append(notifToggle,notifHint);
+ const previewLabel=el('label','notification-preview-label');
+ const previewCheckbox=document.createElement('input');previewCheckbox.type='checkbox';previewCheckbox.checked=desktopNotificationPreview;
+ previewCheckbox.onchange=()=>{desktopNotificationPreview=previewCheckbox.checked;try{localStorage.setItem('offgrid_notification_previews',desktopNotificationPreview?'on':'off');}catch{}};
+ previewLabel.append(previewCheckbox,document.createTextNode(' Show message text in system notifications'));
+ notifBox.append(previewLabel);body.append(notifBox);syncNotif();
  const linkLabel=el('label','','Transfer profile');body.append(linkLabel);const linkSelect=document.createElement('select');linkSelect.className='setting-select';
  [['auto','Auto · 12 / 6 / 1 Mbps, LR500 / LR250 when weak'],['range','Standard 1 Mbps · conservative non-LR'],['speed','Speed first · prefer faster radio rates'],['lr500','Manual LR 500 kbps · outdoor distance test'],['lr250','Manual LR 250 kbps · maximum sensitivity test']].forEach(([v,t])=>{const opt=document.createElement('option');opt.value=v;opt.textContent=t;linkSelect.append(opt);});
  linkSelect.value=linkPreference;linkSelect.onchange=()=>{linkPreference=linkSelect.value;try{localStorage.setItem('offgrid_link_preference',linkPreference);}catch{}if(verified)void writeLine('RATE '+linkPreference.toUpperCase()).catch(()=>{});updateLinkBadge();};body.append(linkSelect);
@@ -1018,11 +1127,12 @@ $('connectButton').onclick=()=>void connect();$('disconnectButton').onclick=()=>
 $('messageInput').addEventListener('input',updateByteCount);$('messageInput').addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();void sendText();}});
 $('attachments').onclick=()=>$('photoPicker').click();$('photoPicker').addEventListener('change',e=>{if(e.target.files?.length)void sendPhoto(e.target.files[0]);});
 $('securityButton').onclick=showPairing;$('renameButton').onclick=showRename;$('settingsButton').onclick=showSettings;$('infoButton').onclick=showInfo;
+$('notificationButton').onclick=()=>void toggleDesktopNotifications();
 $('themeToggle').onclick=()=>{theme=theme==='dark'?'light':'dark';document.body.classList.toggle('light',theme==='light');try{localStorage.setItem('offgrid_theme',theme);}catch{}};
 $('contactButton').onclick=()=>{document.body.classList.add('mobile-chat');scrollToNewest(true);sendReadReceipts();};$('mobileBack').onclick=()=>document.body.classList.remove('mobile-chat');
 $('closeModal').onclick=closeDialog;$('modalBackdrop').onclick=e=>{if(e.target===$('modalBackdrop'))closeDialog();};document.addEventListener('keydown',e=>{if(e.key==='Escape')closeDialog();});
-document.addEventListener('visibilitychange',sendReadReceipts);window.addEventListener('focus',sendReadReceipts);
+document.addEventListener('visibilitychange',()=>{sendReadReceipts();updateNotificationButton();});window.addEventListener('focus',sendReadReceipts);
 window.addEventListener('beforeunload',()=>{stopVoiceRecording(true);revokePhotos();});
 setInterval(pruneIncoming,45000);
-(async()=>{try{db=await openDb();}catch(e){toast('IndexedDB unavailable. Encrypted storage cannot work: '+e.message);}refreshStatus();})();
-console.info('OffGrid Phase 1.5.1 — two-minute voice notes with AES-GCM authenticated played receipts. Based on working 1.5, preserving 1.4.11 stable.');
+(async()=>{try{db=await openDb();}catch(e){toast('IndexedDB unavailable. Encrypted storage cannot work: '+e.message);}refreshStatus();updateUnreadBadge();updateNotificationButton();})();
+console.info('OffGrid Phase 1.6.1 — native desktop alerts, local unread badges, calmer UI, and preserved encrypted text/photo/voice protocols.');
