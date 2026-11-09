@@ -6,6 +6,7 @@ import androidx.exifinterface.media.ExifInterface
 import android.os.SystemClock
 import android.view.Surface
 import androidx.activity.compose.BackHandler
+import androidx.camera.core.AspectRatio
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageCapture
 import androidx.camera.core.ImageCaptureException
@@ -61,7 +62,7 @@ fun InAppCameraScreen(onCancel:()->Unit,onSend:(File)->Unit) {
     val previewView=remember(context) {
         PreviewView(context).apply {
             implementationMode=PreviewView.ImplementationMode.COMPATIBLE
-            scaleType=PreviewView.ScaleType.FILL_CENTER
+            scaleType=PreviewView.ScaleType.FIT_CENTER
         }
     }
     var lens by remember { mutableIntStateOf(CameraSelector.LENS_FACING_BACK) }
@@ -98,8 +99,10 @@ fun InAppCameraScreen(onCancel:()->Unit,onSend:(File)->Unit) {
                     val provider=future.get()
                     val selector=CameraSelector.Builder().requireLensFacing(lens).build()
                     require(provider.hasCamera(selector)) { "Selected camera is not available" }
-                    val preview=Preview.Builder().build()
+                    val preview=Preview.Builder()
+                        .setTargetAspectRatio(AspectRatio.RATIO_4_3).build()
                     val capture=ImageCapture.Builder()
+                        .setTargetAspectRatio(AspectRatio.RATIO_4_3)
                         .setCaptureMode(ImageCapture.CAPTURE_MODE_MINIMIZE_LATENCY)
                         .setTargetRotation(previewView.display?.rotation ?: Surface.ROTATION_0)
                         .build()
@@ -173,10 +176,16 @@ fun InAppCameraScreen(onCancel:()->Unit,onSend:(File)->Unit) {
                     else CircularProgressIndicator(color=Color.White)
                 }
             } else {
-                AndroidView(factory={previewView},modifier=Modifier.fillMaxSize())
-                // Subtle camera framing, without repainting or duplicating the preview.
-                Box(Modifier.fillMaxSize().padding(14.dp)
-                    .border(1.dp,Color.White.copy(alpha=.16f),radius))
+                // Fit the *entire* 4:3 sensor preview between the camera controls.
+                // CameraX's FILL_CENTER would otherwise crop front and rear cameras.
+                BoxWithConstraints(Modifier.fillMaxSize()
+                    .padding(top=68.dp,bottom=164.dp),contentAlignment=Alignment.Center) {
+                    val ratio=if(maxWidth>maxHeight) 4f/3f else 3f/4f
+                    val width=minOf(maxWidth,maxHeight*ratio)
+                    val frame=Modifier.width(width).height(width/ratio)
+                    AndroidView(factory={previewView},modifier=frame)
+                    Box(frame.border(1.dp,Color.White.copy(alpha=.20f),radius))
+                }
             }
         }
         Row(Modifier.fillMaxWidth().align(Alignment.TopCenter)
