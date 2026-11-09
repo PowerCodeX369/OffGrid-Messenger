@@ -4,7 +4,7 @@ plugins { id("com.android.application"); id("org.jetbrains.kotlin.android"); id(
 android {
  namespace="com.offgrid.messenger"
  compileSdk=36
- defaultConfig { applicationId="com.offgrid.messenger"; minSdk=26; targetSdk=36; versionCode=220; versionName="2.2-fast-media" }
+ defaultConfig { applicationId="com.offgrid.messenger"; minSdk=26; targetSdk=36; versionCode=230; versionName="2.3-binary-ble" }
  buildFeatures { compose=true }
  compileOptions { sourceCompatibility=JavaVersion.VERSION_17; targetCompatibility=JavaVersion.VERSION_17 }
 

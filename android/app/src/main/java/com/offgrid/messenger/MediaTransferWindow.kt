@@ -12,7 +12,7 @@ class MediaTransferWindow(
     private val nowMs: () -> Long,
     private val schedule: (Runnable, Long) -> Unit,
     private val cancel: (Runnable) -> Unit,
-    private val sendFrame: (ByteArray) -> Unit,
+    private val sendFrame: (ByteArray) -> Int?,
     private val onProgress: (Int, Long) -> Unit,
     private val onFinished: (Long) -> Unit,
     private val onFailed: (String) -> Unit,
@@ -22,6 +22,7 @@ class MediaTransferWindow(
     private data class Flight(
         val index: Int, val hex: String, var attempts: Int = 0,
         val radioKeys: MutableSet<String> = linkedSetOf(),
+        val bleTokens: MutableSet<Int> = linkedSetOf(),
         var timeout: Runnable? = null
     )
     private var next = 0
@@ -65,7 +66,7 @@ class MediaTransferWindow(
         if (f.attempts >= 3) { fail("Radio confirmation failed after 3 attempts"); return }
         f.attempts++
         arm(f, 7_500L) // QUEUED should arrive quickly; delivery may take longer.
-        try { sendFrame(frames[f.index]) }
+        try { sendFrame(frames[f.index])?.let { f.bleTokens.add(it) } }
         catch (e: Exception) { fail("BLE send refused: ${e.message ?: e.javaClass.simpleName}") }
     }
     private fun retry(f: Flight, reason: String) {
@@ -97,6 +98,13 @@ class MediaTransferWindow(
             active[idx] = slot
             transmit(slot)
         }
+    }
+    fun onBinaryQueued(token: Int, session: String, packetId: String): Boolean {
+        if (terminated || paused) return false
+        val slot = active.values.firstOrNull { token in it.bleTokens } ?: return false
+        slot.radioKeys.add("$session:$packetId")
+        arm(slot, 16_000L)
+        return true
     }
     fun onQueued(frameHex: String, session: String, packetId: String): Boolean {
         if (terminated || paused) return false

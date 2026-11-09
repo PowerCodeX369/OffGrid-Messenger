@@ -79,6 +79,7 @@ data class ChatItem(val id:String,val text:String,val outgoing:Boolean,val times
 private data class Transfer(val frames:List<ByteArray>,val messageId:String,val control:Boolean=false,
     val media:Boolean=false,
     var index:Int=0,var session:String="",var packetId:String="",var attempts:Int=0,
+    var bleToken:Int?=null,
     var mediaWindow:MediaTransferWindow?=null)
 
 class MainActivity : ComponentActivity() {
@@ -190,7 +191,7 @@ class MainActivity : ComponentActivity() {
             }
             job.attempts++
             // Radio failed or the queued response disappeared. Re-submit the same encrypted fragment.
-            link?.send("MSGHEX ${OgmCodec.hex(job.frames[job.index])}")
+            job.bleToken=null;link?.send("MSGHEX ${OgmCodec.hex(job.frames[job.index])}")
             waitForAck("queued")
         }
         ackTimeout=runnable
@@ -203,7 +204,7 @@ class MainActivity : ComponentActivity() {
             nowMs = { android.os.SystemClock.elapsedRealtime() },
             schedule = { alarm, delay -> mainHandler.postDelayed(alarm,delay) },
             cancel = { alarm -> mainHandler.removeCallbacks(alarm) },
-            sendFrame = { frame -> link?.send("MSGHEX ${OgmCodec.hex(frame)}") },
+            sendFrame = { frame -> link?.sendFrame(frame) },
             onProgress = { count, elapsedMs ->
                 if(count % 8 == 0 || count == job.frames.size) {
                     val idx=items.indexOfFirst { it.id == job.messageId }
@@ -254,7 +255,7 @@ class MainActivity : ComponentActivity() {
         if(t.media && !t.control && t.frames.size>1) { startMediaWindow(t);return }
         isSending=true
         t.attempts=0
-        link?.send("MSGHEX ${OgmCodec.hex(t.frames[t.index])}")
+        t.bleToken=null;link?.send("MSGHEX ${OgmCodec.hex(t.frames[t.index])}")
         waitForAck("queued")
     }
     private fun advanceFrame() {
@@ -281,7 +282,7 @@ class MainActivity : ComponentActivity() {
                 }
             }
             job.attempts=0
-            link?.send("MSGHEX ${OgmCodec.hex(job.frames[job.index])}")
+            job.bleToken=null;link?.send("MSGHEX ${OgmCodec.hex(job.frames[job.index])}")
             waitForAck("queued")
         } else {
             pending.removeFirst()
@@ -402,6 +403,18 @@ class MainActivity : ComponentActivity() {
         when(split.firstOrNull()) {
             "READY" -> state="ESP32 ready · channel 6"
             "LINK" -> if(connected)state="Connected · encrypted · adaptive LR"
+            "BQUEUED" -> if(isSending){
+                val reply=BleBinaryCodec.queued(line) ?: return
+                if(activeMedia != null) {
+                    activeMedia?.onBinaryQueued(reply.token,reply.session,reply.packetId)
+                    return
+                }
+                val job=pending.firstOrNull() ?: return
+                if(job.bleToken==reply.token){
+                    job.session=reply.session;job.packetId=reply.packetId
+                    waitForAck("delivered")
+                }
+            }
             "QUEUED" -> if(split.size>=4&&isSending){
                 if(activeMedia != null) { activeMedia?.onQueued(split[3], split[1], split[2]);return }
                 val job=pending.firstOrNull()?:return
@@ -422,7 +435,7 @@ class MainActivity : ComponentActivity() {
                 if(job.session==split[1]&&job.packetId==split[2]){
                     cancelAckTimeout()
                     if(job.attempts++ < 3){
-                        link?.send("MSGHEX ${OgmCodec.hex(job.frames[job.index])}")
+                        job.bleToken=null;link?.send("MSGHEX ${OgmCodec.hex(job.frames[job.index])}")
                         waitForAck("queued")
                     } else {
                         pending.removeFirst();isSending=false
