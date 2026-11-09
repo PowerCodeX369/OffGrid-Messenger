@@ -48,5 +48,6 @@ class SecureKeyStore(context: Context) {
 
     fun saveNodeAddress(mac: String) { prefs.edit().putString("ble_node", mac).apply() }
     fun nodeAddress(): String? = prefs.getString("ble_node", null)
+    fun clearNodeAddress() { prefs.edit().remove("ble_node").apply() }
     fun clear() { prefs.edit().clear().apply() }
 }
