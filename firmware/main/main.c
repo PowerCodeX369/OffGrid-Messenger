@@ -1,4 +1,4 @@
-/* OffGrid Messenger Phase 1.4.2: ESP-IDF 5.2+ on ESP32-C3.
+/* OffGrid Messenger Phase 1.4.3: ESP-IDF 5.2+ on ESP32-C3.
  * Same firmware on both radios. Protocol OGM2 unchanged for web encryption.
  * Bootstrap with broadcast at 1 Mbps; learn peer, send unicast with adaptive PHY.
  * The RADIO is an untrusted encrypted-payload carrier (AES-GCM lives in browser).
@@ -14,6 +14,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/queue.h"
+#include "freertos/semphr.h"
 #include "esp_err.h"
 #include "esp_log.h"
 #include "esp_mac.h"
@@ -27,19 +28,19 @@
 #include "nvs_flash.h"
 
 #define CHANNEL 6
-#define MAX_TEXT 180
+#define MAX_TEXT 228
 #define MAX_PENDING 8
 #define RX_HISTORY 24
 #define MAX_ATTEMPTS 7
 #define RETRY_MS 850
-#define SEND_GAP_MS 65
+#define SEND_GAP_MS 4
 #define PROTOCOL_MAGIC 0x4F474D32u /* OGM2; intentionally incompatible with Phase 1 */
 #define PROTOCOL_VERSION 2
 #define TYPE_TEXT 1
 #define TYPE_RECEIPT 2
 #define TYPE_READ 3
 #define EVENT_QUEUE_LEN 32
-#define SERIAL_LINE 400
+#define SERIAL_LINE 512
 #define LINK_REPORT_MS 1800
 #define RATE_COOLDOWN_MS 4500
 #define PEER_EXPIRE_MS 90000
@@ -53,6 +54,22 @@ static uint8_t own_mac[6];
 static uint32_t boot_session;
 static uint32_t next_id = 1;
 static QueueHandle_t event_queue;
+static SemaphoreHandle_t tx_done;
+/* The Wi-Fi send callback is short and never sends data itself. */
+static volatile esp_now_send_status_t tx_last_status=ESP_NOW_SEND_FAIL;
+#if ESP_IDF_VERSION_MAJOR > 5 || (ESP_IDF_VERSION_MAJOR==5 && ESP_IDF_VERSION_MINOR>=5)
+static void on_send(const esp_now_send_info_t *info, esp_now_send_status_t status) {
+    (void)info;
+    tx_last_status=status;
+    if(tx_done)xSemaphoreGive(tx_done);
+}
+#else
+static void on_send(const uint8_t *mac, esp_now_send_status_t status) {
+    (void)mac;
+    tx_last_status=status;
+    if(tx_done)xSemaphoreGive(tx_done);
+}
+#endif
 
 /* Identical wire structure on all ESP32-C3 boards. Explicit length validation. */
 typedef struct __attribute__((packed)) {
@@ -65,6 +82,8 @@ typedef struct __attribute__((packed)) {
     uint16_t length;
     uint8_t text[MAX_TEXT];
 } frame_t;
+_Static_assert(offsetof(frame_t,text)+MAX_TEXT <= ESP_NOW_MAX_DATA_LEN,
+               "Frame exceeds the compatible ESP-NOW v1 250-byte payload");
 
 typedef enum { EV_RX = 1, EV_SEND, EV_APPACK, EV_STATUS, EV_READ, EV_RATE } event_type_t;
 typedef struct {
@@ -207,7 +226,7 @@ static bool read_hex(const char *s,uint8_t *dst,uint16_t *len) {
 }
 static void show_ready(void) {
     printf("READY|");print_mac(own_mac);
-    printf("|CHANNEL=%d|SESSION=%" PRIu32 "|PROTO=2\n",CHANNEL,boot_session);
+    printf("|CHANNEL=%d|SESSION=%" PRIu32 "|PROTO=2|CAP=228|TXDONE=1\n",CHANNEL,boot_session);
 }
 static void on_receive(const esp_now_recv_info_t *info,const uint8_t *data,int len) {
     const size_t base=offsetof(frame_t,text);
@@ -232,11 +251,20 @@ static bool ensure_peer(const uint8_t *mac) {
     return e==ESP_OK||e==ESP_ERR_ESPNOW_EXIST;
 }
 static esp_err_t send_frame(const uint8_t *dest, const frame_t *f) {
+    /* Always serialize hardware TX and wait for the radio callback.
+       Fixed 65 ms sleeps previously dominated small photo fragments.
+       The callback indicates only MAC-layer success, not app delivery. */
     int64_t pause=SEND_GAP_MS-(now_ms()-last_radio_ms);
     if(pause>0)vTaskDelay(pdMS_TO_TICKS(pause)+1);
+    /* No other task calls esp_now_send: only the dispatcher owns this semaphore. */
+    while(xSemaphoreTake(tx_done,0)==pdTRUE){} /* discard stale notifications */
+    tx_last_status=ESP_NOW_SEND_FAIL;
     esp_err_t err=esp_now_send(dest,(const uint8_t*)f,offsetof(frame_t,text)+f->length);
+    if(err!=ESP_OK)return err;
+    /* The send-callback is posted from the Wi-Fi task. */
+    if(xSemaphoreTake(tx_done,pdMS_TO_TICKS(300))!=pdTRUE)return ESP_ERR_TIMEOUT;
     last_radio_ms=now_ms();
-    return err;
+    return tx_last_status==ESP_NOW_SEND_SUCCESS?ESP_OK:ESP_FAIL;
 }
 static received_t *find_history(const uint8_t *mac,uint32_t session,uint32_t id) {
     for(int i=0;i<RX_HISTORY;i++)if(history[i].active&&history[i].session==session&&history[i].id==id&&memcmp(history[i].mac,mac,6)==0)return &history[i];
@@ -296,7 +324,7 @@ static void process_event(const event_t *e) {
         return;
     }
     if(e->type!=EV_RX)return;
-    if(peer_known && memcmp(e->mac,known_peer,6)!=0)return; /* only 1 peer in v1.4.2 */
+    if(peer_known && memcmp(e->mac,known_peer,6)!=0)return; /* only 1 peer in Phase 1.4.x */
     learn_peer(e->mac,e->rssi);
     const frame_t *f=&e->frame;
     if(f->type==TYPE_READ) {
@@ -334,7 +362,7 @@ static void process_event(const event_t *e) {
 static void dispatcher(void *arg) {
     event_t e;
     while(true) {
-        if(xQueueReceive(event_queue,&e,pdMS_TO_TICKS(30))==pdTRUE)process_event(&e);
+        if(xQueueReceive(event_queue,&e,pdMS_TO_TICKS(2))==pdTRUE)process_event(&e);
         int64_t t=now_ms();
         if(t-last_report_ms>=LINK_REPORT_MS){last_report_ms=t;emit_link();}
         if(peer_known && (t-last_peer_ms>PEER_EXPIRE_MS) && !total_deliveries)adjust_phy(true);
@@ -409,7 +437,7 @@ static void serial_task(void *arg) {
 }
 void app_main(void) {
     setvbuf(stdout,NULL,_IONBF,0);
-    puts("BOOT|OffGrid Messenger Phase 1.4.2 / protocol 2 / adaptive PHY");
+    puts("BOOT|OffGrid Messenger Phase 1.4.3 / fast ACK-paced TX / protocol 2");
     esp_err_t e=nvs_flash_init();
     if(e==ESP_ERR_NVS_NO_FREE_PAGES||e==ESP_ERR_NVS_NEW_VERSION_FOUND){ESP_ERROR_CHECK(nvs_flash_erase());e=nvs_flash_init();}
     ESP_ERROR_CHECK(e);
@@ -424,8 +452,10 @@ void app_main(void) {
     ESP_ERROR_CHECK(esp_read_mac(own_mac,ESP_MAC_WIFI_STA));
     boot_session=esp_random();if(!boot_session)boot_session=1;
     event_queue=xQueueCreate(EVENT_QUEUE_LEN,sizeof(event_t));if(!event_queue)abort();
+    tx_done=xSemaphoreCreateBinary();if(!tx_done)abort();
     ESP_ERROR_CHECK(esp_now_init());
     ESP_ERROR_CHECK(esp_now_register_recv_cb(on_receive));
+    ESP_ERROR_CHECK(esp_now_register_send_cb(on_send));
     if(!ensure_peer(BROADCAST))abort();
     show_ready();emit_link();
     xTaskCreate(dispatcher,"dispatch",6144,NULL,5,NULL);
