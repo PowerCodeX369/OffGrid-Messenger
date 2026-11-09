@@ -5,7 +5,8 @@ source=root/'android/app/src/main/java/com/offgrid/messenger'
 ui=(source/'PremiumUi.kt').read_text()
 main=(source/'MainActivity.kt').read_text()
 history=(source/'EncryptedHistory.kt').read_text()
-assert 'versionCode=242' in (root/'android/app/build.gradle.kts').read_text()
+import re as _re
+assert int(_re.search(r'versionCode\s*=\s*(\d+)',(root/'android/app/build.gradle.kts').read_text()).group(1))>=242,'versionCode regressed'
 for key in ('rememberLazyListState(initialFirstVisibleItemIndex=visibleItems.size)',
             'HazeInput.Sources(haze)', 'hazeSource(hazeState)',
             'Recording locked', 'onCancel();trashFlash=true',

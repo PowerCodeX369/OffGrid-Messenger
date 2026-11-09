@@ -79,7 +79,7 @@ private val mainHandler = Handler(Looper.getMainLooper())
 
 data class ChatItem(val id:String,val text:String,val outgoing:Boolean,val timestamp:Long,
     val status:String="sent",val kind:Int=OgmCodec.TEXT,val bytes:ByteArray?=null,
-    val mime:String="",val width:Int=0,val height:Int=0,val durationMs:Int=0,val progress:Int=0, val speedKiBs:Float=0f, val edited:Boolean=false, val deleted:Boolean=false)
+    val mime:String="",val width:Int=0,val height:Int=0,val durationMs:Int=0,val progress:Int=0, val speedKiBs:Float=0f, val edited:Boolean=false, val deleted:Boolean=false, val editedAt:Long=0L)
 private data class Transfer(val frames:List<ByteArray>,val messageId:String,val control:Boolean=false,
     val media:Boolean=false,
     var index:Int=0,var session:String="",var packetId:String="",var attempts:Int=0,
@@ -691,7 +691,7 @@ class MainActivity : ComponentActivity() {
                             val idx=items.indexOfFirst {it.id==target && !it.outgoing}
                             if(idx>=0) {
                                 if(env.kind==OgmCodec.DELETE && playingId==target)stopVoicePlayback()
-                                val changed=MessageMutation.apply(items[idx],env.kind,env.text)
+                                val changed=MessageMutation.apply(items[idx],env.kind,env.text,env.timestamp)
                                 if(changed!=null){items[idx]=changed;scheduleHistorySave()}
                             }
                         }

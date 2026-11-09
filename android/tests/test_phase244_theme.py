@@ -5,7 +5,8 @@ import re,hashlib
 root=Path(__file__).resolve().parents[1]
 ui=(root/'app/src/main/java/com/offgrid/messenger/PremiumUi.kt').read_text()
 gradle=(root/'app/build.gradle.kts').read_text()
-assert 'versionCode=244' in gradle
+import re as _re
+assert int(_re.search(r'versionCode\s*=\s*(\d+)',gradle).group(1))>=244,'versionCode regressed'
 assert 'compileSdk=36' in gradle
 assert 'dev.chrisbanes.haze' not in gradle
 assert 'dev.chrisbanes.haze' not in ui

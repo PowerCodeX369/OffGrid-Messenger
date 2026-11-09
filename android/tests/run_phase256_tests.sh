@@ -15,7 +15,7 @@ java -jar "$TMP/binary.jar"
 kotlinc tests/mock_android/*.kt "$SRC/BleBinaryCodec.kt" "$SRC/BleNodeClient.kt" -include-runtime -d "$TMP/gatt.jar"
 java -cp "$TMP/gatt.jar" com.offgrid.messenger.BleClientContractTestKt
 java -cp "$TMP/gatt.jar" com.offgrid.messenger.BinaryGattTestKt
-kotlinc "$SRC/MediaTransferWindow.kt" tests/MediaWindowContractTest.kt -include-runtime -d "$TMP/window.jar"
+kotlinc "$SRC/OgmCodec.kt" "$SRC/MediaTransferWindow.kt" tests/MediaWindowContractTest.kt -include-runtime -d "$TMP/window.jar"
 java -jar "$TMP/window.jar"
 python3 tests/test_phase256_scope.py
 printf 'PASS Phase 2.5.6 focused Android source/transport suite (not Gradle build)\n'

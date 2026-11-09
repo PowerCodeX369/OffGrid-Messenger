@@ -15,6 +15,13 @@ fun main() {
     check(MessageMutation.apply(incoming,OgmCodec.EDIT,MessageMutation.editPayload("0000000000000000","Attack"))==null)
     check(MessageMutation.apply(incoming,OgmCodec.EDIT,ByteArray(3))==null)
     check(runCatching{MessageMutation.editPayload(id,"x".repeat(501))}.isFailure)
+    // Replay protection: an older captured EDIT must not overwrite a newer edit.
+    val e1=MessageMutation.apply(incoming,OgmCodec.EDIT,MessageMutation.editPayload(id,"v1"),1000L)!!
+    val e2=MessageMutation.apply(e1,OgmCodec.EDIT,MessageMutation.editPayload(id,"v2"),2000L)!!
+    check(e2.text=="v2" && e2.editedAt==2000L)
+    check(MessageMutation.apply(e2,OgmCodec.EDIT,MessageMutation.editPayload(id,"v1"),1000L)==null)
+    check(MessageMutation.apply(e2,OgmCodec.EDIT,MessageMutation.editPayload(id,"v3"),2000L)!!.text=="v3")
+    check(HistoryCodec.decode(HistoryCodec.encode(listOf(e2)))[0].editedAt==2000L)
     val deleted=MessageMutation.apply(edited,OgmCodec.DELETE,MessageMutation.deletePayload(id))!!
     check(deleted.deleted && deleted.bytes==null && !deleted.edited)
     check(MessageMutation.apply(deleted,OgmCodec.EDIT,edit)==null)

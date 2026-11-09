@@ -27,3 +27,15 @@ jobs:
           node-version: '22'
       - name: Browser protocol contract
         run: node firmware/tests/test-protocol.cjs
+  firmware-host:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Firmware and protocol host tests
+        run: bash firmware/tests/run_stability_tests.sh

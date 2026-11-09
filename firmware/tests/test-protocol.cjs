@@ -30,3 +30,12 @@ const P=require('../../web/protocol.js');
  const str=P.base64url(P.randomBytes(32));assert.equal(str.length,43);assert.equal(P.fromBase64url(str).length,32);
  console.log('PASS 256-bit pairing-key encoding');
 })().catch(e=>{console.error(e);process.exitCode=1;});
+
+/* Replay protection contract: app.js must ignore EDITs older than the last applied edit
+ * and persist the edit timestamp, mirroring android MessageMutation.apply(sentAtMs). */
+{
+  const src=require('node:fs').readFileSync(require('node:path').join(__dirname,'../../web/app.js'),'utf8');
+  require('node:assert/strict')(src.includes('if(env.ts<(r.editTs||0))return;'),'stale EDIT guard missing');
+  require('node:assert/strict')(src.includes('editTs:r.editTs||0'),'editTs must be persisted');
+  console.log('PASS stale/replayed EDIT guard present and persisted');
+}
