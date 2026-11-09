@@ -3,7 +3,7 @@
    Keys are stored on each ESP32 and imported only into browser RAM over physical USB. No external servers. */
 const P=globalThis.OGP,$=id=>document.getElementById(id);
 const MAX_CHARS=500,MAX_PHOTO=96*1024,STORE='OffGridMessengerV14';
-const APP_VERSION='1.4.7-adaptive-phy';
+const APP_VERSION='1.4.9-diagnostics';
 const stateRank={sending:0,queued:0,sent:1,failed:1,delivered:2,read:3};
 const encoder=new TextEncoder();
 let port=null,reader=null,writer=null,readPromise=null,closing=false,verified=false,serialBuffer='',writeChain=Promise.resolve(),handshakeTimer=null;
@@ -46,6 +46,145 @@ let queuedReceipts=new Set(),pendingReads=new Set(),theme='dark';
 let imageMode='hq';
 let radioTelemetry={peer:'NONE',rssi:null,phy:1,mode:'AUTO',delivered:0,retries:0,failures:0,txok:0,txfail:0,rx:0,hello:0,available:false};
 let selectedPhotoId=null,viewerZoomed=false,viewerTouchX=null,viewerPreviousFocus=null;
+/* Isolated benchmark state; measurements never enter message history. */
+const speedDiagnostics={busy:false,serial:null,full:null,results:{},output:null,runButton:null,capable:false};
+const benchToken=()=>crypto.getRandomValues(new Uint32Array(1))[0]||1;
+const kbps=(bytes,ms)=>bytes/1024/Math.max(.001,ms/1000);
+function diagnosticLine(line){
+ const parts=line.split('|'),type=parts[0],test=speedDiagnostics.serial;
+ if(type==='USBOUT'&&test?.kind==='usbOut'&&Number(parts[1])===test.token){
+  const seq=Number(parts[2]),hex=parts[3]||'';
+  if(seq===test.count&&/^[a-fA-F0-9]{320}$/.test(hex)){
+   test.count++;test.bytes+=hex.length/2;
+  }
+  return true;
+ }
+ if(type==='USBOUT_DONE'){
+  if(test?.kind==='usbOut'&&Number(parts[1])===test.token){
+   const bytes=Number(parts[3]),elapsed=performance.now()-test.started;
+   if(test.count===Number(parts[2])&&test.bytes===bytes)test.resolve({bytes,ms:elapsed,nodeMs:Number(parts[4]),packets:test.count});
+   else test.reject(Error(`Received ${test.count} of ${parts[2]} USB packets`));
+  }
+  return true;
+ }
+ if(type==='USBIN_DONE'){
+  if(test?.kind==='usbIn'&&Number(parts[1])===test.token){
+   const bytes=Number(parts[3]),packets=Number(parts[2]);
+   if(bytes===test.expectedBytes&&packets===test.expectedPackets)test.resolve({bytes,ms:performance.now()-test.started,nodeMs:Number(parts[4]),packets});
+   else test.reject(Error(`USB input short: ${bytes}/${test.expectedBytes} bytes, ${packets}/${test.expectedPackets} packets`));
+  }
+  return true;
+ }
+ if(type==='RBENCH_START')return true;
+ if(type==='RBENCH_ERROR'){
+  if(test?.kind==='radio'&&Number(parts[1])===test.token)test.reject(Error(parts[2]||'Radio benchmark failed'));
+  return true;
+ }
+ if(type==='RBENCH_DONE'){
+  if(test?.kind==='radio'&&Number(parts[1])===test.token){
+   test.resolve({requested:Number(parts[2]),ok:Number(parts[3]),lost:Number(parts[4]),retries:Number(parts[5]),
+     bytes:Number(parts[6]),ms:Number(parts[7]),rttMs:Number(parts[8]),phy:Number(parts[9]),rssi:Number(parts[10])});
+  }
+  return true;
+ }
+ return false;
+}
+function diagPrint(message){
+ if(speedDiagnostics.output){speedDiagnostics.output.textContent+=message+'\n';speedDiagnostics.output.scrollTop=speedDiagnostics.output.scrollHeight;}
+}
+function serialBenchmark(kind,timeoutMs,commandFactory){
+ if(speedDiagnostics.serial)return Promise.reject(Error('Benchmark already running'));
+ return new Promise((resolve,reject)=>{
+  const token=benchToken(),test={kind,token,started:performance.now(),count:0,bytes:0,expectedBytes:0,expectedPackets:0};
+  const stop=(error,value)=>{
+   if(speedDiagnostics.serial!==test)return;
+   clearTimeout(test.timer);speedDiagnostics.serial=null;
+   error?reject(error):resolve(value);
+  };
+  test.resolve=value=>stop(null,value);test.reject=error=>stop(error);
+  speedDiagnostics.serial=test;
+  test.timer=setTimeout(()=>test.reject(Error(`${kind} diagnostic timed out`)),timeoutMs);
+  Promise.resolve().then(()=>commandFactory(test)).catch(test.reject);
+ });
+}
+async function runUsbInput(){
+ return serialBenchmark('usbIn',60000,async test=>{
+  const count=96,hex=P.hex(Uint8Array.from({length:160},(_,i)=>i));
+  test.expectedPackets=count;test.expectedBytes=count*160;
+  await writeLine('USBIN_BEGIN '+test.token);
+  for(let i=0;i<count;i++)await writeLine(`USBIN ${test.token} ${i} ${hex}`);
+  await writeLine('USBIN_END '+test.token);
+ });
+}
+async function runUsbOutput(){
+ return serialBenchmark('usbOut',60000,test=>writeLine(`USBOUT ${test.token} 96`));
+}
+async function runRadioBenchmark(){
+ return serialBenchmark('radio',120000,test=>writeLine(`RBENCH ${test.token} 32`));
+}
+async function runFullBenchmark(){
+ if(!secretKey)throw Error('Configure the same encryption key on both nodes first');
+ return new Promise((resolve,reject)=>{
+  const job={kind:'probe',control:false,probeId:P.newId(),created:Date.now(),started:performance.now(),fragmentRTTs:[],size:8192};
+  const finish=(err,value)=>{
+   if(speedDiagnostics.full!==bench)return;
+   clearTimeout(bench.timer);speedDiagnostics.full=null;
+   err?reject(err):resolve(value);
+  };
+  const bench={job,resolve:value=>finish(null,value),reject:err=>finish(err)};
+  speedDiagnostics.full=bench;
+  bench.timer=setTimeout(()=>finish(Error('Remote browser did not authenticate and acknowledge test payload')),120000);
+  transferQueue.push(job);runTransfers();
+ });
+}
+function showSpeedDiagnostics(){
+ showDialog('Connection speed diagnostics',body=>{
+  body.append(el('p','','Isolated tests compare USB upload, USB download, ESP-NOW radio with device-level ACK, and a fully encrypted browser-to-browser transfer. Both nodes must run the new diagnostic firmware. No test data goes into chat history.'));
+  const output=el('pre','diagnostic-results',speedDiagnostics.capable?'Ready. Connect both boards, then run one test at a time.\n':'Phase 1.4.9 diagnostic firmware not detected. Flash both boards before running.\n');body.append(output);
+  const actions=el('div','diagnostic-actions'),run=el('button','primary-button','Run all tests'),copy=el('button','quiet-button','Copy results');
+  speedDiagnostics.output=output;speedDiagnostics.runButton=run;
+  run.onclick=()=>void runDiagnostics();
+  copy.onclick=()=>navigator.clipboard.writeText(output.textContent).then(()=>toast('Results copied')).catch(()=>toast('Select the results to copy them'));
+  actions.append(run,copy);body.append(actions);
+  body.append(el('p','','USB throughput measures transport with no ESP-NOW. Radio throughput uses 32 direct ESP32-to-ESP32 packets and firmware ACKs. Full path uses an encrypted 8 KiB probe and waits for the other browser to authenticate it. These tests report delivered payload throughput, not PHY speed.'));
+ });
+}
+async function runDiagnostics(){
+ if(speedDiagnostics.busy)return;
+ if(!speedDiagnostics.capable){toast('This ESP32 needs the Phase 1.4.9 diagnostic firmware. Flash both nodes first.');return;}
+ if(!verified||!writer){toast('Connect your ESP32 first');return;}
+ if(runningTransfers||transferQueue.length||pendingRadio()){toast('Finish any active photo or text first');return;}
+ speedDiagnostics.busy=true;if(speedDiagnostics.runButton)speedDiagnostics.runButton.disabled=true;
+ speedDiagnostics.output.textContent='';speedDiagnostics.results={};
+ const begin=performance.now();
+ const tests=[['USB PC → ESP32',runUsbInput,'usbIn'],['USB ESP32 → PC',runUsbOutput,'usbOut'],['ESP-NOW radio only',runRadioBenchmark,'radio'],['Encrypted browser-to-browser',runFullBenchmark,'full']];
+ diagPrint('OffGrid diagnostic release 1.4.9 · '+new Date().toLocaleString());
+ diagPrint(`Local node: ${localMac||'unknown'} · PHY: ${radioTelemetry.phy} Mbps · RSSI: ${radioTelemetry.rssi??'unknown'} dBm`);
+ for(const [label,fn,key] of tests){
+  if(!verified){diagPrint('Stopped: ESP32 disconnected.');break;}
+  diagPrint('');diagPrint(`Running ${label}…`);
+  try{
+   const result=await fn();speedDiagnostics.results[key]=result;
+   diagPrint(`${label}: ${kbps(result.bytes,result.ms).toFixed(2)} KiB/s · ${result.bytes} bytes in ${(result.ms/1000).toFixed(2)} s`);
+   if(key==='usbIn'||key==='usbOut')diagPrint(`  ESP32 elapsed: ${result.nodeMs} ms · ${result.packets} packets`);
+   if(key==='radio')diagPrint(`  ${result.ok}/${result.requested} delivered · lost ${result.lost} · retries ${result.retries} · mean MCU ACK ${result.rttMs} ms · PHY ${result.phy} Mbps`);
+   if(key==='full')diagPrint(`  ${result.frames} fragments · avg browser fragment ACK ${result.avgFragmentMs.toFixed(0)} ms · authenticated final ACK confirmed`);
+  }catch(e){diagPrint(`${label}: FAILED — ${e.message}`);}
+ }
+ const d=speedDiagnostics.results;
+ if(d.usbIn&&d.usbOut&&d.radio&&d.full){
+  const minUsb=Math.min(kbps(d.usbIn.bytes,d.usbIn.ms),kbps(d.usbOut.bytes,d.usbOut.ms));
+  const radio=kbps(d.radio.bytes,d.radio.ms),full=kbps(d.full.bytes,d.full.ms);
+  diagPrint('');diagPrint('COMPARISON');
+  if(minUsb>full*3&&radio>full*3)diagPrint('USB and radio are both considerably faster than the full path: investigate browser-level per-fragment ACK overhead.');
+  else if(minUsb<radio*0.6)diagPrint('USB is markedly slower than the radio-only test: investigate USB serial transport and firmware console processing.');
+  else if(radio<minUsb*0.6)diagPrint('Radio-only throughput is lower than USB throughput: inspect ESP-NOW retry/PHY performance.');
+  else diagPrint('No single obvious bottleneck: compare timings and loss rates across repeated tests.');
+ }
+ diagPrint(`\nTotal diagnostic session: ${((performance.now()-begin)/1000).toFixed(1)} s`);
+ speedDiagnostics.busy=false;if(speedDiagnostics.runButton)speedDiagnostics.runButton.disabled=false;
+}
+
 try{theme=localStorage.getItem('offgrid_theme')==='light'?'light':'dark';imageMode=localStorage.getItem('offgrid_image_mode')==='lossless'?'lossless':'hq';linkPreference=['auto','range','speed'].includes(localStorage.getItem('offgrid_link_preference'))?localStorage.getItem('offgrid_link_preference'):'auto';adaptivePhotos=localStorage.getItem('offgrid_adaptive_photos')!=='off';}catch{}
 document.body.classList.toggle('light',theme==='light');
 const macKey=()=>localMac||'unknown';
@@ -305,6 +444,21 @@ async function processRx(mac,session,packetId,rawHex){
  }catch(e){console.warn('Encrypted message rejected:',e);toast('Encrypted transfer rejected: wrong pairing key, corrupted data, or authentication failure.');}
 }
 async function handleEnvelope(env,mac){
+ if(env.kind===P.types.probe){
+  /* Only a fully authenticated AES-GCM probe gets a browser-level ACK. */
+  if(env.body.length!==8192)return;
+  enqueueReceipt('probeAck',env.id);
+  return;
+ }
+ if(env.kind===P.types.probeAck){
+  const test=speedDiagnostics.full;
+  if(test&&env.body.length===8&&P.hex(env.body)===test.job.probeId){
+   const job=test.job,ms=performance.now()-job.started;
+   test.resolve({bytes:job.size,ms,frames:job.fragmentRTTs.length,
+    avgFragmentMs:job.fragmentRTTs.reduce((a,b)=>a+b,0)/Math.max(1,job.fragmentRTTs.length)});
+  }
+  return;
+ }
  if(env.kind===P.types.delivered||env.kind===P.types.read){if(env.body.length!==8)return;const original=P.hex(env.body),r=recordMap.get(original);if(r&&r.dir==='out')await setState(r,env.kind===P.types.read?'read':'delivered');return;}
  if(env.kind!==P.types.text&&env.kind!==P.types.image)return;
  let r=recordMap.get(env.id);
@@ -321,9 +475,10 @@ function enqueueReceipt(kind,targetId){const key=kind+':'+targetId;if(queuedRece
 function sendReadReceipts(){if(!secretKey||!verified||!isVisible())return;for(const r of records){if(r.dir==='in'&&!r.readSent&&!pendingReads.has(r.id)){pendingReads.add(r.id);enqueueReceipt('read',r.id);}}}
 function makeJob(r){return {kind:r.kind,control:false,record:r,created:Date.now()};}
 async function sealJob(job){
- const transferId=P.newId(),id=job.control?P.newId():job.record.id;
+ const transferId=P.newId(),id=job.control?P.newId():(job.kind==='probe'?job.probeId:job.record.id);
  let kind,body,width=0,height=0;
  if(job.control){kind=P.types[job.kind];body=P.unhex(job.targetId);}
+ else if(job.kind==='probe'){kind=P.types.probe;body=P.randomBytes(job.size);}
  else if(job.record.kind==='text'){kind=P.types.text;body=P.textBytes(job.record.text);}
  else{kind=P.types.image;const r=job.record,mimeNum=({'image/webp':0,'image/png':1,'image/jpeg':2})[r.mime];if(mimeNum===undefined)throw Error('Unsupported image encoding');body=P.concat(Uint8Array.of(mimeNum),r.bytes);width=r.width;height=r.height;}
  const plain=P.makeEnvelope(kind,id,body,Math.floor(Date.now()/1000),width,height);
@@ -367,6 +522,7 @@ async function transferFragments(chunks,job){
   const result=await Promise.race(inflight.values());inflight.delete(result.i);
   if(result.error){recordLinkFailure();fatal=result.error;break;}
   completed++;recordLinkResult(result.ms,result.attempts,job.kind==='image'&&!job.control);
+  if(job.kind==='probe')job.fragmentRTTs.push(result.ms);
   if(job.record){
     const elapsed=Math.max(0.001,(performance.now()-transferStart)/1000);
     job.record.speedKbps=((completed/chunks.length)*(job.record.kind==='image'?job.record.bytes.length:P.textBytes(job.record.text).length))/1024/elapsed;
@@ -397,11 +553,13 @@ async function runTransfers(){
    }catch(e){
     if(job.control){if(job.kind==='read')pendingReads.delete(job.targetId);console.warn('Receipt send failed',job.kind,e.message);}
     else if(job.record){await setState(job.record,'failed',e.message);toast('Transfer failed. Click its bubble to retry.');}
+    else if(job.kind==='probe'&&speedDiagnostics.full?.job===job){speedDiagnostics.full.reject(e);}
    }finally{if(job.control)queuedReceipts.delete(job.kind+':'+job.targetId);activeTransfer=null;}
   }
  }finally{runningTransfers=false;}
 }
 function parseLine(raw){const s=raw.trim();if(!s)return;
+ if(diagnosticLine(s))return;
  // Record serial input for diagnosis, without exposing the 256-bit pairing key.
  usbLastRawAt=performance.now();
  if(s.startsWith('KEYDATA|'))logUsb('ESP32> KEYDATA|<redacted>');
@@ -434,7 +592,7 @@ function parseLine(raw){const s=raw.trim();if(!s)return;
  }
  if(s.startsWith('RATE_ERROR|')){console.warn('Radio PHY configuration:',s);toast('ESP32 PHY rate could not be applied; falling back to safe rate.');return;}
  if(s.startsWith('RATE|')||s.startsWith('PEER|'))return;
- if(s.startsWith('READY|')){const parts=s.split('|');if(!parts.includes('PROTO=2')||!parts.includes('CAP=180')||!parts.includes('STABLE=1')||!parts.includes('NVSKEY=1')){if(!firmwareMismatchNotified){toast('Wrong ESP32 firmware protocol; open Diagnostics to see its READY response.');firmwareMismatchNotified=true;}showUsbHint('Incompatible READY. Expected PROTO=2, CAP=180, STABLE=1, NVSKEY=1.');console.warn('Incompatible firmware READY:',s);return;}const mac=parts[1];if(!/^[0-9A-Fa-f:]{17}$/.test(mac))return;if(verified&&localMac===mac)return;void onReady(mac);return;}
+ if(s.startsWith('READY|')){const parts=s.split('|');speedDiagnostics.capable=parts.includes('DIAG=1');if(!parts.includes('PROTO=2')||!parts.includes('CAP=180')||!parts.includes('STABLE=1')||!parts.includes('NVSKEY=1')){if(!firmwareMismatchNotified){toast('Wrong ESP32 firmware protocol; open Diagnostics to see its READY response.');firmwareMismatchNotified=true;}showUsbHint('Incompatible READY. Expected PROTO=2, CAP=180, STABLE=1, NVSKEY=1.');console.warn('Incompatible firmware READY:',s);return;}const mac=parts[1];if(!/^[0-9A-Fa-f:]{17}$/.test(mac))return;if(verified&&localMac===mac)return;void onReady(mac);return;}
  if(s.startsWith('QUEUED|')){const [,session,id,hex]=s.split('|'),slot=radioByHex.get(hex);if(slot){slot.wire=`${session}:${id}`;radioByWire.set(slot.wire,slot);}return;}
  if(s.startsWith('RX|')){const [,mac,session,id,data]=s.split('|');if(mac&&session&&id&&data)void processRx(mac,session,id,data);return;}
  if(/^(SENT|DELIVERED|FAILED|RETRY|RADIO_ERROR)\|/.test(s)){const [type,session,id,extra]=s.split('|');if(type==='RADIO_ERROR'){console.warn('ESP-NOW:',extra);if(radioTelemetry.txfail<=2)toast('Radio send issue: '+extra+' — check Radio diagnostics in Settings.');}else onRadio(type,session,id,extra);return;}
@@ -470,6 +628,9 @@ async function connect(){if(!navigator.serial){toast('Use Chromium with Web Seri
     usbWaitTimer=setInterval(updateUsbWait,1200);
  }catch(e){toast('USB connection failed: '+e.message);await disconnect();}}
 async function disconnect(){if(closing)return;closing=true;
+ speedDiagnostics.serial?.reject(Error('USB disconnected during benchmark'));
+ speedDiagnostics.full?.reject(Error('USB disconnected during benchmark'));
+ speedDiagnostics.capable=false;
  try{if(handshakeTimer)clearInterval(handshakeTimer);handshakeTimer=null;if(usbWaitTimer){clearInterval(usbWaitTimer);usbWaitTimer=null;}if(reader)try{await reader.cancel();}catch{}if(readPromise)try{await readPromise;}catch{}if(writer){try{writer.releaseLock();}catch{}writer=null;}if(port){try{await port.close();}catch{}port=null;}}
  finally{
   finishNodeKeyRequest('get',null,Error('Disconnected'));finishNodeKeyRequest('set',null,Error('Disconnected'));
@@ -566,7 +727,7 @@ function showRename(){showDialog('Contact name',body=>{body.append(el('p','','Th
 async function clearHistory(){if(!verified||!secretKey)return;if(runningTransfers||pendingRadio()||transferQueue.length){toast('Finish active transfers before clearing history.');return;}if(!confirm('Delete encrypted chat history for this ESP32 from this browser? This cannot be undone.'))return;
  await wipeStored();records=[];recordMap.clear();revokePhotos();renderHistory();toast('Local chat history cleared.');closeDialog();}
 function showInfo(){showDialog('Chat information',body=>{[['Contact',activeContact],['Your ESP32',localMac||'Disconnected'],['Protocol','ESP-NOW firmware protocol 2 / encrypted app protocol OGM4'],['Security',secretKey?'AES-256-GCM, 256-bit random shared key':'Not paired'],['Photo target',`${Math.round(photoBudget()/1024)} KB optimized, 96 KB absolute`],['Radio PHY',radioTelemetry.available?`${radioTelemetry.phy} Mbps TX, RSSI ${radioTelemetry.rssi===null?'unknown':radioTelemetry.rssi+' dBm'}`:'Waiting for telemetry'],['Link profile',`${linkPreference}; adaptive PHY; photo window ${chosenWindow({kind:'image',control:false})}; auto ${adaptivePhotos?'on':'off'}`],['Key storage','ESP32 NVS, browser RAM only'],['History','AES-GCM encrypted IndexedDB']].forEach(([a,b])=>{const line=el('div','info-line');line.append(el('span','',a),el('strong','',b));body.append(line);});body.append(el('p','','Grey single tick = transmitted; grey double tick = peer decrypted and confirmed; blue double tick = peer app reported it was viewed. Browser history is stored encrypted at rest.'));});}
-function showSettings(){showDialog('Settings',body=>{body.append(el('p','','Phase 1.4.7: experimental adaptive ESP-NOW PHY (1/6/12 Mbps). The original 1.4.5.2 stable firmware remains your rollback. Photo concurrency is separately adjustable.'));
+function showSettings(){showDialog('Settings',body=>{body.append(el('p','','Phase 1.4.9: isolated speed diagnostics with adaptive ESP-NOW PHY (1/6/12 Mbps). The original 1.4.5.2 stable firmware remains your rollback. Photo concurrency is separately adjustable.'));
  const linkLabel=el('label','','Transfer profile');body.append(linkLabel);const linkSelect=document.createElement('select');linkSelect.className='setting-select';
  [['auto','Auto · balanced photo compression, stable packet flow'],['range','Range first · more compressed photos, ~32 KB'],['speed','Quality first · less compression, ~60 KB']].forEach(([v,t])=>{const opt=document.createElement('option');opt.value=v;opt.textContent=t;linkSelect.append(opt);});
  linkSelect.value=linkPreference;linkSelect.onchange=()=>{linkPreference=linkSelect.value;try{localStorage.setItem('offgrid_link_preference',linkPreference);}catch{}if(verified)void writeLine('RATE '+linkPreference.toUpperCase()).catch(()=>{});updateLinkBadge();};body.append(linkSelect);
@@ -579,7 +740,7 @@ function showSettings(){showDialog('Settings',body=>{body.append(el('p','','Phas
  const modeLabel=el('label','','Image optimization');body.append(modeLabel);const select=document.createElement('select');select.className='setting-select';
  [['hq','Optimized WebP/JPEG (adaptive 32–60 KB target, may resize)'],['lossless','Lossless PNG + metadata stripping (reject if >96 KB)']].forEach(([v,t])=>{const opt=document.createElement('option');opt.value=v;opt.textContent=t;select.append(opt);});select.value=imageMode;select.onchange=()=>{imageMode=select.value;try{localStorage.setItem('offgrid_image_mode',imageMode);}catch{}updateLinkBadge();};body.append(select);
  body.append(el('p','','Metadata stripping does not make photos tiny. High-quality mode can reduce dimensions and introduce slight loss; lossless PNG keeps the canvas pixels exact but may not fit through this radio link.'));
- const buttons=el('div','settings-actions'),rename=el('button','quiet-button','Rename contact'),key=el('button','quiet-button','Node pairing key'),diagnostics=el('button','quiet-button','Radio diagnostics'),clear=el('button','soft-button','Clear history');rename.onclick=showRename;key.onclick=showPairing;diagnostics.onclick=diagnoseUsb;clear.onclick=()=>void clearHistory();buttons.append(rename,key,diagnostics,clear);body.append(buttons);
+ const buttons=el('div','settings-actions'),rename=el('button','quiet-button','Rename contact'),key=el('button','quiet-button','Node pairing key'),diagnostics=el('button','quiet-button','USB diagnostics'),speedTest=el('button','primary-button','Speed diagnostics'),clear=el('button','soft-button','Clear history');rename.onclick=showRename;key.onclick=showPairing;diagnostics.onclick=diagnoseUsb;speedTest.onclick=showSpeedDiagnostics;clear.onclick=()=>void clearHistory();buttons.append(speedTest,rename,key,diagnostics,clear);body.append(buttons);
  });}
 $('viewerClose').onclick=closePhotoViewer;
 $('viewerPrevious').onclick=()=>navigatePhoto(-1);
@@ -609,4 +770,4 @@ document.addEventListener('visibilitychange',sendReadReceipts);window.addEventLi
 window.addEventListener('beforeunload',revokePhotos);
 setInterval(pruneIncoming,45000);
 (async()=>{try{db=await openDb();}catch(e){toast('IndexedDB unavailable. Encrypted storage cannot work: '+e.message);}refreshStatus();})();
-console.info('OffGrid Phase 1.4.7 Adaptive PHY — browser AES-256-GCM, ESP32 NVS keys, peer TX rates 1/6/12 Mbps.');
+console.info('OffGrid Phase 1.4.9 Diagnostics — unchanged encrypted chat, isolated USB / radio / full-path benchmarks.');

@@ -1,48 +1,67 @@
-# OffGrid Messenger Phase 1.4.8 — USB Output Performance Candidate
+# OffGrid Messenger — Phase 1.4.9 Diagnostics
 
-**Base:** experimental Phase 1.4.7 (12 Mbps adaptive unicast). **Frozen rollback:** Phase 1.4.5.2 WatchdogFix. Neither original is modified.
+**Purpose:** Measure, before changing the working photo transfer protocol, where its ~1.1 KB/s throughput bottleneck lies.
 
-## What the screenshot demonstrated
+## Baselines and safety
 
-Two nodes at −33/−25 dBm using an actual **12 Mbps PHY** still delivered an encrypted 45.7 KB photo at only ~1.1 KB/s. Increasing the PHY by itself cannot improve the browser ↔ USB ↔ ESP-NOW ↔ USB ↔ browser acknowledgement cycle.
+- **Frozen recovery baseline:** `OffGridMessenger_Phase1_4_5_2_WatchdogFix.zip` (unchanged; keep a copy).
+- **Direct parent:** Phase 1.4.8 USBOutput. This release retains its adaptive 1 / 6 / 12 Mbps PHY, NVS pairing key, 500-character text, Web Crypto AES-256-GCM, photo gallery, existing chat ACK/retry format, and watchdog task fix.
+- This is a **diagnostic build**, NOT a photo-speed fix. It does not use batched photo acknowledgments yet. The benchmark radio frames are used exclusively for tests.
+- Both ESP32-C3 boards must be flashed with the Phase 1.4.9 firmware. Otherwise USB diagnostic commands and radio-only packets will not work.
 
-## Exactly what changed
+## Installation
 
-Only `main/main.c` changed, plus this README and one regression test. Every `web/` file and the encryption/fragment format are **identical** to Phase 1.4.7.
+1. Extract ZIP and open the containing directory as an ESP-IDF project in VS Code.
+2. ESP-IDF target: `esp32c3`. Flash **both** boards using ordinary Flash, **not** Erase Flash; this preserves their NVS pairing keys.
+3. Quit other serial monitors; connect both boards by native USB.
+4. From this project directory run:
 
-- Replaced hundreds of `putchar()` calls for each HEX payload with one bounded, complete `fwrite()` record: `RX|...|HEX` and `QUEUED|...|HEX` still have *exactly* the same format.
-- Changed `stdout` from `_IONBF` (unbuffered) to `_IOLBF` (line buffered), flushing each newline-terminated record as one buffered operation.
-- Preserved the existing 1/6/12 Mbps peer-adaptive PHY, send scheduling, ACK and retry semantics, NVS key storage, Web Crypto encryption in browser, 500-character messaging, photos, UI, galleries, and FreeRTOS watchdog fix.
-
-**Why:** the old `print_hex()` wrote 320 hexadecimal characters separately for a full 160-byte fragment. This may be a substantial component of the observed ~440 ms round trip over USB Serial/JTAG. This release tests that hypothesis. It does **not** batch radio ACKs or remove app-level acknowledgments, and is not guaranteed to reach a particular KB/s without hardware testing.
-
-## Install
-
-1. Keep a copy of your working 1.4.7 firmware and the known-good 1.4.5.2 ZIP.
-2. In VS Code with ESP-IDF 5.2+, set target `esp32c3`, build and **flash both boards** (normal flash, not erase, to retain NVS keys).
-3. Close old browser tabs and stop the previous local HTTP server.
-4. From this project folder run:
-   ```sh
+   ```bash
    python3 -m http.server 8765 --directory web
    ```
-5. Open `http://localhost:8765/?v=1.4.8` in two Chromium tabs; hard refresh and connect each board.
 
-## Acceptance tests
+5. Open two Chromium tabs at `http://localhost:8765/?v=1.4.9`, hard-refresh, and connect **one distinct board per tab**. Use the same `localhost` address/port as your earlier version to preserve browser-stored encrypted chat history. The AES key itself is loaded into RAM from ESP32 NVS over local USB.
+6. Confirm normal **encrypted Hello** messages work both ways **before** benchmarking.
+7. Open **Settings (gear) → Speed diagnostics → Run all tests** in only the sender's tab. Keep the other tab connected with the same AES key. Do not send chats during the benchmark.
+8. Click **Copy results** and paste them into ChatGPT. Repeat from the other side if comparing directions.
 
-1. Test 10 encrypted texts in both directions and receipt ticks first. Ensure no `task_wdt` warnings and no missing/garbled RX/QUEUED serial lines.
-2. Verify PHY still rises to 12 Mbps in Auto under strong signal.
-3. Send the *same 45.7 KB photo* at the same distance. Compare **KB/s and ACK ms** against 1.4.7, which measured about 1.1 KB/s / 440 ms.
-4. Confirm the image finishes, decrypts, and displays on the other browser; gallery still works.
-5. If speed does not improve, preserve the 1.4.7 result and collect diagnostics. The next meaningful optimization would be selectively batched fragment acknowledgments while retaining full-photo browser confirmation, a more invasive protocol update requiring separate testing.
+## What the four tests mean
 
-## Local checks
+1. **USB PC → ESP32:** 96 × 160-byte hex records written to the device; firmware checks the bytes and returns one summary. No ESP-NOW or browser ACK per packet. Includes console command parsing and USB serial transfer, not just PHY USB line rate.
+2. **USB ESP32 → PC:** firmware streams 96 × 160-byte hex records and a final summary. No radio involved. Measures browser-visible USB receive speed.
+3. **ESP-NOW radio only:** 32 × 160-byte data packets sent by the sender ESP32. The remote ESP32 sends an MCU-level ACK for each. **No browser involvement on either side during this test.** The data PHY may use the current adaptive 1/6/12 Mbps peer rate; acknowledgments stay at low-rate broadcast. The measured value includes conservative per-packet scheduler delays and MCU ACKs; it is **not** the raw PHY bitrate.
+4. **Full encrypted path:** 8 KiB of random diagnostic data encrypted using the existing AES-256-GCM browser key, segmented and transmitted over the same normal fragment/APPACK route used by photos. The remote browser authenticates the complete payload and responds with an encrypted final acknowledgment. Neither test payload nor ACK is stored in chat history.
 
-```sh
-node --check web/app.js
-node tests/test-protocol.cjs
-node tests/test-adaptive.cjs
-python3 tests/test_usb_records.py
-python3 tests/test-watchdog-fix.py
-```
+The diagnostic results show KiB/s, elapsed milliseconds, direct-radio packet losses/retries, ACK round trips, and a suggested next investigation. None of these results are fabricated or inferred from RSSI.
 
-**Testing limits:** Host wire-format tests do not substitute for compiling firmware with ESP-IDF or measuring your ESP32-C3 boards. Do not treat this as the new stable baseline until it passes hardware acceptance tests.
+## Interpretation
+
+- USB tests much faster than radio only: investigate radio send/receive scheduling and retransmissions.
+- Radio-only fast but full encrypted path slow: investigate the per-fragment browser ACK path, Web Serial framing, browser scheduling and batching acknowledgments.
+- USB slower than radio-only: investigate native USB serial console handling.
+- The 12 Mbps PHY rate alone does **not** imply 12 Mbps file throughput.
+
+## Protocol changes (diagnostic only)
+
+Additional newline-delimited USB commands:
+
+- `USBIN_BEGIN <token>` / `USBIN <token> <seq> <160 bytes hex>` / `USBIN_END <token>` → `USBIN_DONE|token|count|bytes|duration_ms`.
+- `USBOUT <token> <count>` → `USBOUT|token|seq|hex` lines, followed by `USBOUT_DONE|token|count|bytes|duration_ms`.
+- `RBENCH <token> <count>` → `RBENCH_START`, then `RBENCH_DONE|token|count|ok|lost|retries|bytes|duration_ms|avg_ack_ms|phy|rssi`.
+
+ESP-NOW frame types 5 and 6 are strictly diagnostic. **Types 1–4, the existing message format, ACKs, keys, and chat logic are unchanged.** `READY` includes `DIAG=1` in addition to its original fields. Browser app envelope adds experimental type 5 (probe) and type 6 (probe acknowledgment); normal envelope types 1–4 are unchanged.
+
+## Verification performed in this build environment
+
+- `node --check web/app.js` and `node --check web/protocol.js`
+- `node tests/test-diagnostic-protocol.cjs` (encrypted probe reassembly and tamper rejection)
+- `python tests/test-diagnostic-contract.py` (firmware/client contract, existing watchdog/key/rate paths)
+- Existing protocol and adaptive-controller tests
+- C syntax-only check with host-type stubs (not an ESP-IDF compile)
+- Dialog render smoke test (local page navigation blocked by browser policy; loaded HTML/scripts directly for UI check)
+
+**Not performed:** actual ESP-IDF build, physical board testing, USB throughput measurements, or real radio throughput measurements. If firmware compilation fails, send the actual error output; do not assume the build is validated by these tests.
+
+## Rollback
+
+Keep both the original frozen 1.4.5.2 ZIP and the working 1.4.8 ZIP. If the diagnostic release destabilizes chatting, stop testing, flash both boards back to the known-good firmware, and restore its bundled web app. Do not use Erase Flash unless you intend to erase stored pairing keys.
