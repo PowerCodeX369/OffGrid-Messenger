@@ -9,6 +9,11 @@ import android.companion.AssociationRequest
 import android.companion.BluetoothLeDeviceFilter
 import android.companion.CompanionDeviceManager
 import android.content.Intent
+import android.net.Uri
+import android.media.MediaPlayer
+import android.graphics.BitmapFactory
+import java.io.File
+import java.util.concurrent.Executors
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
@@ -41,12 +46,17 @@ import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.Image
+import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
@@ -63,7 +73,9 @@ private val PaleBlue = Color(0xFFEAF1FF)
 private val Aqua = Color(0xFF60B9EE)
 private val mainHandler = Handler(Looper.getMainLooper())
 
-data class ChatItem(val id:String,val text:String,val outgoing:Boolean,val timestamp:Long,var status:String="sent")
+data class ChatItem(val id:String,val text:String,val outgoing:Boolean,val timestamp:Long,
+    val status:String="sent",val kind:Int=OgmCodec.TEXT,val bytes:ByteArray?=null,
+    val mime:String="",val width:Int=0,val height:Int=0,val durationMs:Int=0,val progress:Int=0)
 private data class Transfer(val frames:List<ByteArray>,val messageId:String,val control:Boolean=false,
     var index:Int=0,var session:String="",var packetId:String="",var attempts:Int=0)
 
@@ -83,6 +95,15 @@ class MainActivity : ComponentActivity() {
     private var dark by mutableStateOf(false)
     private val bleDiagnostics = mutableStateListOf<String>()
     private var pickerHandled = false
+    private val mediaWorker = Executors.newSingleThreadExecutor()
+    private lateinit var voiceRecorder:VoiceNoteRecorder
+    private var recording by mutableStateOf(false)
+    private var playingId by mutableStateOf<String?>(null)
+    private var voicePlayer:MediaPlayer?=null
+    private var voicePlaybackFile:File?=null
+    private var recordAutoStop:Runnable?=null
+    private val playedReceipts=mutableSetOf<String>()
+    private var activityDestroyed=false
 
     private fun bleTrace(message: String) {
         val time = java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.US).format(java.util.Date())
@@ -108,17 +129,31 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         secure = SecureKeyStore(this)
+        voiceRecorder = VoiceNoteRecorder(this)
         trustedAddress = secure.nodeAddress()
         pairingSaved = secure.readPairingKey()?.let { it.fill(0);true } ?: false
         dark = (resources.configuration.uiMode and 0x30) == 0x20
         link = BleNodeClient(this, {secure.readPairingKey()}, {s,ready ->
             state=s;connected=ready
-            if(ready) startNext() else { isSending=false; cancelAckTimeout() }
+            if(ready) startNext() else {
+                isSending=false; cancelAckTimeout()
+                if(recording) {
+                    recordAutoStop?.let(mainHandler::removeCallbacks);recordAutoStop=null
+                    runCatching { voiceRecorder.finish(cancel=true) };recording=false
+                }
+            }
         }, ::consumeLine, ::bleTrace)
         setContent { OffGridScreen() }
         if(trustedAddress!=null && pairingSaved) mainHandler.post { reconnectIfPermitted() }
     }
-    override fun onDestroy() { link?.stop();cancelAckTimeout();super.onDestroy() }
+    override fun onDestroy() {
+        activityDestroyed=true
+        stopVoicePlayback()
+        if (recording) runCatching { voiceRecorder.finish(cancel=true) }
+        recordAutoStop?.let(mainHandler::removeCallbacks)
+        mediaWorker.shutdownNow()
+        link?.stop();cancelAckTimeout();super.onDestroy()
+    }
     private fun hasBluetoothPermission():Boolean = Build.VERSION.SDK_INT < 31 ||
         checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT)==PackageManager.PERMISSION_GRANTED
     private fun reconnectIfPermitted() {
@@ -160,7 +195,24 @@ class MainActivity : ComponentActivity() {
         if(pending.isEmpty())return
         val job=pending.first()
         job.index++
+        if(!job.control && job.frames.size>1 && (job.index%8==0 || job.index==job.frames.size)) {
+            val idx=items.indexOfFirst { it.id==job.messageId }
+            if(idx>=0)items[idx]=items[idx].copy(progress=100*job.index/job.frames.size)
+        }
         if(job.index<job.frames.size){
+            // A long photo/voice transfer must not hold up an authenticated
+            // delivered/read/played receipt. Interleave at an ACK boundary,
+            // never in the middle of a radio frame or a GATT write.
+            if(!job.control) {
+                val urgent=pending.firstOrNull { it.control }
+                if(urgent!=null) {
+                    pending.remove(urgent)
+                    pending.addFirst(urgent)
+                    isSending=false
+                    startNext()
+                    return
+                }
+            }
             job.attempts=0
             link?.send("MSGHEX ${OgmCodec.hex(job.frames[job.index])}")
             waitForAck("queued")
@@ -172,10 +224,10 @@ class MainActivity : ComponentActivity() {
             startNext()
         }
     }
-    private fun pushEnvelope(kind:Int,messageId:String,body:ByteArray,control:Boolean=false) {
+    private fun pushEnvelope(kind:Int,messageId:String,body:ByteArray,control:Boolean=false,width:Int=0,height:Int=0) {
         val secret=secure.readPairingKey() ?: return
         try {
-            val frames=OgmCodec.seal(secret,kind,messageId,body)
+            val frames=OgmCodec.seal(secret,kind,messageId,body,width,height)
             pending.addLast(Transfer(frames,messageId,control))
             startNext()
         } catch (ex: Exception) { state="Encryption error: ${ex.message}" }
@@ -189,6 +241,81 @@ class MainActivity : ComponentActivity() {
         items.add(ChatItem(id,value,true,System.currentTimeMillis(),"sending"))
         pushEnvelope(OgmCodec.TEXT,id,value.toByteArray(Charsets.UTF_8))
     }
+    private fun sendPhoto(uri:Uri) {
+        if(!connected)return
+        state="Preparing private photo…"
+        mediaWorker.execute {
+            val result=runCatching { PhotoPreparer.prepare(contentResolver,uri) }
+            mainHandler.post {
+                if(activityDestroyed)return@post
+                result.onSuccess { photo ->
+                    if(!connected){state="Photo preparation finished, but node disconnected";return@onSuccess}
+                    val id=OgmCodec.newId()
+                    val body=MediaPayload.photoBody(photo.mime,photo.bytes,photo.width,photo.height)
+                    items.add(ChatItem(id,"Photo",true,System.currentTimeMillis(),"sending",
+                        OgmCodec.IMAGE,photo.bytes,photo.mime,photo.width,photo.height))
+                    pushEnvelope(OgmCodec.IMAGE,id,body,width=photo.width,height=photo.height)
+                    state="Encrypted photo queued · ${photo.bytes.size/1024} KiB"
+                }.onFailure { state="Photo not sent: ${it.message}" }
+            }
+        }
+    }
+    private fun startVoiceRecording() {
+        if(!connected){state="Connect to record";return}
+        try {
+            voiceRecorder.start();recording=true
+            state="Recording voice · tap stop to encrypt and send (30s max)"
+            val timeout=Runnable { if(recording) finishVoiceRecording() }
+            recordAutoStop=timeout
+            mainHandler.postDelayed(timeout,30_000L)
+        } catch(ex:Exception) { state="Microphone unavailable: ${ex.message}";recording=false }
+    }
+    private fun finishVoiceRecording() {
+        if(!recording)return
+        recordAutoStop?.let(mainHandler::removeCallbacks);recordAutoStop=null
+        recording=false
+        val result=runCatching { voiceRecorder.finish() }
+        result.onSuccess { voice ->
+            if(voice==null||!connected) { state="Recording discarded";return@onSuccess }
+            try {
+                val id=OgmCodec.newId()
+                val body=MediaPayload.voiceBody(voice.mime,voice.bytes,voice.durationMs)
+                val (w,h)=MediaPayload.durationParts(voice.durationMs)
+                items.add(ChatItem(id,"Voice note",true,System.currentTimeMillis(),"sending",
+                    OgmCodec.VOICE,voice.bytes,voice.mime,durationMs=voice.durationMs))
+                pushEnvelope(OgmCodec.VOICE,id,body,width=w,height=h)
+                state="Encrypted voice note queued · ${voice.bytes.size/1024} KiB"
+            } catch(ex:Exception) { state="Voice not sent: ${ex.message}" }
+        }.onFailure { state="Voice recording failed: ${it.message}" }
+    }
+    private fun stopVoicePlayback() {
+        runCatching { voicePlayer?.release() }
+        voicePlayer=null
+        voicePlaybackFile?.delete();voicePlaybackFile=null
+        playingId=null
+    }
+    private fun toggleVoicePlayback(item:ChatItem) {
+        if(playingId==item.id){stopVoicePlayback();return}
+        stopVoicePlayback()
+        val raw=item.bytes ?: return
+        try {
+            val suffix=when(item.mime){"audio/mp4"->".m4a";"audio/ogg"->".ogg";else->".webm"}
+            val file=File.createTempFile("offgrid-play-",suffix,cacheDir)
+            voicePlaybackFile=file
+            file.writeBytes(raw)
+            val player=MediaPlayer()
+            voicePlayer=player
+            player.setDataSource(file.absolutePath)
+            player.setOnCompletionListener {
+                stopVoicePlayback()
+                // 'Played' is only sent after the listener finishes the audio.
+                if(!item.outgoing && playedReceipts.add(item.id))controlReceipt(OgmCodec.PLAYED,item.id)
+            }
+            player.setOnErrorListener { _,_,_ -> stopVoicePlayback();state="Audio decoder error";true }
+            player.prepare();player.start();playingId=item.id
+        } catch(ex:Exception){ stopVoicePlayback();state="Cannot play ${item.mime}: ${ex.message}" }
+    }
+
     private fun controlReceipt(kind:Int,targetId:String) {
         val id=OgmCodec.newId()
         pushEnvelope(kind,id,OgmCodec.unhex(targetId),control=true)
@@ -197,7 +324,8 @@ class MainActivity : ComponentActivity() {
         val index=items.indexOfFirst { it.id==targetId&&it.outgoing }
         if(index>=0){
             val current=items[index]
-            if(current.status!="read")items[index]=current.copy(status=status)
+            if(current.status!="played" && (current.status!="read" || status=="played"))
+                items[index]=current.copy(status=status)
         }
     }
     private fun consumeLine(line:String) {
@@ -246,8 +374,28 @@ class MainActivity : ComponentActivity() {
                                 controlReceipt(OgmCodec.READ,env.id)
                             }
                         }
+                        OgmCodec.IMAGE -> {
+                            val photo=MediaPayload.unpackPhoto(env.text,env.width,env.height)
+                            if(items.none{it.id==env.id}){
+                                items.add(ChatItem(env.id,"Photo",false,env.timestamp,"read",OgmCodec.IMAGE,
+                                    photo.bytes,photo.mime,photo.width,photo.height))
+                                controlReceipt(OgmCodec.DELIVERED,env.id)
+                                controlReceipt(OgmCodec.READ,env.id)
+                            }
+                        }
+                        OgmCodec.VOICE -> {
+                            val ms=MediaPayload.durationFromParts(env.width,env.height)
+                            val voice=MediaPayload.unpackVoice(env.text,ms)
+                            if(items.none{it.id==env.id}){
+                                items.add(ChatItem(env.id,"Voice note",false,env.timestamp,"read",OgmCodec.VOICE,
+                                    voice.bytes,voice.mime,durationMs=voice.durationMs))
+                                controlReceipt(OgmCodec.DELIVERED,env.id)
+                                controlReceipt(OgmCodec.READ,env.id)
+                            }
+                        }
                         OgmCodec.DELIVERED -> if(env.text.size==8) updateReceipt(OgmCodec.hex(env.text),"delivered")
                         OgmCodec.READ -> if(env.text.size==8) updateReceipt(OgmCodec.hex(env.text),"read")
+                        OgmCodec.PLAYED -> if(env.text.size==8) updateReceipt(OgmCodec.hex(env.text),"played")
                     }
                 } catch (ex: Exception) { Log.w("OffGrid", "Rejected invalid encrypted frame",ex) }
             }
@@ -355,6 +503,12 @@ class MainActivity : ComponentActivity() {
             else if (trustedAddress == null && pairingSaved) startSystemPairing(systemPicker::launch)
             else reconnectIfPermitted()
         }
+        val photoPicker=rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri:Uri? ->
+            if(uri!=null)sendPhoto(uri)
+        }
+        val micPermission=rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+            if(granted)startVoiceRecording() else state="Microphone permission is required to record voice notes"
+        }
         MaterialTheme(colorScheme=colors,shapes=Shapes(extraLarge=RoundedCornerShape(26.dp),large=RoundedCornerShape(22.dp))){
             Surface(modifier=Modifier.fillMaxSize(),color=colors.background){
                 BoxWithConstraints(Modifier.fillMaxSize()){
@@ -394,7 +548,7 @@ class MainActivity : ComponentActivity() {
                                     Column(Modifier.fillMaxWidth().padding(14.dp),verticalArrangement=Arrangement.spacedBy(8.dp)){
                                         Text("Saved device: ${trustedAddress?:"None"}",style=MaterialTheme.typography.bodySmall)
                                         Text("AES-256-GCM · ESP-NOW Long Range · BLE bridge",style=MaterialTheme.typography.bodySmall)
-                                        Text("Stage 2.0 includes encrypted text. Camera, voice, notifications and walkie-talkie follow after BLE testing.",style=MaterialTheme.typography.bodySmall)
+                                        Text("Stage 2.1: encrypted text, photos and AAC voice notes. Camera capture, notifications and push-to-talk are later stages.",style=MaterialTheme.typography.bodySmall)
                                         TextButton(onClick={showKey=true}){Text("Update pairing key")}
                                         TextButton(onClick={link?.stop();state="Disconnected"}){Text("Disconnect")}
                                         TextButton(onClick={startSystemPairing(systemPicker::launch)}){Text("Choose another ESP32")}
@@ -446,15 +600,42 @@ class MainActivity : ComponentActivity() {
                                         Surface(color=fill,shape=RoundedCornerShape(21.dp),shadowElevation=1.dp,
                                             modifier=Modifier.widthIn(max=340.dp)){
                                             Column(Modifier.padding(horizontal=14.dp, vertical=10.dp)){
-                                                Text(item.text,style=MaterialTheme.typography.bodyMedium)
+                                                when(item.kind) {
+                                                    OgmCodec.IMAGE -> {
+                                                        val bitmap=remember(item.id) {
+                                                            item.bytes?.let { data -> runCatching {
+                                                                BitmapFactory.decodeByteArray(data,0,data.size)?.asImageBitmap()
+                                                            }.getOrNull() }
+                                                        }
+                                                        if(bitmap!=null) {
+                                                            androidx.compose.foundation.Image(bitmap,contentDescription="Encrypted photo",contentScale=ContentScale.Fit,
+                                                                modifier=Modifier.fillMaxWidth().heightIn(max=260.dp))
+                                                        } else Text("Photo unavailable",style=MaterialTheme.typography.bodyMedium)
+                                                        Text("${item.width} × ${item.height} · encrypted photo",style=MaterialTheme.typography.labelSmall)
+                                                    }
+                                                    OgmCodec.VOICE -> {
+                                                        Row(verticalAlignment=Alignment.CenterVertically) {
+                                                            IconButton(onClick={toggleVoicePlayback(item)}) {
+                                                                Icon(if(playingId==item.id) Icons.Default.Stop else Icons.Default.PlayArrow,
+                                                                    if(playingId==item.id)"Stop voice" else "Play voice")
+                                                            }
+                                                            Text("Voice note · ${item.durationMs/1000}s",style=MaterialTheme.typography.bodyMedium)
+                                                        }
+                                                    }
+                                                    else -> Text(item.text,style=MaterialTheme.typography.bodyMedium)
+                                                }
+                                                if(item.outgoing && item.progress in 1..99 && item.kind!=OgmCodec.TEXT) {
+                                                    LinearProgressIndicator(progress={item.progress/100f},modifier=Modifier.fillMaxWidth())
+                                                    Text("Transferring ${item.progress}%",style=MaterialTheme.typography.labelSmall)
+                                                }
                                                 Spacer(Modifier.height(6.dp))
                                                 Row(Modifier.align(Alignment.End),verticalAlignment=Alignment.CenterVertically){
                                                     Text(java.text.SimpleDateFormat("HH:mm",java.util.Locale.getDefault()).format(java.util.Date(item.timestamp)),
                                                         style=MaterialTheme.typography.labelSmall,color=colors.onSurface.copy(alpha=.48f))
                                                     if(item.outgoing){
                                                         Spacer(Modifier.width(4.dp))
-                                                        Icon(if(item.status=="read")Icons.Default.CheckCircle else Icons.Default.Check,
-                                                            item.status,tint=if(item.status=="read")colors.primary else colors.onSurface.copy(alpha=.55f),
+                                                        Icon(if(item.status=="read"||item.status=="played")Icons.Default.CheckCircle else Icons.Default.Check,
+                                                            item.status,tint=if(item.status=="read"||item.status=="played")colors.primary else colors.onSurface.copy(alpha=.55f),
                                                             modifier=Modifier.size(15.dp))
                                                     }
                                                 }
@@ -471,13 +652,20 @@ class MainActivity : ComponentActivity() {
                                         enabled=connected,shape=RoundedCornerShape(25.dp),maxLines=4,
                                         keyboardOptions=KeyboardOptions(imeAction=ImeAction.Send),
                                         keyboardActions=KeyboardActions(onSend={if(draft.isNotBlank()){sendText(draft);draft=""}}))
+                                    IconButton(onClick={photoPicker.launch("image/*")},enabled=connected && !recording) {
+                                        Icon(Icons.Default.Image,"Send a photo",tint=colors.primary)
+                                    }
                                     FilledIconButton(onClick={
-                                        if(draft.isNotBlank()){sendText(draft);draft=""}
-                                        else state="Voice recording arrives in Stage 2.2"
+                                        if(recording)finishVoiceRecording()
+                                        else if(draft.isNotBlank()){sendText(draft);draft=""}
+                                        else if(checkSelfPermission(Manifest.permission.RECORD_AUDIO)==PackageManager.PERMISSION_GRANTED)
+                                            startVoiceRecording()
+                                        else micPermission.launch(Manifest.permission.RECORD_AUDIO)
                                     },enabled=connected,modifier=Modifier.size(53.dp),
                                         colors=IconButtonDefaults.filledIconButtonColors(containerColor=colors.primary)){
-                                        if(draft.isBlank())Icon(Icons.Default.Mic,"Voice coming soon",tint=Color.White)
-                                        else Icon(Icons.AutoMirrored.Filled.Send,"Send",tint=Color.White)
+                                        if(recording) Icon(Icons.Default.Stop,"Finish and send voice",tint=Color.White)
+                                        else if(draft.isNotBlank())Icon(Icons.AutoMirrored.Filled.Send,"Send",tint=Color.White)
+                                        else Icon(Icons.Default.Mic,"Record voice",tint=Color.White)
                                     }
                                 }
                             }
