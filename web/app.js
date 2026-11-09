@@ -1,9 +1,9 @@
 'use strict';
-/* OffGrid Phase 1.4.4: discovery, NVS pairing keys, same encrypted app protocol.
+/* OffGrid Phase 1.4.5 STABLE: proven broadcast radio + NVS keys, same encrypted app protocol.
    Keys are stored on each ESP32 and imported only into browser RAM over physical USB. No external servers. */
 const P=globalThis.OGP,$=id=>document.getElementById(id);
 const MAX_CHARS=500,MAX_PHOTO=96*1024,STORE='OffGridMessengerV14';
-const APP_VERSION='1.4.4';
+const APP_VERSION='1.4.5-stable';
 const stateRank={sending:0,queued:0,sent:1,failed:1,delivered:2,read:3};
 const encoder=new TextEncoder();
 let port=null,reader=null,writer=null,readPromise=null,closing=false,verified=false,serialBuffer='',writeChain=Promise.resolve(),handshakeTimer=null;
@@ -31,7 +31,7 @@ function diagnoseUsb(){
   const copy=el('button','quiet-button','Copy diagnostics');copy.onclick=()=>navigator.clipboard?.writeText(usbLog.join('\n')+'\n'+usbHandshakeIssue).then(()=>toast('Copied USB diagnostic log')).catch(()=>toast('Clipboard unavailable'));
   const retry=el('button','primary-button','Send STATUS again');retry.onclick=()=>{if(!writer){toast('Connect your ESP32 first');return;}void writeLine('STATUS').then(()=>{logUsb('HOST> STATUS (manual)');toast('STATUS sent');}).catch(e=>toast(e.message));};
   controls.append(copy,retry);body.append(controls);
-  body.append(el('p','',`Expected: READY|MAC|…|PROTO=2|CAP=228|DISC=1|NVSKEY=1. Radio counters: peer ${radioTelemetry.peer}, TX OK ${radioTelemetry.txok}, TX failed ${radioTelemetry.txfail}, RX ${radioTelemetry.rx}, discovery received ${radioTelemetry.hello}. If TX OK advances but RX stays at zero on both nodes, diagnose channel and physical radio.`));
+  body.append(el('p','',`Expected: READY|MAC|…|PROTO=2|CAP=180|STABLE=1|NVSKEY=1. Radio counters: last received peer ${radioTelemetry.peer}, TX queued ${radioTelemetry.txok}, TX errors ${radioTelemetry.txfail}, RX ${radioTelemetry.rx}. At stable broadcast rate, peer RSSI appears after a valid incoming radio packet.`));
  });
 }
 
@@ -71,29 +71,24 @@ const dbDelete=(store,key)=>txRequest(store,'readwrite',st=>st.delete(key));
 const listStored=()=>txRequest('messages','readonly',st=>st.index('owner').getAll(IDBKeyRange.only(macKey())));
 async function wipeStored(){const rows=await listStored();await new Promise((resolve,reject)=>{const tx=db.transaction('messages','readwrite'),st=tx.objectStore('messages');for(const row of rows)st.delete(row.pk);tx.oncomplete=resolve;tx.onerror=()=>reject(tx.error);});}
 function chosenWindow(){
- // Application-layer flow control only: does not change RF power, channel or the ESP-NOW PHY rate.
- if(linkPreference==='range')return 1;
- if(linkPreference==='speed')return linkStats.mode==='weak'?1:linkStats.cleanStreak>=4?3:2;
- if(linkStats.samples<5||linkStats.cleanStreak<5)return 1;
- if(linkStats.avgMs<380&&linkStats.cleanStreak>=14)return 3;
- if(linkStats.avgMs<850)return 2;
+ // Recovery build: exactly one frame at a time until real devices prove stable.
  return 1;
 }
 function photoBudget(){
  if(imageMode==='lossless')return MAX_PHOTO;
- if(linkStats.mode==='weak'||linkPreference==='range')return 48*1024;
- if(linkPreference==='speed'||linkStats.mode==='strong')return 72*1024;
- return 64*1024;
+ if(linkStats.mode==='weak'||linkPreference==='range')return 32*1024;
+ if(linkPreference==='speed'||linkStats.mode==='strong')return 60*1024;
+ return 48*1024;
 }
 function updateLinkBadge(){
  const node=$('linkModeLabel');if(!node)return;
  const speed=chosenWindow(),budget=Math.round(photoBudget()/1024);
- const name=linkPreference==='auto'?'Auto':linkPreference==='range'?'Range first':'Speed first';
+ const name=linkPreference==='auto'?'Auto compression':linkPreference==='range'?'Smaller photos':'Higher-quality photos';
  let quality='learning';
  if(linkStats.samples>3)quality=linkStats.mode==='strong'?'strong':linkStats.mode==='weak'?'weak':'steady';
- const phy=radioTelemetry.available?`${radioTelemetry.phy} Mbps PHY`:'radio starting';
+ const phy=radioTelemetry.available?'stable radio · 1 Mbps PHY':'stable radio starting';
  const signal=radioTelemetry.available&&radioTelemetry.rssi!==null?`${radioTelemetry.rssi} dBm`:'signal —';
- node.textContent=`${name} · ${radioTelemetry.available&&radioTelemetry.peer==='NONE'?'Searching for radio peer':phy} · ${signal} · ${speed} in flight · ~${budget} KB photos${linkStats.lastKBs?` · last ${linkStats.lastKBs.toFixed(1)} KB/s`:``}`;
+ node.textContent=`${name} · ${phy} · ${signal} · ${speed} in flight · ~${budget} KB photos${linkStats.lastKBs?` · last ${linkStats.lastKBs.toFixed(1)} KB/s`:``}`;
  node.title=`ESP-NOW peer: ${radioTelemetry.peer}. TX successful: ${radioTelemetry.txok}, TX failures: ${radioTelemetry.txfail}, received: ${radioTelemetry.rx}, discovery beacons received: ${radioTelemetry.hello}. Reported PHY rate is not actual file throughput.`;
 }
 function recordLinkResult(rtt,attempts){
@@ -334,7 +329,7 @@ async function oneFragment(frame){
     const slot={hex,resolve,reject,wire:null,timer:null};radioByHex.set(hex,slot);
     slot.timer=setTimeout(()=>{
       if(radioByHex.get(hex)===slot){clearSlot(slot);reject(Error('Radio/browser acknowledgment timeout'));}
-    },14500);
+    },7000);
     writeLine('MSGHEX '+hex).catch(e=>{if(radioByHex.get(hex)===slot){clearSlot(slot);reject(e);}});
    });
    return {ms:Math.max(1,performance.now()-started),attempts:attempt+1};
@@ -420,7 +415,7 @@ function parseLine(raw){const s=raw.trim();if(!s)return;
  }
  if(s.startsWith('RATE_ERROR|')){console.warn('Radio PHY configuration:',s);toast('ESP32 PHY rate could not be applied; falling back to safe rate.');return;}
  if(s.startsWith('RATE|')||s.startsWith('PEER|'))return;
- if(s.startsWith('READY|')){const parts=s.split('|');if(!parts.includes('PROTO=2')||!parts.includes('CAP=228')||!parts.includes('DISC=1')||!parts.includes('NVSKEY=1')){if(!firmwareMismatchNotified){toast('Flash Phase 1.4.4 firmware on BOTH boards (DISC=1, NVSKEY=1).');firmwareMismatchNotified=true;}console.warn('Incompatible firmware READY:',s);return;}const mac=parts[1];if(!/^[0-9A-Fa-f:]{17}$/.test(mac))return;if(verified&&localMac===mac)return;void onReady(mac);return;}
+ if(s.startsWith('READY|')){const parts=s.split('|');if(!parts.includes('PROTO=2')||!parts.includes('CAP=180')||!parts.includes('STABLE=1')||!parts.includes('NVSKEY=1')){if(!firmwareMismatchNotified){toast('Flash Phase 1.4.5 STABLE firmware on BOTH boards (CAP=180, STABLE=1, NVSKEY=1).');firmwareMismatchNotified=true;}console.warn('Incompatible firmware READY:',s);return;}const mac=parts[1];if(!/^[0-9A-Fa-f:]{17}$/.test(mac))return;if(verified&&localMac===mac)return;void onReady(mac);return;}
  if(s.startsWith('QUEUED|')){const [,session,id,hex]=s.split('|'),slot=radioByHex.get(hex);if(slot){slot.wire=`${session}:${id}`;radioByWire.set(slot.wire,slot);}return;}
  if(s.startsWith('RX|')){const [,mac,session,id,data]=s.split('|');if(mac&&session&&id&&data)void processRx(mac,session,id,data);return;}
  if(/^(SENT|DELIVERED|FAILED|RETRY|RADIO_ERROR)\|/.test(s)){const [type,session,id,extra]=s.split('|');if(type==='RADIO_ERROR'){console.warn('ESP-NOW:',extra);if(radioTelemetry.txfail<=2)toast('Radio send issue: '+extra+' — check Radio diagnostics in Settings.');}else onRadio(type,session,id,extra);return;}
@@ -455,7 +450,7 @@ async function disconnect(){if(closing)return;closing=true;
   readPromise=null;serialBuffer='';verified=false;port=null;writer=null;if(pendingRadio())failPendingRadio(Error('Disconnected'));if(activeTransfer?.record)void setState(activeTransfer.record,'failed','Disconnected');
  transferQueue=[];runningTransfers=false;queuedReceipts.clear();pendingReads.clear();incoming.clear();localMac=null;secretKey=null;radioTelemetry.available=false;refreshStatus();closing=false;}}
 async function sendText(){const input=$('messageInput'),text=input.value.trim();if(!verified||!secretKey||!text)return;
- if(radioTelemetry.available&&radioTelemetry.peer==='NONE'){toast('Waiting for the other ESP32. Check both boards are powered and on channel 6.');return;}if(countChars(text)>MAX_CHARS){toast('Maximum 500 characters per text message.');return;}
+ if(countChars(text)>MAX_CHARS){toast('Maximum 500 characters per text message.');return;}
  const r={id:P.newId(),kind:'text',dir:'out',ts:Date.now(),text,status:'sending',progress:0};await appendRecord(r);input.value='';updateByteCount();transferQueue.push(makeJob(r));runTransfers();}
 function updateByteCount(){const input=$('messageInput'),n=countChars(input.value);$('byteCount').textContent=`${n}/${MAX_CHARS}`;$('byteCount').classList.toggle('over',n>MAX_CHARS);input.style.height='36px';input.style.height=Math.min(120,input.scrollHeight)+'px';$('sendButton').disabled=!verified||!secretKey||!input.value.trim()||n>MAX_CHARS;}
 function convertCanvas(canvas,type,q){return new Promise(resolve=>canvas.toBlob(resolve,type,q));}
@@ -544,14 +539,14 @@ async function migrateLegacy(){const oldKey='offgrid_phase13_history_'+macKey().
 function showRename(){showDialog('Contact name',body=>{body.append(el('p','','This is a local nickname for the remote node.'));const field=document.createElement('input');field.value=activeContact;field.maxLength=36;body.append(field);const save=el('button','primary-button','Save contact name');save.onclick=()=>{setName(field.value.trim());persistName();closeDialog();};body.append(el('div','modal-actions')).append(save);setTimeout(()=>{field.focus();field.select();},40);});}
 async function clearHistory(){if(!verified||!secretKey)return;if(runningTransfers||pendingRadio()||transferQueue.length){toast('Finish active transfers before clearing history.');return;}if(!confirm('Delete encrypted chat history for this ESP32 from this browser? This cannot be undone.'))return;
  await wipeStored();records=[];recordMap.clear();revokePhotos();renderHistory();toast('Local chat history cleared.');closeDialog();}
-function showInfo(){showDialog('Chat information',body=>{[['Contact',activeContact],['Your ESP32',localMac||'Disconnected'],['Protocol','ESP-NOW firmware protocol 2 / encrypted app protocol OGM4'],['Security',secretKey?'AES-256-GCM, 256-bit random shared key':'Not paired'],['Photo target',`${Math.round(photoBudget()/1024)} KB optimized, 96 KB absolute`],['Radio PHY',radioTelemetry.available?`${radioTelemetry.phy} Mbps TX, RSSI ${radioTelemetry.rssi===null?'unknown':radioTelemetry.rssi+' dBm'}`:'Waiting for telemetry'],['Link profile',`${linkPreference}; adaptive PHY and 1–3 fragments in flight`],['Key storage','ESP32 NVS, browser RAM only'],['History','AES-GCM encrypted IndexedDB']].forEach(([a,b])=>{const line=el('div','info-line');line.append(el('span','',a),el('strong','',b));body.append(line);});body.append(el('p','','Grey single tick = transmitted; grey double tick = peer decrypted and confirmed; blue double tick = peer app reported it was viewed. Browser history is stored encrypted at rest.'));});}
-function showSettings(){showDialog('Settings',body=>{body.append(el('p','','Phase 1.4.4: independent radio discovery, NVS pairing keys, reliable encrypted chat, and in-app photo gallery.'));
+function showInfo(){showDialog('Chat information',body=>{[['Contact',activeContact],['Your ESP32',localMac||'Disconnected'],['Protocol','ESP-NOW firmware protocol 2 / encrypted app protocol OGM4'],['Security',secretKey?'AES-256-GCM, 256-bit random shared key':'Not paired'],['Photo target',`${Math.round(photoBudget()/1024)} KB optimized, 96 KB absolute`],['Radio PHY',radioTelemetry.available?`${radioTelemetry.phy} Mbps TX, RSSI ${radioTelemetry.rssi===null?'unknown':radioTelemetry.rssi+' dBm'}`:'Waiting for telemetry'],['Link profile',`${linkPreference}; stable 1 Mbps radio and 1 fragment in flight`],['Key storage','ESP32 NVS, browser RAM only'],['History','AES-GCM encrypted IndexedDB']].forEach(([a,b])=>{const line=el('div','info-line');line.append(el('span','',a),el('strong','',b));body.append(line);});body.append(el('p','','Grey single tick = transmitted; grey double tick = peer decrypted and confirmed; blue double tick = peer app reported it was viewed. Browser history is stored encrypted at rest.'));});}
+function showSettings(){showDialog('Settings',body=>{body.append(el('p','','Phase 1.4.5 STABLE: restored reliable broadcast radio, ESP32 NVS pairing keys, encrypted chat and photo gallery.'));
  const linkLabel=el('label','','Transfer profile');body.append(linkLabel);const linkSelect=document.createElement('select');linkSelect.className='setting-select';
- [['auto','Auto · adapts 1–3 fragments in flight based on ACK latency/retries'],['range','Range first · 1 fragment in flight, ~48 KB images'],['speed','Speed first · up to 3 fragments in flight, ~72 KB images']].forEach(([v,t])=>{const opt=document.createElement('option');opt.value=v;opt.textContent=t;linkSelect.append(opt);});
+ [['auto','Auto · balanced photo compression, stable packet flow'],['range','Range first · more compressed photos, ~32 KB'],['speed','Quality first · less compression, ~60 KB']].forEach(([v,t])=>{const opt=document.createElement('option');opt.value=v;opt.textContent=t;linkSelect.append(opt);});
  linkSelect.value=linkPreference;linkSelect.onchange=()=>{linkPreference=linkSelect.value;try{localStorage.setItem('offgrid_link_preference',linkPreference);}catch{}if(verified)void writeLine('RATE '+linkPreference.toUpperCase()).catch(()=>{});updateLinkBadge();};body.append(linkSelect);
- body.append(el('p','','Link quality is estimated from receiver acknowledgments and retries, not measured distance. Firmware adapts unicast transmit PHY between 1/6/12 Mbps using RSSI and successful acknowledgments; Range first locks 1 Mbps. Image size and packet concurrency also adapt. Actual range depends on interference and antenna orientation.')); 
+ body.append(el('p','','Link quality is estimated from receiver acknowledgments and retries, not measured distance. Stable firmware intentionally uses broadcast at 1 Mbps for reliable short text and ACKs. Dynamic PHY selection is disabled until hardware throughput is validated. Image size and packet concurrency also adapt. Actual range depends on interference and antenna orientation.')); 
  const modeLabel=el('label','','Image optimization');body.append(modeLabel);const select=document.createElement('select');select.className='setting-select';
- [['hq','Optimized WebP/JPEG (adaptive 48–72 KB target, may resize)'],['lossless','Lossless PNG + metadata stripping (reject if >96 KB)']].forEach(([v,t])=>{const opt=document.createElement('option');opt.value=v;opt.textContent=t;select.append(opt);});select.value=imageMode;select.onchange=()=>{imageMode=select.value;try{localStorage.setItem('offgrid_image_mode',imageMode);}catch{}updateLinkBadge();};body.append(select);
+ [['hq','Optimized WebP/JPEG (adaptive 32–60 KB target, may resize)'],['lossless','Lossless PNG + metadata stripping (reject if >96 KB)']].forEach(([v,t])=>{const opt=document.createElement('option');opt.value=v;opt.textContent=t;select.append(opt);});select.value=imageMode;select.onchange=()=>{imageMode=select.value;try{localStorage.setItem('offgrid_image_mode',imageMode);}catch{}updateLinkBadge();};body.append(select);
  body.append(el('p','','Metadata stripping does not make photos tiny. High-quality mode can reduce dimensions and introduce slight loss; lossless PNG keeps the canvas pixels exact but may not fit through this radio link.'));
  const buttons=el('div','settings-actions'),rename=el('button','quiet-button','Rename contact'),key=el('button','quiet-button','Node pairing key'),diagnostics=el('button','quiet-button','Radio diagnostics'),clear=el('button','soft-button','Clear history');rename.onclick=showRename;key.onclick=showPairing;diagnostics.onclick=diagnoseUsb;clear.onclick=()=>void clearHistory();buttons.append(rename,key,diagnostics,clear);body.append(buttons);
  });}
@@ -583,4 +578,4 @@ document.addEventListener('visibilitychange',sendReadReceipts);window.addEventLi
 window.addEventListener('beforeunload',revokePhotos);
 setInterval(pruneIncoming,45000);
 (async()=>{try{db=await openDb();}catch(e){toast('IndexedDB unavailable. Encrypted storage cannot work: '+e.message);}refreshStatus();})();
-console.info('OffGrid Phase 1.4.4 — radio discovery and ESP32-NVS pairing keys.');
+console.info('OffGrid Phase 1.4.5 STABLE — browser AES-256-GCM, ESP32 NVS keys, reliable radio rollback.');
