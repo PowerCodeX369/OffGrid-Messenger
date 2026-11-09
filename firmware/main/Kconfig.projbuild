@@ -1,0 +1,10 @@
+menu "OffGrid USB input experiment"
+    config OFFGRID_USB_IRQ_RX
+        bool "Use interrupt-driven native USB Serial/JTAG receive (experimental)"
+        default y
+        help
+            Install the ESP-IDF USB Serial/JTAG ring-buffer driver and read
+            commands in batches. If disabled, use the last measured-working
+            getchar() path with a one-tick idle delay. Does not alter radio,
+            encryption, or NVS. Select only on ESP32-C3 native USB/JTAG.
+endmenu

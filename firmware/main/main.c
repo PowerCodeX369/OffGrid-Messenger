@@ -1,4 +1,4 @@
-/* OffGrid Messenger Phase 1.4.9 isolated diagnostics — ESP-IDF >= 5.2 / ESP32-C3.
+/* OffGrid Messenger Phase 1.4.10.2 interrupt-driven USB experiment — ESP-IDF >= 5.2 / ESP32-C3.
  * EXPERIMENTAL branch of FROZEN Phase 1.4.5.2 WatchdogFix.
  * AES-256-GCM runs in the BROWSER. NVS key management unchanged.
  * 1 Mbps broadcast HELLO/recovery; peer-aware 1/6/12 Mbps unicast for data.
@@ -29,6 +29,18 @@
 #include "nvs.h"
 #include "esp_idf_version.h"
 #include "link_rate_policy.h"
+#if CONFIG_OFFGRID_USB_IRQ_RX
+#include "driver/usb_serial_jtag.h"
+/* IDF 5.2 exposes the VFS helper through esp_vfs_dev.h; newer releases
+ * provide the dedicated public driver/usb_serial_jtag_vfs.h header. */
+#if __has_include("driver/usb_serial_jtag_vfs.h")
+#include "driver/usb_serial_jtag_vfs.h"
+#define OFFGRID_USB_VFS_USE_DRIVER() usb_serial_jtag_vfs_use_driver()
+#else
+#include "esp_vfs_dev.h"
+#define OFFGRID_USB_VFS_USE_DRIVER() esp_vfs_usb_serial_jtag_use_driver()
+#endif
+#endif
 #if ESP_IDF_VERSION < ESP_IDF_VERSION_VAL(5,2,0)
 #error "Adaptive PHY requires ESP-IDF 5.2 or newer"
 #endif
@@ -143,6 +155,50 @@ typedef struct {
 static usb_input_bench_t usb_input_bench;
 static uint8_t pairing_key[32];
 static bool pairing_key_present=false;
+/* These flags affect only USB receive. They do not change packet formats,
+ * radio control, NVS, browser cryptography or the watchdog dispatcher. */
+#if CONFIG_OFFGRID_USB_IRQ_RX
+static bool usb_irq_rx_active=false;
+static void setup_usb_irq_rx(void) {
+    usb_serial_jtag_driver_config_t cfg = {
+        .rx_buffer_size = 4096,
+        .tx_buffer_size = 4096,
+    };
+    esp_err_t err = usb_serial_jtag_driver_install(&cfg);
+    if (err == ESP_OK) {
+        /* Keep printf()/puts() routed to the SAME driver instance. Without
+         * this, the legacy VFS console would compete with the interrupt ISR
+         * for the USB peripheral and corrupt serial protocol frames. */
+        OFFGRID_USB_VFS_USE_DRIVER();
+        usb_irq_rx_active=true;
+        puts("USBMODE|IRQ|RXBUF=4096|TXBUF=4096");
+    } else {
+        /* Never install partially or keep trying during normal traffic.
+         * If initialization fails, the proven getchar() loop remains active. */
+        printf("USBMODE|LEGACY|DRIVER_INIT=%s\n", esp_err_to_name(err));
+    }
+}
+#endif
+/* Read complete FIFO/ISR batches into a caller-owned buffer; process them
+ * through the unchanged line parser one byte at a time. When the driver
+ * cannot initialize, use the last measured-working nonblocking stdio path. */
+static int serial_receive_batch(uint8_t *dst, size_t capacity) {
+#if CONFIG_OFFGRID_USB_IRQ_RX
+    if (usb_irq_rx_active) {
+        return usb_serial_jtag_read_bytes(dst, (uint32_t)capacity,
+                                          pdMS_TO_TICKS(100) + 1);
+    }
+#endif
+    (void)capacity;
+    int ch = getchar();
+    if (ch == EOF) {
+        clearerr(stdin);
+        vTaskDelay(1);
+        return 0;
+    }
+    dst[0] = (uint8_t)ch;
+    return 1;
+}
 static bool key_from_nvs(void){
     nvs_handle_t h;
     if(nvs_open("offgrid",NVS_READONLY,&h)!=ESP_OK)return false;
@@ -607,19 +663,14 @@ static void dispatcher(void *arg) {
 }
 static void serial_task(void *arg) {
     char line[SERIAL_LINE];size_t used=0;
+    uint8_t rx_batch[256];
     puts("HELP|MSGHEX, STATUS, APPACK, READ, KEYGET, KEYSET, RATE, USBOUT, USBIN_BEGIN/USBIN/USBIN_END, RBENCH");
-    while(true) {
-        int ch=getchar();
-        if(ch==EOF){
-            /* Keep the previously proven stdio console parser. The default
-             * USB Serial/JTAG VFS returns EOF when no character is waiting.
-             * One tick avoids 20ms polling gaps while still allowing the
-             * CPU0 idle task to run (watchdog stays enabled). */
-            clearerr(stdin);
-            vTaskDelay(1);
-            continue;
-        }
-        if(ch=='\r')continue;
+    while (true) {
+        int count=serial_receive_batch(rx_batch,sizeof(rx_batch));
+        if (count<=0)continue;
+        for (int pos=0;pos<count;pos++) {
+            int ch=rx_batch[pos];
+            if(ch=='\r')continue;
         if(ch=='\n') {
             line[used]=0;event_t e={0};bool send=false;
             if(strncmp(line,"USBOUT ",7)==0){
@@ -712,13 +763,19 @@ static void serial_task(void *arg) {
             used=0;
         }else if(used<sizeof(line)-1)line[used++]=(char)ch;
         else {used=0;puts("ERROR|LINE_TOO_LONG");}
+        } /* every byte in this USB receive batch */
     }
 }
 void app_main(void) {
     /* Line buffering batches complete protocol records but flushes on newline.
      * This avoids byte-by-byte USB VFS writes while retaining immediate READY. */
     setvbuf(stdout,NULL,_IOLBF,0);
-    puts("BOOT|OffGrid Messenger Phase 1.4.9 diagnostics / adaptive PHY, NVS, ACK");
+#if CONFIG_OFFGRID_USB_IRQ_RX
+    setup_usb_irq_rx();
+#else
+    puts("USBMODE|LEGACY|BUILD_SETTING");
+#endif
+    puts("BOOT|OffGrid Messenger Phase 1.4.10.2 USB IRQ test / adaptive PHY, NVS, ACK");
     esp_err_t e=nvs_flash_init();
     if(e==ESP_ERR_NVS_NO_FREE_PAGES||e==ESP_ERR_NVS_NEW_VERSION_FOUND){ESP_ERROR_CHECK(nvs_flash_erase());e=nvs_flash_init();}
     ESP_ERROR_CHECK(e);

@@ -1,3 +1,6 @@
 # The ESP32-C3 Super Mini usually exposes native USB Serial/JTAG.
 CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
 # Keep task watchdog enabled; the main task blocks via vTaskDelay.
+
+# 1.4.10.2: test USB Serial/JTAG ISR RX (switch off via menuconfig to rollback).
+CONFIG_OFFGRID_USB_IRQ_RX=y
