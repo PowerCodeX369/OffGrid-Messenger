@@ -182,6 +182,10 @@ fun PremiumMessenger(
     var renameDialog by remember { mutableStateOf(false) }
     var renameDraft by remember(contactName) { mutableStateOf(contactName) }
     var draft by rememberSaveableString("")
+    // Android's system one-handed feature translates the *entire* app surface.
+    // It does not resize the window. Reach mode provides genuinely reachable
+    // controls without trying to detect or override that OS transformation.
+    var reachMode by androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf(false) }
     val textColor=MaterialTheme.colorScheme.onSurface
     val unreadCount=ConversationUiRules.unreadCount(items)
     val bgStart by androidx.compose.animation.animateColorAsState(
@@ -232,7 +236,7 @@ fun PremiumMessenger(
                         onShowDiagnostics={showDiagnostics=true},onClear={confirmErase=true}
                     )
                     destination=="chats" && !wide -> NavigationPane(
-                        modifier=Modifier.fillMaxSize(),dark=dark,items=items,connected=connected,
+                        modifier=Modifier.fillMaxSize().navigationBarsPadding(),dark=dark,items=items,connected=connected,
                         status=status,unreadCount=unreadCount,compactHeight=compactHeight,selected=page,contactName=contactName,avatarBytes=avatarBytes,
                         openChat={page="chat"},openSettings={page="settings"},onConnect=actions.connect
                         )
@@ -245,7 +249,8 @@ fun PremiumMessenger(
                                 dark=dark,connected=connected,status=status,
                                 contactName=contactName,avatarBytes=avatarBytes,
                                 showBack=!wide,compact=micro,onBack={page="chats"},
-                                onInfo={showChatInfo=true},onSearch={showSearch=!showSearch}
+                                onInfo={showChatInfo=true},onSearch={showSearch=!showSearch},
+                                reachMode=reachMode,onToggleReach={reachMode=!reachMode;showSearch=false}
                             )
                             AnimatedVisibility(showSearch) {
                                 GlassCard(Modifier.fillMaxWidth(),dark=dark,radius=0.dp,frost=true) {
@@ -256,31 +261,64 @@ fun PremiumMessenger(
                                         placeholder={Text("Search this conversation")},shape=RoundedCornerShape(24.dp))
                                 }
                             }
-                            // Only this central region scrolls. Header and composer remain fixed.
-                            ChatTimeline(items=items,filter=if(showSearch)query else "",dark=dark,
-                                playingId=playingId,connected=connected,appVisible=appVisible,
-                                openPhoto={enlargedPhoto=it},playVoice=actions.playVoice,
-                                onVisible=actions.markVisible,onRetry=actions.retry,
-                                onLongPress={chosenMessage=it},
-                                modifier=Modifier.weight(1f).fillMaxWidth())
-                            AnimatedVisibility(!connected,enter=fadeIn(),exit=fadeOut()) {
-                                GlassCard(Modifier.fillMaxWidth(),dark=dark,radius=0.dp,frost=true) {
-                                    Row(Modifier.fillMaxWidth().padding(horizontal=14.dp,vertical=5.dp),
-                                        verticalAlignment=Alignment.CenterVertically) {
-                                        Text("Offline · connect your node",style=MaterialTheme.typography.labelMedium,
-                                            color=MaterialTheme.colorScheme.onSurfaceVariant,modifier=Modifier.weight(1f))
-                                        TextButton(onClick=actions.connect){Text("Connect")}
+                            // In Android's native one-handed mode the entire window is
+                            // translated downwards (not resized). A bottom-fixed composer
+                            // is physically outside the visible part of the screen. The
+                            // opt-in Reach mode moves it directly below the chat header
+                            // and keeps a compact, independently scrollable recent timeline.
+                            val composer: @Composable () -> Unit = {
+                                GlassComposer(
+                                    draft=draft,onDraft={draft=it.take(500)},connected=connected,
+                                    recording=recording,small=micro,dark=dark,
+                                    tapMode=accessibleVoiceTap,
+                                    onSend={if(draft.isNotBlank()){actions.sendText(draft);draft=""}},
+                                    onPhoto=actions.photo,onCamera=actions.camera,onPress=actions.micPress,
+                                    onRelease=actions.micRelease,onCancel=actions.micCancel
+                                )
+                            }
+                            val timeline: @Composable (Modifier) -> Unit = { chatModifier ->
+                                ChatTimeline(items=items,filter=if(showSearch)query else "",dark=dark,
+                                    playingId=playingId,connected=connected,appVisible=appVisible,
+                                    openPhoto={enlargedPhoto=it},playVoice=actions.playVoice,
+                                    onVisible=actions.markVisible,onRetry=actions.retry,
+                                    onLongPress={chosenMessage=it},modifier=chatModifier)
+                            }
+                            val offlineBanner: @Composable () -> Unit = {
+                                AnimatedVisibility(!connected,enter=fadeIn(),exit=fadeOut()) {
+                                    GlassCard(Modifier.fillMaxWidth(),dark=dark,radius=0.dp,frost=true) {
+                                        Row(Modifier.fillMaxWidth().padding(horizontal=14.dp,vertical=5.dp),
+                                            verticalAlignment=Alignment.CenterVertically) {
+                                            Text("Offline · connect your node",style=MaterialTheme.typography.labelMedium,
+                                                color=MaterialTheme.colorScheme.onSurfaceVariant,modifier=Modifier.weight(1f))
+                                            TextButton(onClick=actions.connect){Text("Connect")}
+                                        }
                                     }
                                 }
                             }
-                            GlassComposer(
-                                draft=draft,onDraft={draft=it.take(500)},connected=connected,
-                                recording=recording,small=micro,dark=dark,
-                                tapMode=accessibleVoiceTap,
-                                onSend={if(draft.isNotBlank()){actions.sendText(draft);draft=""}},
-                                onPhoto=actions.photo,onCamera=actions.camera,onPress=actions.micPress,
-                                onRelease=actions.micRelease,onCancel=actions.micCancel
-                            )
+                            if(reachMode) {
+                                offlineBanner()
+                                composer()
+                                Box(Modifier.weight(1f).fillMaxWidth()) {
+                                    Column(Modifier.fillMaxSize()) {
+                                        Row(Modifier.fillMaxWidth().padding(start=15.dp,end=15.dp,top=6.dp,bottom=2.dp),
+                                            verticalAlignment=Alignment.CenterVertically) {
+                                            Icon(Icons.Default.SwipeUp,"Reach mode",modifier=Modifier.size(15.dp),
+                                                tint=MaterialTheme.colorScheme.primary)
+                                            Spacer(Modifier.width(7.dp))
+                                            Text("Reach mode · latest messages",style=MaterialTheme.typography.labelSmall,
+                                                color=MaterialTheme.colorScheme.onSurfaceVariant)
+                                        }
+                                        timeline(Modifier.fillMaxWidth().heightIn(max=280.dp))
+                                        Spacer(Modifier.weight(1f))
+                                    }
+                                }
+                            } else {
+                                // Standard messenger: only the timeline scrolls. The header
+                                // and composer remain pinned; IME resizing never lifts both.
+                                timeline(Modifier.weight(1f).fillMaxWidth())
+                                offlineBanner()
+                                composer()
+                            }
                         }
                     }
                 }
@@ -395,7 +433,8 @@ private fun rememberSaveableString(initial:String): MutableState<String> =
     androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf(initial) }
 
 @Composable
-private fun ChatTopBar(dark:Boolean,connected:Boolean,status:String,contactName:String,avatarBytes:ByteArray?,showBack:Boolean,compact:Boolean,onBack:()->Unit,onInfo:()->Unit,onSearch:()->Unit) {
+private fun ChatTopBar(dark:Boolean,connected:Boolean,status:String,contactName:String,avatarBytes:ByteArray?,showBack:Boolean,compact:Boolean,onBack:()->Unit,onInfo:()->Unit,onSearch:()->Unit,reachMode:Boolean,onToggleReach:()->Unit) {
+    var menuOpen by remember { mutableStateOf(false) }
     GlassCard(Modifier.fillMaxWidth(),dark=dark,radius=0.dp,frost=true) {
         Row(Modifier.fillMaxWidth().heightIn(min=64.dp).padding(horizontal=if(showBack)8.dp else 16.dp,vertical=7.dp),
             verticalAlignment=Alignment.CenterVertically) {
@@ -410,7 +449,21 @@ private fun ChatTopBar(dark:Boolean,connected:Boolean,status:String,contactName:
                     maxLines=1,overflow=TextOverflow.Ellipsis)
             }
             if(!compact) IconButton(onClick=onSearch){Icon(Icons.Default.Search,"Search messages")}
-            IconButton(onClick=onInfo){Icon(Icons.Default.MoreVert,"Conversation details")}
+            Box {
+                IconButton(onClick={menuOpen=true}){Icon(Icons.Default.MoreVert,"Conversation menu")}
+                DropdownMenu(expanded=menuOpen,onDismissRequest={menuOpen=false}) {
+                    DropdownMenuItem(
+                        text={Text(if(reachMode)"Use standard chat layout" else "One-handed Reach mode")},
+                        leadingIcon={Icon(Icons.Default.PanTool,"Reach controls")},
+                        onClick={menuOpen=false;onToggleReach()})
+                    DropdownMenuItem(text={Text("Contact details")},
+                        leadingIcon={Icon(Icons.Default.Person,"Contact")},
+                        onClick={menuOpen=false;onInfo()})
+                    if(compact) DropdownMenuItem(text={Text("Search messages")},
+                        leadingIcon={Icon(Icons.Default.Search,"Search")},
+                        onClick={menuOpen=false;onSearch()})
+                }
+            }
         }
     }
 }
@@ -505,13 +558,15 @@ private fun ChatTimeline(
     openPhoto:(ChatItem)->Unit,playVoice:(ChatItem)->Unit,onVisible:(Set<String>)->Unit,
     onRetry:(ChatItem)->Unit,onLongPress:(ChatItem)->Unit,modifier:Modifier
 ) {
-    val visibleItems=remember(items,filter) { if(filter.isBlank())items else items.filter {
+    // Read the observable SnapshotStateList on *every* recomposition. Caching a
+    // reversed view by list identity can leave filtered results and item counts
+    // stale after new BLE messages or deletes, breaking auto-follow.
+    val visibleItems=if(filter.isBlank())items else items.filter {
         it.text.contains(filter,ignoreCase=true) || (it.kind==OgmCodec.IMAGE && "photo".contains(filter,true)) ||
             (it.kind==OgmCodec.VOICE && "voice".contains(filter,true))
-    } }
-    // Reverse layout anchors the newest message at the *bottom* on first open;
-    // there is no expensive animated traversal through old photos/history.
-    val newestFirst=remember(visibleItems) { visibleItems.asReversed() }
+    }
+    // A new reversed view reflects the latest snapshot and stable message IDs.
+    val newestFirst=visibleItems.asReversed()
     val lazy=rememberLazyListState(initialFirstVisibleItemIndex=0)
     var lastObservedId by remember(filter) { mutableStateOf<String?>(null) }
     val latest=visibleItems.lastOrNull()
@@ -531,9 +586,19 @@ private fun ChatTimeline(
             }
         }
     }
-    LaunchedEffect(lazy,newestFirst,connected,appVisible) {
-        snapshotFlow { lazy.layoutInfo.visibleItemsInfo.map { it.index } }.collect { indices ->
-            if(connected && appVisible) onVisible(indices.mapNotNull { newestFirst.getOrNull(it)?.takeIf { entry -> !entry.outgoing && !entry.deleted }?.id }.toSet())
+    // Do not cancel/restart the visibility collector whenever a receipt, typing
+    // state, or new photo causes recomposition. Read the latest list through state,
+    // and emit again on a new newest-message ID even if the visible indices stay 0..N.
+    val currentMessages by rememberUpdatedState(newestFirst)
+    val currentLatestId by rememberUpdatedState(latest?.id)
+    val currentOnVisible by rememberUpdatedState(onVisible)
+    LaunchedEffect(lazy,connected,appVisible,filter) {
+        snapshotFlow {
+            lazy.layoutInfo.visibleItemsInfo.map { it.index } to currentLatestId
+        }.collect { (indices, _) ->
+            if(connected && appVisible) currentOnVisible(indices.mapNotNull {
+                currentMessages.getOrNull(it)?.takeIf { entry -> !entry.outgoing && !entry.deleted }?.id
+            }.toSet())
         }
     }
     LazyColumn(modifier,state=lazy,reverseLayout=true,
@@ -871,11 +936,12 @@ private fun SettingsPane(
     connected:Boolean,nodeAddress:String?,diagnostics:List<String>,onBack:()->Unit,actions:PremiumActions,
     onShowDiagnostics:()->Unit,onClear:()->Unit
 ) {
+    var advancedDevice by androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf(false) }
     // Settings scrolls below a pinned opaque Material header; no blur snapshot.
     Box(Modifier.fillMaxSize().navigationBarsPadding()) {
         LazyColumn(Modifier.fillMaxSize(),
-            contentPadding=PaddingValues(start=18.dp,end=18.dp,top=94.dp,bottom=18.dp),
-            verticalArrangement=Arrangement.spacedBy(15.dp)) {
+            contentPadding=PaddingValues(start=14.dp,end=14.dp,top=83.dp,bottom=20.dp),
+            verticalArrangement=Arrangement.spacedBy(11.dp)) {
             item { GlassCard(Modifier.fillMaxWidth(),dark=dark) {
                 Column(Modifier.padding(18.dp)) {
                     Text("CONNECTED DEVICE",style=MaterialTheme.typography.labelSmall,color=MaterialTheme.colorScheme.primary)
@@ -890,9 +956,17 @@ private fun SettingsPane(
                         TextButton(onClick=actions.disconnect){Text("Disconnect")}
                     }
                     TextButton(onClick=actions.chooseNode){Text("Change node")}
-
-                    TextButton(onClick=actions.editKey){Text("Update pairing key")}
-                    TextButton(onClick=actions.forgetNode){Text("Forget node (keep key)")}
+                    TextButton(onClick={advancedDevice=!advancedDevice}) {
+                        Icon(if(advancedDevice)Icons.Default.ExpandLess else Icons.Default.ExpandMore,null)
+                        Spacer(Modifier.width(6.dp))
+                        Text(if(advancedDevice)"Hide device options" else "More device options")
+                    }
+                    AnimatedVisibility(advancedDevice) {
+                        Column {
+                            TextButton(onClick=actions.editKey){Text("Update pairing key")}
+                            TextButton(onClick=actions.forgetNode){Text("Forget node (keep key)")}
+                        }
+                    }
                 }
             } }
             item { GlassCard(Modifier.fillMaxWidth(),dark=dark) { Column(Modifier.padding(16.dp)) {
@@ -910,7 +984,7 @@ private fun SettingsPane(
                 TextButton(onClick=onShowDiagnostics){Text("View BLE diagnostics")}
                 TextButton(onClick=onClear){Text("Delete encrypted chat history")}
             } } }
-            item { Text("OffGrid Messenger 2.4.3 · Offline · AES-256-GCM · Binary BLE",
+            item { Text("OffGrid Messenger 2.5.2 · Offline · AES-256-GCM · Binary BLE",
                 style=MaterialTheme.typography.labelSmall,color=MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier=Modifier.padding(8.dp)) }
         }
@@ -926,7 +1000,7 @@ private fun SettingsPane(
 
 @Composable
 private fun ToggleSetting(title:String,description:String,checked:Boolean,onChanged:(Boolean)->Unit) {
-    Row(Modifier.fillMaxWidth().padding(vertical=11.dp),verticalAlignment=Alignment.CenterVertically) {
+    Row(Modifier.fillMaxWidth().padding(vertical=8.dp),verticalAlignment=Alignment.CenterVertically) {
         Column(Modifier.weight(1f)) {
             Text(title,style=MaterialTheme.typography.bodyLarge,fontWeight=FontWeight.Medium,
                 color=MaterialTheme.colorScheme.onSurface)
