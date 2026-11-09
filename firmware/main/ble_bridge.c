@@ -163,7 +163,10 @@ static void sender(void *arg){
    uint16_t count=(uint16_t)((total-done)<capacity?(total-done):capacity);
    struct os_mbuf *m=ble_hs_mbuf_from_flat(line.text+done,count);
    if(!m||ble_gatts_notify_custom(conn_handle,notify_handle,m))break;
-   done+=count;vTaskDelay(pdMS_TO_TICKS(13)+1);
+   done+=count;
+   /* One tick is enough to yield to NimBLE and Wi-Fi; the old 13ms+1 tick
+    * penalized EVERY ATT fragment. Keep a yield to avoid flooding buffers. */
+   vTaskDelay(1);
   }
  }
 }

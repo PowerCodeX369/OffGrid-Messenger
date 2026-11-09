@@ -1,3 +1,5 @@
+# Correct hardware target. ESP32-C3 Super Mini uses RISC-V, NOT the Xtensa ESP32.
+CONFIG_IDF_TARGET="esp32c3"
 # The ESP32-C3 Super Mini usually exposes native USB Serial/JTAG.
 CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
 # Keep task watchdog enabled; the main task blocks via vTaskDelay.
@@ -13,7 +15,7 @@ CONFIG_BT_NIMBLE_ATT_PREFERRED_MTU=247
 CONFIG_BT_NIMBLE_ROLE_PERIPHERAL=y
 CONFIG_ESP_COEX_SW_COEXIST_ENABLE=y
 
-# Phase 2.0.6: 2 MiB factory app; default 1 MiB partition overflowed by 0x8740.
+# Phase 2.0.7: 1.5 MiB factory app; fits in 2 MiB configured flash.
 # Uses firmware/partitions.csv. Keep existing NVS at 0x9000, 0x6000 bytes.
 CONFIG_PARTITION_TABLE_CUSTOM=y
 CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"

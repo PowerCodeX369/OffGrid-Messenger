@@ -49,7 +49,7 @@ for config in 'CONFIG_PARTITION_TABLE_CUSTOM=y' 'CONFIG_PARTITION_TABLE_CUSTOM_F
     fail 'App still uses old partition table; refuse to flash.'
   fi
 done
-printf 'Partition table: custom partitions.csv (2 MiB app).\n'
+printf 'Partition table: custom partitions.csv (1.5 MiB app).\n'
 
 printf '\n[2/3] Compile BLE + radio using actual ESP-IDF headers/toolchain...\n'
 set +e

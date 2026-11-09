@@ -846,7 +846,8 @@ static bool parse_batch_ack(char *line,event_t *e) {
 static void ble_commands(void *arg){
  (void)arg;char line[SERIAL_LINE];
  for(;;){
-  if(!offgrid_ble_receive_line(line,sizeof(line))){vTaskDelay(pdMS_TO_TICKS(15)+1);continue;}
+  if(!offgrid_ble_receive_line(line,sizeof(line))){/* A single tick avoids 20-30ms inbox polling latency on 100Hz FreeRTOS. */
+      vTaskDelay(1);continue;}
   event_t e={0};bool send=false;
   if(!strcmp(line,"STATUS")){e.type=EV_STATUS;send=true;}
   else if(!strncmp(line,"MSGHEX ",7)){e.type=EV_SEND;if(read_hex(line+7,e.text,&e.length))send=true;else offgrid_ble_publish("ERROR|BAD_HEX");}

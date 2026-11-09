@@ -9,7 +9,7 @@ FROZEN = {
     'web/styles.css': 'f99534e82cc49e192baef569c28fef7f688b322a0ef9d57fdf0fea8fb5f034b6',
     'web/adaptive.js': '90073923f1b54502819c8e30faf9075905bf2bd49d24fb8958f887cc62a89f86',
     'web/logo.svg': 'ff03904fa9c8e21817768419f37fea2633b1963b43299cd3be913f3ebb82f594',
-    'main/main.c': '51ad15ca812aab88b7d9f93275de2da99f4415b54f46e8749b0f305891d388a3',
+    'main/main.c': '8235d6e353925016d4894e9dd227de51be557743835a2fad4120a6df05d0ad95',
 }
 
 S=(ROOT/'main/main.c').read_text()
@@ -35,4 +35,4 @@ assert all(checks.values())
 for name, expected in FROZEN.items():
     actual = hashlib.sha256((ROOT/name).read_bytes()).hexdigest()
     assert actual == expected, f'frozen file unexpectedly changed: {name}'
-print('PASS: frozen web encryption, styling, and ESP-NOW main.c hashes verified (portable)')
+print('PASS: frozen web and current BLE-209 firmware source hashes verified; compare 2.0.6 radio source separately')

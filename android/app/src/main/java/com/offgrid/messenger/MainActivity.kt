@@ -81,6 +81,29 @@ class MainActivity : ComponentActivity() {
     private var pairingSaved by mutableStateOf(false)
     private var details by mutableStateOf(false)
     private var dark by mutableStateOf(false)
+    private val bleDiagnostics = mutableStateListOf<String>()
+    private var pickerHandled = false
+
+    private fun bleTrace(message: String) {
+        val time = java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.US).format(java.util.Date())
+        bleDiagnostics.add("$time  $message")
+        while (bleDiagnostics.size > 24) bleDiagnostics.removeAt(0)
+    }
+
+    private fun acceptBleSelection(address: String?, origin: String) {
+        val mac = address?.trim()?.uppercase(java.util.Locale.US)
+        if (mac.isNullOrBlank() || !android.bluetooth.BluetoothAdapter.checkBluetoothAddress(mac)) {
+            bleTrace("$origin returned no valid Bluetooth MAC")
+            state = "Could not read selected BLE device; choose it again"
+            return
+        }
+        if (pickerHandled && trustedAddress == mac) return
+        pickerHandled = true
+        trustedAddress = mac
+        secure.saveNodeAddress(mac)
+        bleTrace("BLE device selected from $origin: $mac")
+        reconnectIfPermitted()
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -91,7 +114,7 @@ class MainActivity : ComponentActivity() {
         link = BleNodeClient(this, {secure.readPairingKey()}, {s,ready ->
             state=s;connected=ready
             if(ready) startNext() else { isSending=false; cancelAckTimeout() }
-        }, ::consumeLine)
+        }, ::consumeLine, ::bleTrace)
         setContent { OffGridScreen() }
         if(trustedAddress!=null && pairingSaved) mainHandler.post { reconnectIfPermitted() }
     }
@@ -233,24 +256,78 @@ class MainActivity : ComponentActivity() {
     }
 
     @SuppressLint("MissingPermission")
-    private fun startSystemPairing(launch:(IntentSenderRequest)->Unit) {
-        if(!hasBluetoothPermission()){state="Grant Nearby devices permission";return}
+    private fun startSystemPairing(launch: (IntentSenderRequest) -> Unit) {
+        if (!hasBluetoothPermission()) { state="Grant Nearby devices permission"; return }
+        pickerHandled = false
         try {
-            val manager=getSystemService(CompanionDeviceManager::class.java)
-            val filter=BluetoothLeDeviceFilter.Builder().setNamePattern(Pattern.compile("^OffGrid-.*")).build()
-            val req=AssociationRequest.Builder().addDeviceFilter(filter).setSingleDevice(false).build()
-            manager.associate(req,object:CompanionDeviceManager.Callback(){
-                @Deprecated("Legacy callback for Android 8-12")
+            val companion = getSystemService(CompanionDeviceManager::class.java)
+            val filter = BluetoothLeDeviceFilter.Builder()
+                .setNamePattern(Pattern.compile("^OffGrid-.*"))
+                .build()
+            val request = AssociationRequest.Builder()
+                .addDeviceFilter(filter)
+                .setSingleDevice(false)
+                .build()
+            val callback = object : CompanionDeviceManager.Callback() {
+                @Deprecated("For Android 8-12")
                 override fun onDeviceFound(chooserLauncher: android.content.IntentSender) {
                     runOnUiThread { launch(IntentSenderRequest.Builder(chooserLauncher).build()) }
                 }
                 override fun onAssociationPending(chooserLauncher: android.content.IntentSender) {
                     runOnUiThread { launch(IntentSenderRequest.Builder(chooserLauncher).build()) }
                 }
-                override fun onFailure(error:CharSequence?) { runOnUiThread {state="Pairing cancelled: $error"} }
-            },Handler(Looper.getMainLooper()))
+                override fun onAssociationCreated(associationInfo: AssociationInfo) {
+                    // Android 13+ may deliver the chosen MAC here instead of in the Activity result.
+                    runOnUiThread {
+                        acceptBleSelection(associationInfo.deviceMacAddress?.toString(), "association callback")
+                    }
+                }
+                override fun onFailure(error: CharSequence?) {
+                    runOnUiThread {
+                        bleTrace("Companion device association failed: $error")
+                        state="BLE device selection failed: $error"
+                    }
+                }
+            }
+            // Modern executor overload reports AssociationInfo; old callback supports Android 8-12.
+            if (Build.VERSION.SDK_INT >= 33) {
+                companion.associate(request, mainExecutor, callback)
+            } else {
+                companion.associate(request, callback, Handler(Looper.getMainLooper()))
+            }
+            bleTrace("Companion device picker opened")
             state="Select your nearby OffGrid node"
-        } catch (ex: Exception) { state="Pairing unavailable: ${ex.message}" }
+        } catch (ex: Exception) {
+            bleTrace("Device picker exception: ${ex.javaClass.simpleName}: ${ex.message}")
+            state="Pairing unavailable: ${ex.message}"
+        }
+    }
+
+    private fun addressFromPicker(data: Intent?): String? {
+        if (data == null) return null
+        // CompanionDeviceManager.EXTRA_DEVICE is NOT BluetoothDevice.EXTRA_DEVICE.
+        // Selecting a BLE device uses the companion-specific key on older Android versions.
+        val device = if (Build.VERSION.SDK_INT >= 33) {
+            data.getParcelableExtra(CompanionDeviceManager.EXTRA_DEVICE, BluetoothDevice::class.java)
+        } else {
+            @Suppress("DEPRECATION")
+            val old = data.getParcelableExtra<BluetoothDevice>(CompanionDeviceManager.EXTRA_DEVICE)
+            old
+        }
+        if (device != null) return device.address
+        if (Build.VERSION.SDK_INT >= 33) {
+            data.getParcelableExtra(CompanionDeviceManager.EXTRA_ASSOCIATION, AssociationInfo::class.java)
+                ?.deviceMacAddress?.toString()?.let { return it }
+        }
+        // Defensive fallback for vendor-specific companion chooser implementations.
+        val legacy = if (Build.VERSION.SDK_INT >= 33) {
+            data.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE, BluetoothDevice::class.java)
+        } else {
+            @Suppress("DEPRECATION")
+            val old = data.getParcelableExtra<BluetoothDevice>(BluetoothDevice.EXTRA_DEVICE)
+            old
+        }
+        return legacy?.address
     }
 
     @Composable
@@ -260,25 +337,23 @@ class MainActivity : ComponentActivity() {
         var keyInput by remember { mutableStateOf("") }
         var draft by remember { mutableStateOf("") }
         var showKey by remember { mutableStateOf(!pairingSaved) }
-        val bluetoothPermission=rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
-            if(granted)reconnectIfPermitted() else state="Nearby devices permission denied"
-        }
         val systemPicker=rememberLauncherForActivityResult(ActivityResultContracts.StartIntentSenderForResult()) { result ->
-            if(result.resultCode==RESULT_OK){
-                @Suppress("DEPRECATION")
-                val device = if(Build.VERSION.SDK_INT>=33)
-                    result.data?.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE,BluetoothDevice::class.java)
-                else result.data?.getParcelableExtra<BluetoothDevice>(BluetoothDevice.EXTRA_DEVICE)
-                // Android 13+ may return AssociationInfo rather than the old BluetoothDevice extra.
-                val associatedMac = if(Build.VERSION.SDK_INT>=33)
-                    result.data?.getParcelableExtra(CompanionDeviceManager.EXTRA_ASSOCIATION,AssociationInfo::class.java)
-                        ?.deviceMacAddress?.toString() else null
-                val mac=device?.address ?: associatedMac
-                if(!mac.isNullOrBlank()){
-                    trustedAddress=mac;secure.saveNodeAddress(mac)
-                    reconnectIfPermitted()
-                } else state="Device selection returned no ESP32; retry pairing"
+            if (result.resultCode == RESULT_OK) {
+                val address=addressFromPicker(result.data)
+                if (address != null) acceptBleSelection(address, "chooser result")
+                else if (!pickerHandled) {
+                    bleTrace("Chooser returned no device; keys=${result.data?.extras?.keySet()?.joinToString()}")
+                    state="Device selected but BLE address unavailable; select again"
+                }
+            } else if (!pickerHandled) {
+                bleTrace("Chooser cancelled / failed: code=${result.resultCode}")
+                state="Device selection cancelled"
             }
+        }
+        val bluetoothPermission=rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+            if (!granted) state="Nearby devices permission denied"
+            else if (trustedAddress == null && pairingSaved) startSystemPairing(systemPicker::launch)
+            else reconnectIfPermitted()
         }
         MaterialTheme(colorScheme=colors,shapes=Shapes(extraLarge=RoundedCornerShape(26.dp),large=RoundedCornerShape(22.dp))){
             Surface(modifier=Modifier.fillMaxSize(),color=colors.background){
@@ -322,6 +397,19 @@ class MainActivity : ComponentActivity() {
                                         Text("Stage 2.0 includes encrypted text. Camera, voice, notifications and walkie-talkie follow after BLE testing.",style=MaterialTheme.typography.bodySmall)
                                         TextButton(onClick={showKey=true}){Text("Update pairing key")}
                                         TextButton(onClick={link?.stop();state="Disconnected"}){Text("Disconnect")}
+                                        TextButton(onClick={startSystemPairing(systemPicker::launch)}){Text("Choose another ESP32")}
+                                        TextButton(onClick={
+                                            link?.stop()
+                                            secure.clearNodeAddress()
+                                            trustedAddress=null
+                                            state="Saved node cleared; pairing key retained"
+                                            bleTrace("Forgot BLE address only; AES key preserved")
+                                        }){Text("Forget BLE device (keep key)")}
+                                        HorizontalDivider()
+                                        Text("BLE diagnostics",style=MaterialTheme.typography.titleSmall)
+                                        bleDiagnostics.takeLast(10).forEach { entry ->
+                                            Text(entry,style=MaterialTheme.typography.labelSmall)
+                                        }
                                     }
                                 }
                             }
