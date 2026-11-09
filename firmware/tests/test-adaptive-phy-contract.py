@@ -18,7 +18,7 @@ checks={
  'unicast data only when peer recently seen':'t-peer_last_seen_ms<PEER_TIMEOUT_MS' in fw,
  'USB status/debug unchanged':all(x in fw for x in ('show_ready("BEACON")','show_ready("STATUS")','emit_link()')),
  'rate configuration performed on dispatcher task':'adjust_phy();' in fw and 'static void dispatcher(' in fw,
- 'versioned browser asset':'app.js?v=1.4.7' in (root/'web/index.html').read_text(),
+ 'versioned browser asset':'app.js?v=1.4.9' in (root/'web/index.html').read_text(),
 }
 for name,ok in checks.items():print(('PASS' if ok else 'FAIL'),name)
 assert all(checks.values())
