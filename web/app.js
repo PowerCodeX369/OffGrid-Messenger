@@ -1,9 +1,9 @@
 'use strict';
-/* OffGrid Phase 1.4.5 STABLE: proven broadcast radio + NVS keys, same encrypted app protocol.
+/* OffGrid Phase 1.4.5.1 USB FIX: proven broadcast radio + NVS keys, same encrypted app protocol.
    Keys are stored on each ESP32 and imported only into browser RAM over physical USB. No external servers. */
 const P=globalThis.OGP,$=id=>document.getElementById(id);
 const MAX_CHARS=500,MAX_PHOTO=96*1024,STORE='OffGridMessengerV14';
-const APP_VERSION='1.4.5-stable';
+const APP_VERSION='1.4.5.1-stable';
 const stateRank={sending:0,queued:0,sent:1,failed:1,delivered:2,read:3};
 const encoder=new TextEncoder();
 let port=null,reader=null,writer=null,readPromise=null,closing=false,verified=false,serialBuffer='',writeChain=Promise.resolve(),handshakeTimer=null;
@@ -18,7 +18,7 @@ function clearUsbHint(){usbHandshakeIssue='';$('usbDiagnostics')?.classList.add(
 function updateUsbWait(){
  if(!port||verified)return;
  const elapsed=performance.now()-usbHandshakeStarted;
- if(elapsed<5000)return;
+ if(elapsed<5000||usbHandshakeIssue)return;
  if(!usbLastRawAt)showUsbHint('USB port opened, but no serial data. Check ESP-IDF USB Serial/JTAG console and reboot the node.');
  else if(usbSawBeacon)showUsbHint('ESP32 sends READY, but has not confirmed the STATUS command. Check the USB input path.');
  else if(!usbHandshakeIssue)showUsbHint('ESP32 serial output detected, but no compatible READY response. Open Diagnostics.');
@@ -392,6 +392,12 @@ async function runTransfers(){
  }finally{runningTransfers=false;}
 }
 function parseLine(raw){const s=raw.trim();if(!s)return;
+ // Record serial input for diagnosis, without exposing the 256-bit pairing key.
+ usbLastRawAt=performance.now();
+ if(s.startsWith('KEYDATA|'))logUsb('ESP32> KEYDATA|<redacted>');
+ else logUsb('ESP32> '+s);
+ if(s.startsWith('READY|'))usbSawBeacon=true;
+ if(s.startsWith('FATAL|')){showUsbHint('ESP32 startup error: '+s.slice(6));return;}
  if(s.startsWith('KEYDATA|')){
   const h=s.slice(8);
   try{if(!/^[A-Fa-f0-9]{64}$/.test(h))throw Error('Invalid key response');finishNodeKeyRequest('get',P.unhex(h));}
@@ -415,7 +421,7 @@ function parseLine(raw){const s=raw.trim();if(!s)return;
  }
  if(s.startsWith('RATE_ERROR|')){console.warn('Radio PHY configuration:',s);toast('ESP32 PHY rate could not be applied; falling back to safe rate.');return;}
  if(s.startsWith('RATE|')||s.startsWith('PEER|'))return;
- if(s.startsWith('READY|')){const parts=s.split('|');if(!parts.includes('PROTO=2')||!parts.includes('CAP=180')||!parts.includes('STABLE=1')||!parts.includes('NVSKEY=1')){if(!firmwareMismatchNotified){toast('Flash Phase 1.4.5 STABLE firmware on BOTH boards (CAP=180, STABLE=1, NVSKEY=1).');firmwareMismatchNotified=true;}console.warn('Incompatible firmware READY:',s);return;}const mac=parts[1];if(!/^[0-9A-Fa-f:]{17}$/.test(mac))return;if(verified&&localMac===mac)return;void onReady(mac);return;}
+ if(s.startsWith('READY|')){const parts=s.split('|');if(!parts.includes('PROTO=2')||!parts.includes('CAP=180')||!parts.includes('STABLE=1')||!parts.includes('NVSKEY=1')){if(!firmwareMismatchNotified){toast('Wrong ESP32 firmware protocol; open Diagnostics to see its READY response.');firmwareMismatchNotified=true;}showUsbHint('Incompatible READY. Expected PROTO=2, CAP=180, STABLE=1, NVSKEY=1.');console.warn('Incompatible firmware READY:',s);return;}const mac=parts[1];if(!/^[0-9A-Fa-f:]{17}$/.test(mac))return;if(verified&&localMac===mac)return;void onReady(mac);return;}
  if(s.startsWith('QUEUED|')){const [,session,id,hex]=s.split('|'),slot=radioByHex.get(hex);if(slot){slot.wire=`${session}:${id}`;radioByWire.set(slot.wire,slot);}return;}
  if(s.startsWith('RX|')){const [,mac,session,id,data]=s.split('|');if(mac&&session&&id&&data)void processRx(mac,session,id,data);return;}
  if(/^(SENT|DELIVERED|FAILED|RETRY|RADIO_ERROR)\|/.test(s)){const [type,session,id,extra]=s.split('|');if(type==='RADIO_ERROR'){console.warn('ESP-NOW:',extra);if(radioTelemetry.txfail<=2)toast('Radio send issue: '+extra+' — check Radio diagnostics in Settings.');}else onRadio(type,session,id,extra);return;}
@@ -424,6 +430,8 @@ function parseLine(raw){const s=raw.trim();if(!s)return;
 function consume(data){serialBuffer+=new TextDecoder().decode(data);let i;while((i=serialBuffer.indexOf('\n'))>=0){parseLine(serialBuffer.slice(0,i));serialBuffer=serialBuffer.slice(i+1);}if(serialBuffer.length>8192)serialBuffer='';}
 async function readLoop(){try{while(port?.readable&&!closing){reader=port.readable.getReader();try{while(!closing){const {value,done}=await reader.read();if(done)break;if(value)consume(value);}}finally{reader.releaseLock();reader=null;}if(!closing&&port?.readable)await wait(100);}}catch(e){if(!closing)toast('Serial disconnected: '+e.message);}finally{if(!closing){readPromise=null;void disconnect();}}}
 async function onReady(mac){firmwareMismatchNotified=false;localMac=mac.toUpperCase();verified=true;
+ if(usbWaitTimer){clearInterval(usbWaitTimer);usbWaitTimer=null;}
+ clearUsbHint();
  void writeLine('RATE '+linkPreference.toUpperCase()).catch(()=>{});
  if(handshakeTimer){clearInterval(handshakeTimer);handshakeTimer=null;}
  try{
@@ -441,13 +449,18 @@ async function onReady(mac){firmwareMismatchNotified=false;localMac=mac.toUpperC
  }catch(e){toast('Node pairing initialization failed: '+e.message);console.error(e);refreshStatus();}
 }
 async function connect(){if(!navigator.serial){toast('Use Chromium with Web Serial on localhost or HTTPS.');return;}try{
- if(!db)db=await openDb();port=await navigator.serial.requestPort();await port.open({baudRate:115200});writer=port.writable.getWriter();refreshStatus();readPromise=readLoop();await writeLine('STATUS');handshakeTimer=setInterval(()=>{if(!verified&&writer)writeLine('STATUS').catch(()=>{});},1200);
+ if(!db)db=await openDb();port=await navigator.serial.requestPort();await port.open({baudRate:115200});
+    usbLog.length=0;usbHandshakeIssue='';usbSawBeacon=false;usbHandshakeStarted=performance.now();usbLastRawAt=0;clearUsbHint();
+    writer=port.writable.getWriter();refreshStatus();readPromise=readLoop();
+    logUsb('HOST> STATUS');await writeLine('STATUS');
+    handshakeTimer=setInterval(()=>{if(!verified&&writer){logUsb('HOST> STATUS (retry)');writeLine('STATUS').catch(()=>{});}},1200);
+    usbWaitTimer=setInterval(updateUsbWait,1200);
  }catch(e){toast('USB connection failed: '+e.message);await disconnect();}}
 async function disconnect(){if(closing)return;closing=true;
- try{if(handshakeTimer)clearInterval(handshakeTimer);handshakeTimer=null;if(reader)try{await reader.cancel();}catch{}if(readPromise)try{await readPromise;}catch{}if(writer){try{writer.releaseLock();}catch{}writer=null;}if(port){try{await port.close();}catch{}port=null;}}
+ try{if(handshakeTimer)clearInterval(handshakeTimer);handshakeTimer=null;if(usbWaitTimer){clearInterval(usbWaitTimer);usbWaitTimer=null;}if(reader)try{await reader.cancel();}catch{}if(readPromise)try{await readPromise;}catch{}if(writer){try{writer.releaseLock();}catch{}writer=null;}if(port){try{await port.close();}catch{}port=null;}}
  finally{
   finishNodeKeyRequest('get',null,Error('Disconnected'));finishNodeKeyRequest('set',null,Error('Disconnected'));
-  readPromise=null;serialBuffer='';verified=false;port=null;writer=null;if(pendingRadio())failPendingRadio(Error('Disconnected'));if(activeTransfer?.record)void setState(activeTransfer.record,'failed','Disconnected');
+  readPromise=null;serialBuffer='';verified=false;port=null;writer=null;clearUsbHint();if(pendingRadio())failPendingRadio(Error('Disconnected'));if(activeTransfer?.record)void setState(activeTransfer.record,'failed','Disconnected');
  transferQueue=[];runningTransfers=false;queuedReceipts.clear();pendingReads.clear();incoming.clear();localMac=null;secretKey=null;radioTelemetry.available=false;refreshStatus();closing=false;}}
 async function sendText(){const input=$('messageInput'),text=input.value.trim();if(!verified||!secretKey||!text)return;
  if(countChars(text)>MAX_CHARS){toast('Maximum 500 characters per text message.');return;}
@@ -540,7 +553,7 @@ function showRename(){showDialog('Contact name',body=>{body.append(el('p','','Th
 async function clearHistory(){if(!verified||!secretKey)return;if(runningTransfers||pendingRadio()||transferQueue.length){toast('Finish active transfers before clearing history.');return;}if(!confirm('Delete encrypted chat history for this ESP32 from this browser? This cannot be undone.'))return;
  await wipeStored();records=[];recordMap.clear();revokePhotos();renderHistory();toast('Local chat history cleared.');closeDialog();}
 function showInfo(){showDialog('Chat information',body=>{[['Contact',activeContact],['Your ESP32',localMac||'Disconnected'],['Protocol','ESP-NOW firmware protocol 2 / encrypted app protocol OGM4'],['Security',secretKey?'AES-256-GCM, 256-bit random shared key':'Not paired'],['Photo target',`${Math.round(photoBudget()/1024)} KB optimized, 96 KB absolute`],['Radio PHY',radioTelemetry.available?`${radioTelemetry.phy} Mbps TX, RSSI ${radioTelemetry.rssi===null?'unknown':radioTelemetry.rssi+' dBm'}`:'Waiting for telemetry'],['Link profile',`${linkPreference}; stable 1 Mbps radio and 1 fragment in flight`],['Key storage','ESP32 NVS, browser RAM only'],['History','AES-GCM encrypted IndexedDB']].forEach(([a,b])=>{const line=el('div','info-line');line.append(el('span','',a),el('strong','',b));body.append(line);});body.append(el('p','','Grey single tick = transmitted; grey double tick = peer decrypted and confirmed; blue double tick = peer app reported it was viewed. Browser history is stored encrypted at rest.'));});}
-function showSettings(){showDialog('Settings',body=>{body.append(el('p','','Phase 1.4.5 STABLE: restored reliable broadcast radio, ESP32 NVS pairing keys, encrypted chat and photo gallery.'));
+function showSettings(){showDialog('Settings',body=>{body.append(el('p','','Phase 1.4.5.1 USB FIX: restored reliable broadcast radio, ESP32 NVS pairing keys, encrypted chat and photo gallery.'));
  const linkLabel=el('label','','Transfer profile');body.append(linkLabel);const linkSelect=document.createElement('select');linkSelect.className='setting-select';
  [['auto','Auto · balanced photo compression, stable packet flow'],['range','Range first · more compressed photos, ~32 KB'],['speed','Quality first · less compression, ~60 KB']].forEach(([v,t])=>{const opt=document.createElement('option');opt.value=v;opt.textContent=t;linkSelect.append(opt);});
  linkSelect.value=linkPreference;linkSelect.onchange=()=>{linkPreference=linkSelect.value;try{localStorage.setItem('offgrid_link_preference',linkPreference);}catch{}if(verified)void writeLine('RATE '+linkPreference.toUpperCase()).catch(()=>{});updateLinkBadge();};body.append(linkSelect);
@@ -578,4 +591,4 @@ document.addEventListener('visibilitychange',sendReadReceipts);window.addEventLi
 window.addEventListener('beforeunload',revokePhotos);
 setInterval(pruneIncoming,45000);
 (async()=>{try{db=await openDb();}catch(e){toast('IndexedDB unavailable. Encrypted storage cannot work: '+e.message);}refreshStatus();})();
-console.info('OffGrid Phase 1.4.5 STABLE — browser AES-256-GCM, ESP32 NVS keys, reliable radio rollback.');
+console.info('OffGrid Phase 1.4.5.1 STABLE USB FIX — browser AES-256-GCM, ESP32 NVS keys, reliable radio rollback.');

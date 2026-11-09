@@ -1,4 +1,4 @@
-/* OffGrid Messenger Phase 1.4.5 STABLE — ESP-IDF 5.x / ESP32-C3.
+/* OffGrid Messenger Phase 1.4.5.1 STABLE USB — ESP-IDF 5.x / ESP32-C3.
  * Rollback to tested Phase 1.4 broadcast ESP-NOW transport.
  * AES-256-GCM encryption/decryption is in the browser, NOT in the ESP32.
  * Node only forwards ciphertext and stores the pairing key in NVS.
@@ -43,6 +43,7 @@
 #define EVENT_QUEUE_LEN 32
 #define SERIAL_LINE 512
 #define LINK_REPORT_MS 2500
+#define READY_BEACON_MS 2500
 
 static const uint8_t BROADCAST[6] = {255,255,255,255,255,255};
 static uint8_t own_mac[6];
@@ -97,6 +98,7 @@ static bool have_remote=false;
 static int32_t remote_rssi=-127;
 static uint32_t tx_ok=0,tx_fail=0,rx_ok=0,delivery_count=0,retry_count=0,failure_count=0;
 static int64_t last_report_ms=0;
+static int64_t last_ready_beacon_ms=0;
 static uint8_t pairing_key[32];
 static bool pairing_key_present=false;
 static bool key_from_nvs(void){
@@ -179,11 +181,15 @@ static bool read_hex(const char *s,uint8_t *dst,uint16_t *len) {
     *len=(uint16_t)(n/2);
     return true;
 }
-static void show_ready(void) {
+/* Announce READY periodically: the native USB serial port often opens after
+ * the boot-time READY was printed. A repeated beacon also supports a new
+ * browser after the previous one disconnects, without rebooting the ESP32.
+ * IMPORTANT: single printf to avoid splitting the READY frame over lines. */
+static void show_ready(const char *source) {
     printf("READY|%02X:%02X:%02X:%02X:%02X:%02X|CHANNEL=%d|SESSION=%" PRIu32
-           "|PROTO=2|CAP=180|STABLE=1|NVSKEY=1\n",
+           "|PROTO=2|CAP=180|STABLE=1|NVSKEY=1|FROM=%s\n",
            own_mac[0],own_mac[1],own_mac[2],own_mac[3],own_mac[4],own_mac[5],
-           CHANNEL,boot_session);
+           CHANNEL,boot_session,source);
 }
 static void on_receive(const esp_now_recv_info_t *info,const uint8_t *data,int len) {
     const size_t base=offsetof(frame_t,text);
@@ -232,7 +238,7 @@ static void display_rx(const frame_t *f,const uint8_t *mac) {
     print_hex(f->text,f->length);putchar('\n');
 }
 static void process_event(const event_t *e) {
-    if(e->type==EV_STATUS){show_ready();emit_link();return;}
+    if(e->type==EV_STATUS){show_ready("STATUS");emit_link();return;}
     if(e->type==EV_RATE){
         /* Kept for web settings compatibility. STABLE intentionally fixes radio PHY. */
         emit_link();
@@ -311,6 +317,11 @@ static void dispatcher(void *arg) {
         if(xQueueReceive(event_queue,&e,pdMS_TO_TICKS(5))==pdTRUE)process_event(&e);
         int64_t t=now_ms();
         if(t-last_report_ms>=LINK_REPORT_MS){last_report_ms=t;emit_link();}
+        /* USB handshake resilience: no dependency on STATUS arriving intact. */
+        if(t-last_ready_beacon_ms>=READY_BEACON_MS){
+            last_ready_beacon_ms=t;
+            show_ready("BEACON");
+        }
         for(int i=0;i<MAX_PENDING;i++) {
             outgoing_t *o=&pending[i];if(!o->active)continue;
             if(o->attempts>0 && t-o->last_send_ms<RETRY_MS)continue;
@@ -403,7 +414,12 @@ void app_main(void) {
     ESP_ERROR_CHECK(esp_now_init());
     ESP_ERROR_CHECK(esp_now_register_recv_cb(on_receive));
     if(!ensure_peer(BROADCAST))abort();
-    show_ready();
-    xTaskCreate(dispatcher,"dispatch",6144,NULL,5,NULL);
-    xTaskCreate(serial_task,"serial",4096,NULL,4,NULL);
+    show_ready("BOOT");
+    /* Make resource failures explicit instead of silently losing USB input. */
+    if(xTaskCreate(dispatcher,"dispatch",6144,NULL,5,NULL)!=pdPASS){
+        puts("FATAL|DISPATCH_TASK_CREATION_FAILED");abort();
+    }
+    if(xTaskCreate(serial_task,"serial",4096,NULL,4,NULL)!=pdPASS){
+        puts("FATAL|SERIAL_TASK_CREATION_FAILED");abort();
+    }
 }
