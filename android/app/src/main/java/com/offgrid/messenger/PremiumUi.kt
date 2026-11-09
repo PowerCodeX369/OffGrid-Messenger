@@ -164,13 +164,14 @@ data class PremiumActions(
     val retry:(ChatItem)->Unit,
     val deleteForMe:(ChatItem)->Unit,val deleteForEveryone:(ChatItem)->Unit,
     val editMessage:(ChatItem,String)->Unit,val copyMessage:(ChatItem)->Unit,
-    val chooseAvatar:()->Unit,val clearAvatar:()->Unit,val renameContact:(String)->Unit
+    val chooseAvatar:()->Unit,val clearAvatar:()->Unit,val renameContact:(String)->Unit,
+    val setRadioMode:(String)->Unit,val batterySettings:()->Unit
 )
 
 @Composable
 fun PremiumMessenger(
     items:List<ChatItem>, connected:Boolean, status:String, nodeAddress:String?,
-    dark:Boolean, fastPhotos:Boolean, notifications:Boolean, privatePreview:Boolean,
+    radioLink:RadioLink?, dark:Boolean, fastPhotos:Boolean, notifications:Boolean, privatePreview:Boolean,
     backgroundEnabled:Boolean, recording:Boolean, playingId:String?, appVisible:Boolean,
     accessibleVoiceTap:Boolean,
     diagnostics:List<String>, actions:PremiumActions,
@@ -259,10 +260,11 @@ fun PremiumMessenger(
                                 modifier=Modifier.fillMaxSize())
                             Column(Modifier.fillMaxWidth().align(Alignment.TopCenter)) {
                                 ChatTopBar(
-                                    dark=dark,connected=connected,status=status,
+                                    dark=dark,connected=connected,status=status,radioLink=radioLink,
                                     contactName=contactName,avatarBytes=avatarBytes,
                                     showBack=!wide,compact=micro,onBack={page="chats"},
-                                    onInfo={showChatInfo=true},onSearch={showSearch=!showSearch}
+                                    onInfo={showChatInfo=true},onSearch={showSearch=!showSearch},
+                                    onRateMode=actions.setRadioMode
                                 )
                                 AnimatedVisibility(showSearch) {
                                     GlassCard(Modifier.fillMaxWidth(),dark=dark,radius=0.dp,frost=true) {
@@ -408,7 +410,8 @@ private fun rememberSaveableString(initial:String): MutableState<String> =
     androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf(initial) }
 
 @Composable
-private fun ChatTopBar(dark:Boolean,connected:Boolean,status:String,contactName:String,avatarBytes:ByteArray?,showBack:Boolean,compact:Boolean,onBack:()->Unit,onInfo:()->Unit,onSearch:()->Unit) {
+private fun ChatTopBar(dark:Boolean,connected:Boolean,status:String,radioLink:RadioLink?,contactName:String,avatarBytes:ByteArray?,showBack:Boolean,compact:Boolean,onBack:()->Unit,onInfo:()->Unit,onSearch:()->Unit,onRateMode:(String)->Unit) {
+    var menuOpen by remember { mutableStateOf(false) }
     GlassCard(Modifier.fillMaxWidth(),dark=dark,radius=0.dp,frost=true) {
         Row(Modifier.fillMaxWidth().heightIn(min=64.dp).padding(horizontal=if(showBack)8.dp else 16.dp,vertical=7.dp),
             verticalAlignment=Alignment.CenterVertically) {
@@ -417,13 +420,41 @@ private fun ChatTopBar(dark:Boolean,connected:Boolean,status:String,contactName:
             Spacer(Modifier.width(11.dp))
             Column(Modifier.weight(1f)) {
                 Text(contactName,fontWeight=FontWeight.Bold,style=MaterialTheme.typography.titleMedium,maxLines=1)
-                Text(if(connected)"Encrypted · nearby" else status,
+                Text(if(connected)radioLink?.summary ?: "Encrypted · awaiting RF telemetry" else status,
                     style=MaterialTheme.typography.labelSmall,
-                    color=if(connected)Color(0xFF49BEA6) else MaterialTheme.colorScheme.onSurfaceVariant,
+                    color=if(connected && radioLink?.rssiDbm!=null)Color(0xFF49BEA6)
+                        else MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines=1,overflow=TextOverflow.Ellipsis)
             }
             if(!compact) IconButton(onClick=onSearch){Icon(Icons.Default.Search,"Search messages")}
-            IconButton(onClick=onInfo){Icon(Icons.Default.MoreVert,"Conversation details")}
+            Box {
+                IconButton(onClick={menuOpen=true}){Icon(Icons.Default.MoreVert,"Radio and conversation options")}
+                DropdownMenu(expanded=menuOpen,onDismissRequest={menuOpen=false}) {
+                    Text("ESP-NOW link",modifier=Modifier.padding(horizontal=16.dp,vertical=8.dp),
+                        style=MaterialTheme.typography.titleSmall,color=MaterialTheme.colorScheme.onSurface)
+                    Text(if(connected)radioLink?.let { "${it.signalLabel} · ${it.phyLabel}" }
+                        ?: "Waiting for signal data" else "Not connected",
+                        modifier=Modifier.padding(horizontal=16.dp),
+                        style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text("Mode: ${radioLink?.rateMode ?: "unknown"} · Peer: ${radioLink?.peer ?: "unknown"}",
+                        modifier=Modifier.padding(horizontal=16.dp,vertical=3.dp),
+                        style=MaterialTheme.typography.labelSmall,color=MaterialTheme.colorScheme.onSurfaceVariant)
+                    HorizontalDivider(Modifier.padding(vertical=8.dp))
+                    RadioLink.choices.forEach { mode ->
+                        DropdownMenuItem(
+                            text={Text(when(mode){
+                                "AUTO"->"Auto (adaptive)";"SPEED"->"Speed";"RANGE"->"Range"
+                                "LR500"->"True LR 500 kbps";else->"True LR 250 kbps"})},
+                            leadingIcon={if(radioLink?.rateMode==mode)Icon(Icons.Default.Check,null)},
+                            enabled=connected,
+                            onClick={menuOpen=false;onRateMode(mode)}
+                        )
+                    }
+                    HorizontalDivider()
+                    DropdownMenuItem(text={Text("Contact details")},
+                        onClick={menuOpen=false;onInfo()})
+                }
+            }
         }
     }
 }
@@ -890,6 +921,10 @@ private fun SettingsPane(
                 ToggleSetting("Message notifications","Notify when chat is not visible",notifications,actions.changeNotifications)
                 ToggleSetting("Notification preview","Show decrypted text outside the app",privatePreview,actions.changePrivatePreview)
                 ToggleSetting("Keep BLE active","Persistent device connection notification; uses battery",backgroundEnabled,actions.changeBackground)
+                TextButton(onClick=actions.batterySettings) { Text("Open device battery settings") }
+                Text("Samsung: set OffGrid to Unrestricted and add it to Never sleeping apps.",
+                    color=MaterialTheme.colorScheme.onSurfaceVariant,
+                    style=MaterialTheme.typography.labelSmall)
                 ToggleSetting("Tap to record","Accessible alternative to press-and-hold",accessibleVoiceTap,actions.changeAccessibleVoiceTap)
             } } }
             item { GlassCard(Modifier.fillMaxWidth(),dark=dark) { Column(Modifier.padding(16.dp)) {

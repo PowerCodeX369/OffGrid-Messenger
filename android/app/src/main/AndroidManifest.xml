@@ -21,6 +21,6 @@
    <intent-filter><action android:name="android.intent.action.MAIN"/><category android:name="android.intent.category.LAUNCHER"/></intent-filter>
   </activity>
   <service android:name=".OffGridConnectionService" android:exported="false"
-    android:foregroundServiceType="connectedDevice" />
+    android:foregroundServiceType="connectedDevice" android:stopWithTask="false" />
  </application>
 </manifest>
