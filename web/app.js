@@ -1,13 +1,39 @@
 'use strict';
-/* OffGrid Phase 1.4.3: adaptive peer PHY firmware with encrypted transport and in-app photo gallery.
+/* OffGrid Phase 1.4.3.1: adaptive peer PHY firmware with encrypted transport and in-app photo gallery.
    Keys are stored as non-extractable CryptoKey objects in IndexedDB. No external servers. */
 const P=globalThis.OGP,$=id=>document.getElementById(id);
 const MAX_CHARS=500,MAX_PHOTO=96*1024,STORE='OffGridMessengerV14';
-const APP_VERSION='1.4.3';
+const APP_VERSION='1.4.3.1';
 const stateRank={sending:0,queued:0,sent:1,failed:1,delivered:2,read:3};
 const encoder=new TextEncoder();
 let port=null,reader=null,writer=null,readPromise=null,closing=false,verified=false,serialBuffer='',writeChain=Promise.resolve(),handshakeTimer=null;
 let localMac=null,secretKey=null,peerMac=null,activeContact='Nearby node',firmwareMismatchNotified=false;
+/* USB diagnostics: distinguish missing console output from incompatible or old firmware. */
+const usbLog=[];
+let usbWaitTimer=null,usbHandshakeStarted=0,usbLastRawAt=0,usbHandshakeIssue='',usbSawBeacon=false;
+function logUsb(line){usbLog.push(`[${new Date().toLocaleTimeString()}] ${String(line).slice(0,240)}`);if(usbLog.length>75)usbLog.shift();}
+function showUsbHint(message){usbHandshakeIssue=message;const area=$('usbDiagnostics');if(!area)return;area.classList.remove('hidden');$('usbDiagnosticsText').textContent=message;}
+function clearUsbHint(){usbHandshakeIssue='';$('usbDiagnostics')?.classList.add('hidden');}
+function updateUsbWait(){
+ if(!port||verified)return;
+ const elapsed=performance.now()-usbHandshakeStarted;
+ if(elapsed<5000)return;
+ if(!usbLastRawAt)showUsbHint('USB port opened, but no serial data. Check ESP-IDF USB Serial/JTAG console and reboot the node.');
+ else if(usbSawBeacon)showUsbHint('ESP32 sends READY, but has not confirmed the STATUS command. Check the USB input path.');
+ else if(!usbHandshakeIssue)showUsbHint('ESP32 serial output detected, but no compatible READY response. Open Diagnostics.');
+}
+function diagnoseUsb(){
+ showDialog('USB diagnostics',body=>{
+  body.append(el('p','',`State: ${verified?'connected':port?'waiting for READY':'disconnected'}. ${usbHandshakeIssue||'No active USB error.'}`));
+  const log=el('div','usb-diagnostics-log',usbLog.join('\n')||'No serial output captured.');body.append(log);
+  const controls=el('div','modal-actions');
+  const copy=el('button','quiet-button','Copy diagnostics');copy.onclick=()=>navigator.clipboard?.writeText(usbLog.join('\n')+'\n'+usbHandshakeIssue).then(()=>toast('Copied USB diagnostic log')).catch(()=>toast('Clipboard unavailable'));
+  const retry=el('button','primary-button','Send STATUS again');retry.onclick=()=>{if(!writer){toast('Connect your ESP32 first');return;}void writeLine('STATUS').then(()=>{logUsb('HOST> STATUS (manual)');toast('STATUS sent');}).catch(e=>toast(e.message));};
+  controls.append(copy,retry);body.append(controls);
+  body.append(el('p','',`Expected firmware response: READY|MAC|CHANNEL=6|…|PROTO=2|CAP=228|TXDONE=1|FROM=STATUS. If the device prints CAP=180 or no CAP field, it is running older firmware.`));
+ });
+}
+
 let db=null,records=[],recordMap=new Map(),photoUrls=new Map(),incoming=new Map(),recentTransfers=new Map();
 let transferQueue=[],activeTransfer=null,runningTransfers=false;
 const radioByHex=new Map(),radioByWire=new Map();
@@ -92,7 +118,7 @@ function refreshStatus(){
  const ready=verified&&!!secretKey;
  $('statusDot').className='status-dot'+(verified?' on':port?' wait':'');
  $('connectionState').textContent=verified?'Connected':port?'Checking firmware':'Disconnected';
- $('connectionDescription').textContent=verified?(localMac+' · channel 6 · protocol 2'):port?'Waiting for ESP32 READY':'Connect your ESP32-C3 over USB';
+ $('connectionDescription').textContent=verified?(localMac+' · channel 6 · protocol 2'):port?(usbHandshakeIssue||'Waiting for ESP32 READY'):'Connect your ESP32-C3 over USB';
  $('nodeAddress').textContent='Node: '+(localMac||'—');
  $('connectButton').disabled=!!port;$('disconnectButton').disabled=!port;
  $('messageInput').disabled=!ready;$('attachments').disabled=!ready;
@@ -323,7 +349,7 @@ function parseLine(raw){const s=raw.trim();if(!s)return;
  }
  if(s.startsWith('RATE_ERROR|')){console.warn('Radio PHY configuration:',s);toast('ESP32 PHY rate could not be applied; falling back to safe rate.');return;}
  if(s.startsWith('RATE|')||s.startsWith('PEER|'))return;
- if(s.startsWith('READY|')){const parts=s.split('|');if(!parts.includes('PROTO=2')||!parts.includes('CAP=228')){if(!firmwareMismatchNotified){toast('Flash Phase 1.4.3 firmware on BOTH boards (CAP=228).');firmwareMismatchNotified=true;}console.warn('Incompatible firmware READY:',s);return;}const mac=parts[1];if(!/^[0-9A-Fa-f:]{17}$/.test(mac))return;if(verified&&localMac===mac)return;void onReady(mac);return;}
+ if(s.startsWith('READY|')){const parts=s.split('|');if(!parts.includes('PROTO=2')||!parts.includes('CAP=228')){if(!firmwareMismatchNotified){toast('Flash Phase 1.4.3.1 firmware on BOTH boards (CAP=228).');firmwareMismatchNotified=true;}console.warn('Incompatible firmware READY:',s);return;}const mac=parts[1];if(!/^[0-9A-Fa-f:]{17}$/.test(mac))return;if(verified&&localMac===mac)return;void onReady(mac);return;}
  if(s.startsWith('QUEUED|')){const [,session,id,hex]=s.split('|'),slot=radioByHex.get(hex);if(slot){slot.wire=`${session}:${id}`;radioByWire.set(slot.wire,slot);}return;}
  if(s.startsWith('RX|')){const [,mac,session,id,data]=s.split('|');if(mac&&session&&id&&data)void processRx(mac,session,id,data);return;}
  if(/^(SENT|DELIVERED|FAILED|RETRY|RADIO_ERROR)\|/.test(s)){const [type,session,id,extra]=s.split('|');if(type==='RADIO_ERROR')console.warn('ESP-NOW:',extra);else onRadio(type,session,id,extra);return;}
@@ -414,11 +440,11 @@ function showRename(){showDialog('Contact name',body=>{body.append(el('p','','Th
 async function clearHistory(){if(!verified||!secretKey)return;if(runningTransfers||pendingRadio()||transferQueue.length){toast('Finish active transfers before clearing history.');return;}if(!confirm('Delete encrypted chat history for this ESP32 from this browser? This cannot be undone.'))return;
  await wipeStored();records=[];recordMap.clear();revokePhotos();renderHistory();toast('Local chat history cleared.');closeDialog();}
 function showInfo(){showDialog('Chat information',body=>{[['Contact',activeContact],['Your ESP32',localMac||'Disconnected'],['Protocol','ESP-NOW firmware protocol 2 / encrypted app protocol OGM4'],['Security',secretKey?'AES-256-GCM, 256-bit random shared key':'Not paired'],['Photo target',`${Math.round(photoBudget()/1024)} KB optimized, 96 KB absolute`],['Radio PHY',radioTelemetry.available?`${radioTelemetry.phy} Mbps TX, RSSI ${radioTelemetry.rssi===null?'unknown':radioTelemetry.rssi+' dBm'}`:'Waiting for telemetry'],['Link profile',`${linkPreference}; adaptive PHY and 1–3 fragments in flight`],['Storage','AES-GCM encrypted local IndexedDB']].forEach(([a,b])=>{const line=el('div','info-line');line.append(el('span','',a),el('strong','',b));body.append(line);});body.append(el('p','','Grey single tick = transmitted; grey double tick = peer decrypted and confirmed; blue double tick = peer app reported it was viewed. Browser history is stored encrypted at rest.'));});}
-function showSettings(){showDialog('Settings',body=>{body.append(el('p','','Phase 1.4.3: callback-paced radio TX, larger fragments and adaptive radio PHY (1/6/12 Mbps), reliable encrypted chat, and an in-app photo gallery.'));
+function showSettings(){showDialog('Settings',body=>{body.append(el('p','','Phase 1.4.3.1: callback-paced radio TX, larger fragments and adaptive radio PHY (1/6/12 Mbps), reliable encrypted chat, and an in-app photo gallery.'));
  const linkLabel=el('label','','Transfer profile');body.append(linkLabel);const linkSelect=document.createElement('select');linkSelect.className='setting-select';
  [['auto','Auto · adapts 1–3 fragments in flight based on ACK latency/retries'],['range','Range first · 1 fragment in flight, ~48 KB images'],['speed','Speed first · up to 3 fragments in flight, ~72 KB images']].forEach(([v,t])=>{const opt=document.createElement('option');opt.value=v;opt.textContent=t;linkSelect.append(opt);});
  linkSelect.value=linkPreference;linkSelect.onchange=()=>{linkPreference=linkSelect.value;try{localStorage.setItem('offgrid_link_preference',linkPreference);}catch{}if(verified)void writeLine('RATE '+linkPreference.toUpperCase()).catch(()=>{});updateLinkBadge();};body.append(linkSelect);
- body.append(el('p','','Link quality is estimated from receiver acknowledgments and retries, not measured distance. Phase 1.4.3 firmware adapts unicast transmit PHY between 1/6/12 Mbps using RSSI and successful acknowledgments; Range first locks 1 Mbps. Image size and packet concurrency also adapt. Actual range depends on interference and antenna orientation.')); 
+ body.append(el('p','','Link quality is estimated from receiver acknowledgments and retries, not measured distance. Phase 1.4.3.1 firmware adapts unicast transmit PHY between 1/6/12 Mbps using RSSI and successful acknowledgments; Range first locks 1 Mbps. Image size and packet concurrency also adapt. Actual range depends on interference and antenna orientation.')); 
  const modeLabel=el('label','','Image optimization');body.append(modeLabel);const select=document.createElement('select');select.className='setting-select';
  [['hq','Optimized WebP/JPEG (adaptive 48–72 KB target, may resize)'],['lossless','Lossless PNG + metadata stripping (reject if >96 KB)']].forEach(([v,t])=>{const opt=document.createElement('option');opt.value=v;opt.textContent=t;select.append(opt);});select.value=imageMode;select.onchange=()=>{imageMode=select.value;try{localStorage.setItem('offgrid_image_mode',imageMode);}catch{}updateLinkBadge();};body.append(select);
  body.append(el('p','','Metadata stripping does not make photos tiny. High-quality mode can reduce dimensions and introduce slight loss; lossless PNG keeps the canvas pixels exact but may not fit through this radio link.'));
@@ -441,7 +467,7 @@ document.addEventListener('keydown',e=>{
  if(e.key==='ArrowLeft'){e.preventDefault();navigatePhoto(-1);}
  if(e.key==='ArrowRight'){e.preventDefault();navigatePhoto(1);}
 });
-$('connectButton').onclick=()=>void connect();$('disconnectButton').onclick=()=>void disconnect();$('sendButton').onclick=()=>void sendText();
+$('connectButton').onclick=()=>void connect();$('disconnectButton').onclick=()=>void disconnect();$('usbDiagnosticsButton').onclick=diagnoseUsb;$('sendButton').onclick=()=>void sendText();
 $('messageInput').addEventListener('input',updateByteCount);$('messageInput').addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();void sendText();}});
 $('attachments').onclick=()=>$('photoPicker').click();$('photoPicker').addEventListener('change',e=>{if(e.target.files?.length)void sendPhoto(e.target.files[0]);});
 $('securityButton').onclick=showPairing;$('renameButton').onclick=showRename;$('settingsButton').onclick=showSettings;$('infoButton').onclick=showInfo;
@@ -452,4 +478,4 @@ document.addEventListener('visibilitychange',sendReadReceipts);window.addEventLi
 window.addEventListener('beforeunload',revokePhotos);
 setInterval(pruneIncoming,45000);
 (async()=>{try{db=await openDb();}catch(e){toast('IndexedDB unavailable. Encrypted storage cannot work: '+e.message);}refreshStatus();})();
-console.info('OffGrid Phase 1.4.3 — callback-paced radio TX, 208-byte encrypted fragments, adaptive PHY and encrypted gallery.');
+console.info('OffGrid Phase 1.4.3.1 — callback-paced radio TX, 208-byte encrypted fragments, adaptive PHY and encrypted gallery.');

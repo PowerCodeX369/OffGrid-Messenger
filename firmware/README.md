@@ -1,36 +1,40 @@
-# OffGrid Messenger — Phase 1.4.3 Performance Fix
+# OffGrid Messenger — Phase 1.4.3.1 (USB connection hotfix)
 
-**Why photos were slow:** Phase 1.4.2 used 160 data bytes per chunk and a fixed **65 ms delay before every ESP-NOW packet**, including ACKs. A 64 KiB image required ~410 chunks and ~410 radio acknowledgments; delays alone consumed ~53 seconds, often much more with USB/browser processing. A reported 12 Mbps PHY rate does **not** mean 12 Mbps file throughput.
+**For ESP32-C3 Super Mini, ESP-IDF in VS Code, Chromium Web Serial.** This maintenance release keeps all Phase 1.4.3 photo chunk sizes, callback-paced sending, AES-256-GCM browser message format, and photo gallery unchanged.
 
-## Changes
+## What was fixed
 
-- **Firmware (both boards MUST be reflashed):** ESP-NOW send callback completion pacing replaces the 65 ms fixed gap; 4 ms protective minimum gap, callbacks in a Wi-Fi task notify a semaphore without doing any expensive work. Wait up to 300 ms for a send completion. Event-queue polling 30 → 2 ms. `MAX_TEXT` raised from 180 to **228 bytes**, keeping full firmware frame at **250 bytes**, compatible with ESP-NOW v1 frames and v2-capable radios.
-- **Web app:** encrypted app fragments 160 → **208 bytes**, leaving the 20-byte app header inside the 228-byte firmware payload. All encryption, photo gallery, local encrypted history, and the AES-256-GCM packet format remain unchanged. No storage migration or new pairing key needed.
-- **Compatibility check:** `READY` line now contains `CAP=228` / `TXDONE=1`. Browser refuses older firmware. Both boards need 1.4.3.
-- **Useful diagnostics:** current image transfer shows actual application payload KB/s, and last photo throughput appears in link details. The value is not RF PHY bitrate.
+- The original browser silently waited for `CAP=228` without displaying the actual received firmware response. It now explains whether the firmware is incompatible or the USB console has not produced any output.
+- The ESP32 announces `READY|...|FROM=BEACON` every 3 seconds until it actually receives a browser `STATUS` command. A proper `STATUS` reply includes `FROM=STATUS` to confirm bidirectional USB serial communication.
+- The web app displays a small **Diagnostics** option only while waiting, and the diagnostic popup lists non-message firmware/USB startup lines; it can resend `STATUS` manually.
+- Firmware now checks task creation success and explicitly reports `FATAL|TASK_CREATE_FAILED` if either worker fails.
+- No additional cloud, internet, hardware or libraries required. Original radio PHY adaptation and message payload size are preserved.
 
-## How to install
+## Installation
 
-1. Open this exact folder in VS Code with ESP-IDF 5.2+ and build/flash **both** ESP32-C3 Super Minis. The firmware is identical on both.
-2. Close all prior web tabs and stop the old Python server. From this project root:
+1. Extract ZIP into a **new** directory (do not use previously compiled `build/` or `sdkconfig` from an old version).
+2. In VS Code ESP-IDF extension choose target `esp32c3` and **build + flash both boards**. The native USB console should be enabled (`CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y`).
+3. Close old tabs and web server. From this new project folder, run:
 
    ```bash
    python3 -m http.server 8765 --directory web
    ```
 
-3. Open **http://localhost:8765/?v=1.4.3** in two Chromium tabs; hard-refresh each. Connect each board to a separate tab. `READY|...|CAP=228|TXDONE=1` must appear in the serial console if you inspect it, and UI should show a peer after a transmission.
-4. Use the same localhost origin/port and browser profile to preserve your existing encrypted history and pairing keys.
-5. Send text both directions, then a **5–10 KB image first**, then a 40–60 KB image. Check for delivered and blue ticks, gallery navigation, speed in KB/s, and success after disconnect/reconnect.
-6. Test both **Auto** and **Range first**. Watch RSSI, TX PHY, Retry/Fail and actual KB/s. The rate adapts by signal quality, but the maximum physical range is still determined by hardware and environment.
+4. Open `http://localhost:8765/?v=1.4.3.1` in both Chromium tabs and press Ctrl+Shift+R, then choose the correct board's USB port.
+5. After port selection, expect `Connected` within the handshake sequence; if not, click **Diagnostics** in the connection card. Copy the log before reflashing/resetting further.
 
-## Important compatibility / reliability notes
+## Diagnosis guide
 
-- New browser JS cannot transmit photos to old 1.4.2 boards: new frames can be 228 bytes. **Flash both boards and run this exact web release.** Do not mix firmware/web versions.
-- The ESP32 send callback confirms only MAC-level transmission, not recipient-browser delivery. The existing `APPACK`, app-level encrypted whole-message receipts, retries, and deduplication remain in place.
-- `TXDONE` timing provides faster pacing without blasting unsynchronized ESP-NOW calls. If the radio cannot keep up, retries and fallback still apply. Do not assume the theoretical 12 Mbps PHY rate is achievable for files.
-- **This code has not been built against the ESP-IDF toolchain or exercised on your real ESP32 radios here.** If you see build errors or packet loss, share the full compiler log and `LINK|...`, `RATE_ERROR|...` or `RADIO_ERROR|...` serial lines. Your previous 1.4.2 ZIP remains an immediate rollback option.
+- **Incompatible firmware (CAP=180 or missing):** the selected board is on an old build; flash 1.4.3.1 to both ESP32s (make sure you flashed the correct USB port).
+- **No serial data:** likely firmware not booting, wrong port, or native USB console config. Try unplugging/reconnecting and flashing a clean project. You can inspect boot logs with `idf.py -p /dev/ttyACM0 monitor` **only after disconnecting the browser** (port cannot be open in both).
+- **READY FROM=BEACON but no FROM=STATUS:** board output works but commands are not reaching/being parsed. Copy diagnostics and check the USB input/ESP-IDF console configuration.
+- **Boot crash/fatal log:** inspect full ESP-IDF monitor output and fix that error before testing radio or gallery.
 
-## Security
+## Test
 
-End-to-end AES-256-GCM on the browser remains unchanged; RF MAC addresses and timing metadata are still visible. This project has not undergone a security audit. Use the same confidential pairing key on both sides.
+1. Both tabs connect to the correct MAC and report protocol 2 / CAP 228.
+2. Verify a short encrypted text both directions.
+3. Verify 5–10KB photo, then 40–60KB photo, noting measured KB/s and delivery receipts.
+4. Test gallery and light mode; all of those files are unchanged from 1.4.3.
 
+**Limitations:** This environment cannot compile against your local ESP-IDF or test two physical ESP32-C3 boards. JavaScript can be syntax-tested and USB-handshake simulations can be run, but physical compatibility still requires testing.

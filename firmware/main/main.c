@@ -1,4 +1,4 @@
-/* OffGrid Messenger Phase 1.4.3: ESP-IDF 5.2+ on ESP32-C3.
+/* OffGrid Messenger Phase 1.4.3.1: ESP-IDF 5.2+ on ESP32-C3.
  * Same firmware on both radios. Protocol OGM2 unchanged for web encryption.
  * Bootstrap with broadcast at 1 Mbps; learn peer, send unicast with adaptive PHY.
  * The RADIO is an untrusted encrypted-payload carrier (AES-GCM lives in browser).
@@ -42,6 +42,7 @@
 #define EVENT_QUEUE_LEN 32
 #define SERIAL_LINE 512
 #define LINK_REPORT_MS 1800
+#define BOOT_BEACON_MS 3000
 #define RATE_COOLDOWN_MS 4500
 #define PEER_EXPIRE_MS 90000
 #define RSSI_UNKNOWN (-127)
@@ -126,6 +127,9 @@ static int32_t rssi_ema=RSSI_UNKNOWN;
 static uint8_t phy_mbps=1;
 static uint32_t good_deliveries=0, total_deliveries=0, total_retries=0, total_failures=0;
 static int64_t last_rate_change_ms=0, last_peer_ms=0, last_report_ms=0;
+/* STATUS confirms the USB host can send commands, not merely read boot output. */
+static volatile bool serial_status_seen=false;
+static int64_t last_boot_beacon_ms=0;
 
 
 static int64_t now_ms(void) { return esp_timer_get_time() / 1000; }
@@ -224,9 +228,9 @@ static bool read_hex(const char *s,uint8_t *dst,uint16_t *len) {
     *len=(uint16_t)(n/2);
     return true;
 }
-static void show_ready(void) {
+static void show_ready(const char *source) {
     printf("READY|");print_mac(own_mac);
-    printf("|CHANNEL=%d|SESSION=%" PRIu32 "|PROTO=2|CAP=228|TXDONE=1\n",CHANNEL,boot_session);
+    printf("|CHANNEL=%d|SESSION=%" PRIu32 "|PROTO=2|CAP=228|TXDONE=1|FROM=%s\n",CHANNEL,boot_session,source);
 }
 static void on_receive(const esp_now_recv_info_t *info,const uint8_t *data,int len) {
     const size_t base=offsetof(frame_t,text);
@@ -283,7 +287,12 @@ static void display_rx(const frame_t *f,const uint8_t *mac) {
     print_hex(f->text,f->length);putchar('\n');
 }
 static void process_event(const event_t *e) {
-    if(e->type==EV_STATUS){show_ready();emit_link();return;}
+    if(e->type==EV_STATUS){
+        serial_status_seen=true;
+        show_ready("STATUS");
+        emit_link();
+        return;
+    }
     if(e->type==EV_RATE){
         link_mode=(link_mode_t)e->mode;
         good_deliveries=0;
@@ -365,6 +374,13 @@ static void dispatcher(void *arg) {
         if(xQueueReceive(event_queue,&e,pdMS_TO_TICKS(2))==pdTRUE)process_event(&e);
         int64_t t=now_ms();
         if(t-last_report_ms>=LINK_REPORT_MS){last_report_ms=t;emit_link();}
+        /* The native USB Serial/JTAG console may open after BOOT/READY was printed.
+           Re-announce readiness until a STATUS command is received from the browser.
+           Do not require a reset every time a browser opens the serial port. */
+        if(!serial_status_seen && t-last_boot_beacon_ms>=BOOT_BEACON_MS){
+            last_boot_beacon_ms=t;
+            show_ready("BEACON");
+        }
         if(peer_known && (t-last_peer_ms>PEER_EXPIRE_MS) && !total_deliveries)adjust_phy(true);
         for(int i=0;i<MAX_PENDING;i++) {
             outgoing_t *o=&pending[i];if(!o->active)continue;
@@ -437,7 +453,7 @@ static void serial_task(void *arg) {
 }
 void app_main(void) {
     setvbuf(stdout,NULL,_IONBF,0);
-    puts("BOOT|OffGrid Messenger Phase 1.4.3 / fast ACK-paced TX / protocol 2");
+    puts("BOOT|OffGrid Messenger Phase 1.4.3.1 / USB handshake hotfix / protocol 2");
     esp_err_t e=nvs_flash_init();
     if(e==ESP_ERR_NVS_NO_FREE_PAGES||e==ESP_ERR_NVS_NEW_VERSION_FOUND){ESP_ERROR_CHECK(nvs_flash_erase());e=nvs_flash_init();}
     ESP_ERROR_CHECK(e);
@@ -457,7 +473,13 @@ void app_main(void) {
     ESP_ERROR_CHECK(esp_now_register_recv_cb(on_receive));
     ESP_ERROR_CHECK(esp_now_register_send_cb(on_send));
     if(!ensure_peer(BROADCAST))abort();
-    show_ready();emit_link();
-    xTaskCreate(dispatcher,"dispatch",6144,NULL,5,NULL);
-    xTaskCreate(serial_task,"serial",4096,NULL,4,NULL);
+    /* Tasks must exist before we announce the device as ready to the browser. */
+    BaseType_t d=xTaskCreate(dispatcher,"dispatch",6144,NULL,5,NULL);
+    BaseType_t c=xTaskCreate(serial_task,"serial",4096,NULL,4,NULL);
+    if(d!=pdPASS || c!=pdPASS){
+        printf("FATAL|TASK_CREATE_FAILED|DISPATCH=%d|SERIAL=%d\n",(int)d,(int)c);
+        abort();
+    }
+    show_ready("BOOT");
+    emit_link();
 }
