@@ -1,4 +1,4 @@
-/* OffGrid Messenger Phase 1.4.10 USB-input optimization (inherits 1.4.9.1 diagnostics) — ESP-IDF >= 5.2 / ESP32-C3.
+/* OffGrid Messenger Phase 1.4.9 isolated diagnostics — ESP-IDF >= 5.2 / ESP32-C3.
  * EXPERIMENTAL branch of FROZEN Phase 1.4.5.2 WatchdogFix.
  * AES-256-GCM runs in the BROWSER. NVS key management unchanged.
  * 1 Mbps broadcast HELLO/recovery; peer-aware 1/6/12 Mbps unicast for data.
@@ -13,8 +13,6 @@
 #include <inttypes.h>
 #include <stdbool.h>
 #include <ctype.h>
-#include <unistd.h> /* read() / STDIN_FILENO: batched native USB console reads */
-#include <errno.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/queue.h"
@@ -59,7 +57,6 @@
 #define PHY_HOLD_MS 10000
 #define EVENT_QUEUE_LEN 32
 #define SERIAL_LINE 512
-#define USB_RX_BATCH 256 /* Use VFS console without replacing its output driver. */
 #define LINK_REPORT_MS 2500
 #define READY_BEACON_MS 2500
 
@@ -253,7 +250,7 @@ static bool read_hex(const char *s,uint8_t *dst,uint16_t *len) {
  * IMPORTANT: single printf to avoid splitting the READY frame over lines. */
 static void show_ready(const char *source) {
     printf("READY|%02X:%02X:%02X:%02X:%02X:%02X|CHANNEL=%d|SESSION=%" PRIu32
-           "|PROTO=2|CAP=180|STABLE=1|NVSKEY=1|ADAPTIVEPHY=1|DIAG=1|USBRX=BATCH256|FROM=%s\n",
+           "|PROTO=2|CAP=180|STABLE=1|NVSKEY=1|ADAPTIVEPHY=1|DIAG=1|FROM=%s\n",
            own_mac[0],own_mac[1],own_mac[2],own_mac[3],own_mac[4],own_mac[5],
            CHANNEL,boot_session,source);
 }
@@ -610,31 +607,19 @@ static void dispatcher(void *arg) {
 }
 static void serial_task(void *arg) {
     char line[SERIAL_LINE];size_t used=0;
-    uint8_t rx[USB_RX_BATCH];
-    bool discard_until_newline=false;
-    uint8_t consecutive_batches=0;
     puts("HELP|MSGHEX, STATUS, APPACK, READ, KEYGET, KEYSET, RATE, USBOUT, USBIN_BEGIN/USBIN/USBIN_END, RBENCH");
-    /* ESP-IDF's USB Serial/JTAG console VFS is nonblocking by default.
-     * Reading a whole available batch instead of one byte removes the 20-ms
-     * sleep from the middle of a USB packet. Keep this same console backend
-     * for stdout to preserve the proven READY/HEX output throughput.
-     * No direct access to USB hardware and no conflicting VFS driver swap. */
     while(true) {
-        ssize_t got=read(STDIN_FILENO,rx,sizeof(rx));
-        if(got<=0) {
-            /* Empty nonblocking RX is normal. Yield a full scheduler tick
-             * so CPU0 IDLE continues to run (critical watchdog invariant). */
-            consecutive_batches=0;
+        int ch=getchar();
+        if(ch==EOF){
+            /* Keep the previously proven stdio console parser. The default
+             * USB Serial/JTAG VFS returns EOF when no character is waiting.
+             * One tick avoids 20ms polling gaps while still allowing the
+             * CPU0 idle task to run (watchdog stays enabled). */
+            clearerr(stdin);
             vTaskDelay(1);
             continue;
         }
-        for(ssize_t pos=0;pos<got;pos++) {
-        int ch=rx[pos];
         if(ch=='\r')continue;
-        if(discard_until_newline) {
-            if(ch=='\n') {discard_until_newline=false;used=0;}
-            continue;
-        }
         if(ch=='\n') {
             line[used]=0;event_t e={0};bool send=false;
             if(strncmp(line,"USBOUT ",7)==0){
@@ -726,17 +711,14 @@ static void serial_task(void *arg) {
             if(send&&!xQueueSend(event_queue,&e,pdMS_TO_TICKS(100)))puts("ERROR|EVENT_QUEUE_FULL");
             used=0;
         }else if(used<sizeof(line)-1)line[used++]=(char)ch;
-        else {used=0;discard_until_newline=true;puts("ERROR|LINE_TOO_LONG");}
-        } /* for each byte from one USB read */
-        /* Never starve the idle task during a sustained large upload. */
-        if(++consecutive_batches>=4){consecutive_batches=0;vTaskDelay(1);}
+        else {used=0;puts("ERROR|LINE_TOO_LONG");}
     }
 }
 void app_main(void) {
     /* Line buffering batches complete protocol records but flushes on newline.
      * This avoids byte-by-byte USB VFS writes while retaining immediate READY. */
     setvbuf(stdout,NULL,_IOLBF,0);
-    puts("BOOT|OffGrid Messenger Phase 1.4.10 USB RX batches / diagnostics / adaptive PHY, NVS, ACK");
+    puts("BOOT|OffGrid Messenger Phase 1.4.9 diagnostics / adaptive PHY, NVS, ACK");
     esp_err_t e=nvs_flash_init();
     if(e==ESP_ERR_NVS_NO_FREE_PAGES||e==ESP_ERR_NVS_NEW_VERSION_FOUND){ESP_ERROR_CHECK(nvs_flash_erase());e=nvs_flash_init();}
     ESP_ERROR_CHECK(e);
