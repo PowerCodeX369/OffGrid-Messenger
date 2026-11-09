@@ -42,3 +42,50 @@ body.light{background:radial-gradient(circle at top,#f6fbff 0,#eef2f4 52%,#e8ece
 @keyframes receiptGlow{0%{transform:scale(.9);opacity:.7}100%{transform:scale(1);opacity:1}}
 @media(max-width:800px){.sidebar{width:290px}.chat-scroll{padding-left:4%;padding-right:4%}.send-panel{padding-left:10px;padding-right:10px}.chat-header{padding:0 10px}}
 @media(max-width:590px){.app{position:relative;overflow:hidden}.sidebar{width:100%;position:absolute;inset:0;z-index:2}.conversation{width:100%;position:absolute;inset:0;z-index:1}body.mobile-chat .sidebar{display:none}body.mobile-chat .conversation{z-index:3}.back-button{display:grid}.header-radio span{display:none}.side-foot{padding-bottom:24px}.message-bubble{max-width:85%}}
+
+/* Phase 1.4: compact WhatsApp-style overlapping vector receipts */
+.receipt-icon{display:inline-flex;align-items:center;justify-content:center;width:26px;height:16px;flex:none;color:#aebec5;line-height:1;position:relative;transition:color .22s ease,transform .22s ease}
+.receipt-icon svg{overflow:visible;display:block}
+.receipt-icon .tick-one,.receipt-icon .tick-two{transition:opacity .18s ease,stroke .18s ease}
+.receipt-icon.sent .tick-two{opacity:0}
+.receipt-icon.read{color:#53bdeb;animation:receiptGlow .26s ease}
+.receipt-icon.sending .tick-one,.receipt-icon.sending .tick-two,.receipt-icon.queued .tick-one,.receipt-icon.queued .tick-two,.receipt-icon.failed .tick-one,.receipt-icon.failed .tick-two{opacity:0}
+.receipt-icon.sending:after,.receipt-icon.queued:after{content:'◷';position:absolute;right:3px;bottom:0;font-size:13px;color:var(--muted)}
+.receipt-icon.failed:after{content:'!';position:absolute;right:8px;bottom:0;font-weight:800;font-size:13px;color:var(--danger)}
+.transfer-progress{font-weight:700;font-variant-numeric:tabular-nums;color:var(--accent-strong);font-size:10px}
+.chat-photo{display:block;max-width:min(340px,58vw);width:auto;height:auto;max-height:360px;object-fit:contain;border-radius:9px;cursor:zoom-in;background:rgba(0,0,0,.14);transition:filter .2s ease,transform .2s ease}
+.chat-photo:hover{filter:brightness(1.04)}.photo-caption{font-size:10px;color:var(--muted);padding-top:7px}
+.message-row.retryable{cursor:pointer}.message-row.retryable .message-bubble{outline:1px solid rgba(255,153,133,.38)}.message-row.retryable:hover .message-bubble{outline-color:var(--danger)}
+.security-line{border:1px solid rgba(0,168,132,.25);width:100%;background:rgba(0,168,132,.07);color:var(--ink);display:flex;align-items:center;gap:8px;text-align:left;padding:9px 11px;border-radius:9px;font-size:11px;transition:background .2s ease,transform .18s ease}
+.security-line:hover{background:rgba(0,168,132,.14);transform:translateY(-1px)}.security-line #securityLabel{flex:1;line-height:1.4}.security-chevron{font-size:18px;color:var(--accent-strong)}
+.pair-key-field{display:block;width:100%;background:var(--shell);border:1px solid var(--line);border-radius:10px;padding:10px 12px;color:var(--ink);font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:12px;outline-color:var(--accent);resize:vertical;word-break:break-all;margin:13px 0}
+.pair-actions{display:flex;align-items:center;flex-wrap:wrap;gap:8px}.pair-status{border-radius:10px;padding:11px 12px;background:rgba(0,168,132,.10);border:1px solid rgba(0,168,132,.16);font-size:12px;margin-top:14px}
+.settings-actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:15px}.setting-select{background:var(--shell);color:var(--ink);border:1px solid var(--line);border-radius:10px;width:100%;padding:11px;line-height:1.5;white-space:normal}
+.icon-button.composer-attach:not(:disabled){background:rgba(0,168,132,.1);color:var(--accent-strong);font-size:28px;align-self:center}.icon-button.composer-attach:not(:disabled):hover{background:rgba(0,168,132,.18);transform:rotate(45deg) scale(1.06)}
+.message-bubble:has(.chat-photo){padding:6px 7px 6px}.message-bubble:has(.chat-photo) .message-meta{padding:0 4px}
+
+/* Light mode: intentionally override all Phase 1.3 dark/translucent hardcoded backgrounds. */
+body.light{--shell:#fff;--panel:#f8fafb;--raised:#fff;--message:#fff;--mine:#d9fbd8;--ink:#20313a;--muted:#586a73;--line:#d9e3e6;--hover:#e9f3f2;--chat:#f2f5f4;--accent:#009779;--accent-strong:#007b66;--blue:#128ad4;--danger:#b63b36}
+body.light .side-head,body.light .chat-header{background:rgba(248,250,251,.97);border-bottom:1px solid #dce6e8;color:#20313a}
+body.light .send-panel{background:rgba(248,250,251,.96);border-top:1px solid #dae5e8}
+body.light .side-connection{background:linear-gradient(180deg,#fff,#f4faf8);border-color:#d7e7e3;box-shadow:0 3px 20px #143e3420}
+body.light .intro{background:#fff;border-color:#d6e2e5;color:#5a6d73;box-shadow:0 14px 35px #1f444c12}
+body.light .day-divider span{background:#e5efed;color:#53666e;box-shadow:0 2px 10px #204a4b0d}
+body.light .phase-banner{background:linear-gradient(120deg,#dff6ee,#e3f0fe);border:1px solid #c5e7e1}
+body.light .phase-banner span{color:#007f68}body.light .phase-banner strong{color:#214c46}
+body.light .tiny-badge{background:#def4ec;color:#08745f}
+body.light .message-bubble{box-shadow:0 1px 4px #35575a16,0 7px 22px #35575a0a}
+body.light .message-meta{color:#587276}
+body.light .receipt-icon{color:#758d95}body.light .receipt-icon.read{color:#168bd5}
+body.light .chat-background{background-color:#eef3f1;background-image:radial-gradient(circle at 1px 1px,rgba(70,111,99,.07) 1px,transparent 0)}
+body.light .composer{background:#fff;border:1px solid #d9e5e7;box-shadow:0 2px 8px #123a3810}
+body.light .composer textarea{color:#21353a}body.light .composer-caption{color:#5e747b}
+body.light .modal{background:#fff;border-color:#d9e4e7}body.light .modal-backdrop{background:rgba(28,48,51,.42)}
+body.light .modal input,body.light .pair-key-field,body.light .setting-select{background:#f7fbfb;border-color:#d4e5e7;color:#23343a}
+body.light .security-line{background:#e3f7f0;border-color:#bde7d9;color:#1c564a}body.light .security-line:hover{background:#d3f2e7}
+body.light .pair-status{background:#e6f7ef;border-color:#bbe2d6;color:#28604e}
+body.light .soft-button{background:#fff1eb;color:#a33d2f}body.light .toast{background:#20373c;color:#fff}
+body.light .contact.active{background:#e9f5f2}body.light .side-foot{color:#586d72}
+body.light .brand-logo{box-shadow:0 4px 12px #2b66552b}
+@media(prefers-reduced-motion:reduce){*,*::before,*::after{animation-duration:.01ms!important;transition-duration:.01ms!important;scroll-behavior:auto!important}}
+@media(max-width:590px){.chat-photo{max-width:64vw}.security-line{font-size:11px}.pair-actions>*{flex:1}.phase-banner{display:none}}

@@ -4,10 +4,11 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#101b21">
-  <title>OffGrid Messenger</title>
+  <title>OffGrid Messenger — Phase 1.4</title>
   <link rel="icon" href="logo.svg" type="image/svg+xml">
-  <link rel="stylesheet" href="styles.css?v=1.3.0">
-  <script src="app.js?v=1.3.0" defer></script>
+  <link rel="stylesheet" href="styles.css?v=1.4.0">
+  <script src="protocol.js?v=1.4.0" defer></script>
+  <script src="app.js?v=1.4.0" defer></script>
 </head>
 <body>
 <div class="app" id="app">
@@ -32,6 +33,7 @@
         <button class="quiet-button" id="disconnectButton" disabled>Disconnect</button>
       </div>
       <div class="node-info"><span id="nodeAddress">Node: —</span><span id="nodeChannel">Channel 6</span></div>
+      <button class="security-line" id="securityButton" type="button"><span id="securityIcon">♢</span><span id="securityLabel">Connect to configure encryption</span><span class="security-chevron">›</span></button>
     </div>
     <div class="chats-heading"><h2>Chats</h2><span class="tiny-badge">1</span></div>
     <button class="contact active" id="contactButton" type="button">
@@ -39,11 +41,11 @@
       <span class="contact-body"><span class="contact-top"><strong id="contactSidebarName">Nearby node</strong><span class="contact-time" id="lastChatTime"></span></span><span class="contact-preview" id="lastChatPreview">Your off-grid conversation</span></span>
     </button>
     <div class="phase-banner">
-      <span>Phase 1.3</span>
-      <strong>Persistent history · polished UI · real receipts</strong>
+      <span>Phase 1.4</span>
+      <strong>AES-256-GCM · encrypted images · real receipts</strong>
       <small>No cloud. No server. No internet.</small>
     </div>
-    <div class="side-foot"><span class="tiny-offline">◆</span> Peer-to-peer radio • USB Serial + ESP-NOW <small>Test build · encryption comes in Phase 1.4</small></div>
+    <div class="side-foot"><span class="tiny-offline">◆</span> Peer-to-peer radio • USB Serial + ESP-NOW <small>Encrypted messages · local browser key storage</small></div>
   </aside>
   <main class="conversation">
     <header class="chat-header">
@@ -57,7 +59,7 @@
         <div class="intro" id="introCard">
           <img class="intro-logo" src="logo.svg" alt="OffGrid Messenger logo">
           <strong>Off-grid messaging over ESP32-C3</strong>
-          <p>Local browser chat, real delivery receipts, smooth messaging animations, and persistent history stored in this browser.</p>
+          <p>Encrypted text and photos over your own ESP32 radio link. Pair both browsers with the same 256-bit key before sending.</p>
           <span>Connect both boards to begin</span>
         </div>
         <div class="day-divider"><span>Today</span></div>
@@ -65,14 +67,15 @@
       </div>
       <div class="send-panel">
         <div class="composer" id="composer">
-          <button class="icon-button composer-attach" id="attachments" title="Coming in later phases" disabled>＋</button>
-          <textarea id="messageInput" rows="1" maxlength="720" placeholder="Connect ESP32 to send messages" disabled aria-label="Message"></textarea>
-          <span id="byteCount" class="byte-count">0/180</span>
+          <button class="icon-button composer-attach" id="attachments" title="Send a photo" aria-label="Send a photo" disabled>＋</button>
+          <input type="file" id="photoPicker" accept="image/*" hidden>
+          <textarea id="messageInput" rows="1" maxlength="2000" placeholder="Connect ESP32 to send messages" disabled aria-label="Message"></textarea>
+          <span id="byteCount" class="byte-count">0/500</span>
           <button class="send-button" id="sendButton" aria-label="Send message" disabled>
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 20 21 12 3 4l3.8 7.2L15 12l-8.2.8L3 20Z"/></svg>
           </button>
         </div>
-        <div class="composer-caption"><span id="composerStatus">Connect an ESP32 using the sidebar</span><span id="encryptionStatus">⚠ Unencrypted test firmware</span></div>
+        <div class="composer-caption"><span id="composerStatus">Connect an ESP32 using the sidebar</span><span id="encryptionStatus">🔒 AES-256-GCM · end-to-end</span></div>
       </div>
     </div>
   </main>
