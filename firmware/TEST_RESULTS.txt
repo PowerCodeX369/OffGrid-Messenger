@@ -1,0 +1,96 @@
+PASS | JavaScript syntax · protocol
+
+
+PASS | JavaScript syntax · app
+
+
+PASS | JavaScript syntax · adaptive
+
+
+PASS | Protocol AES-GCM and existing 500-character/photo
+PASS short text — 14 bytes, 1 acknowledged-sized frames
+PASS 500 Unicode characters — 2000 bytes, 13 acknowledged-sized frames
+PASS 96 KiB photo — 98305 bytes, 615 acknowledged-sized frames
+PASS encrypted local history with owner/message ID binding
+PASS 256-bit pairing-key encoding
+
+PASS | Selective ACK photo crypto
+PASS real AES-256-GCM photo protocol: 289 fragments, 49 selective ACK groups, lost/reordered/recovered, authentication enforced
+
+PASS | Selective ACK browser scheduler
+PASS actual browser scheduling: 6-ID flush, timeout tail flush, deduplication, session isolation and cleanup
+
+PASS | Adaptive windows (media and text isolation)
+PASS adaptive photo ACK/RSSI controller, conservative fallback and text isolation
+
+PASS | Diagnostics crypto and protocol
+PASS encrypted 8 KiB benchmark, fragment reassembly, final ACK type, tamper rejection
+
+PASS | Voice AES-GCM and tamper/limits
+PASS: encrypted 3-codec voice wire format, 160B fragmentation, tamper rejection, payload+duration bounds
+
+PASS | Voice Chromium mock mic · desktop and mobile
+PASS Chromium 1100px: record, stop, queued audio, playback bubble, 13 fragments, incoming playback, Esc discard, clean mic release
+PASS Chromium 390px: record, stop, queued audio, playback bubble, 13 fragments, incoming playback, Esc discard, clean mic release
+
+PASS | Chat auto-scroll Chromium
+PASS: new incoming messages auto scroll to the latest message
+PASS: late content resize remains pinned to bottom
+PASS: manual scroll-up is not interrupted by late image/layout changes
+PASS: a new incoming message resumes auto-follow
+PASS: narrow viewport/chat open scrolls to latest message
+PASS: no JavaScript browser exceptions
+
+PASS | Diagnostics modal Chromium
+PASS full-width browser UI, diagnostics dialog, expected pre-firmware warning; no JS errors
+
+PASS | Serial handshake
+USB handshake regression checks: PASS
+
+PASS | Watchdog
+Watchdog scheduler regression checks: PASS
+
+PASS | USB record format
+PASS: 180-byte HEX payload and RX/QUEUED records preserve exact wire format
+
+PASS | Firmware selective ACK parser
+PASS firmware SACK ID packing and bounded, nonsequential ACK command parsing
+
+PASS | Frozen 1.4.11 contract
+PASS: preserves native USB IRQ RX driver
+PASS: preserves watchdog protections
+PASS: preserves NVS key management
+PASS: supports dual-mode WiFi LR
+PASS: sets real LR PHY rates
+PASS: persists learned peer for far-reconnect
+PASS: sends physical LR recovery probe
+PASS: replies to LR probe unicast
+PASS: ACKs use peer rate when known
+PASS: selective acknowledgments use unicast
+PASS: retries never forced to short-range broadcast
+PASS: has manual test and auto settings
+PASS: website recognizes fractional LR bitrate
+PASS: AES browser-side still active
+PASS: reusable adaptive controller, logo, USB config and build metadata identical to frozen 1.4.11
+PASS: genuine peer probes and browser voice; no RF Lab experimental code
+
+PASS | Pure C policy test_phy_policy.c
+PASS: Adaptive PHY 1/6/12 Mbps policy, thresholds, hysteresis and modes
+
+PASS | Pure C policy test-lr-policy.c
+LR policy tests passed
+
+PASS | Pure C policy test-link-health.c
+PASS: authenticated probe gating, stale-RSSI rejection, cooldown, one-step promotion, LR fallback
+
+PASS | Host C syntax USB IRQ=0
+
+
+PASS | Host C syntax USB IRQ=1
+
+
+NOT RUN | Two-tab Web Serial smoke test: Chromium loopback navigation blocked by container administrator.
+
+NOT AVAILABLE | Full ESP-IDF toolchain build and physical ESP32-C3 test.
+
+NOT AVAILABLE | Actual microphone codec quality / outdoor range measurements.

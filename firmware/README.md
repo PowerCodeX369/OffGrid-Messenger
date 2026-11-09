@@ -1,110 +1,78 @@
-# OffGrid Messenger — Phase 1.4.11.2: RF Lab / At-Home Long Range Experiments
+# OffGrid Messenger — Phase 1.5 · Verified-link LR + encrypted voice messages
 
-**Experimental build.** Derived from the user-verified **Phase 1.4.11.1 ManualLR**, using the **Phase 1.4.10.2 InterruptUSB** release as the frozen stable rollback. ESP-IDF 5.2+ / ESP32-C3 / Chromium Web Serial. Two boards and one laptop are sufficient.
+**Parent: OFFICIAL Phase 1.4.11 LongRange stable baseline**, not 1.4.11.1 ManualLR or 1.4.11.2 RFTest. This project is a **separate experimental candidate**; don't overwrite the 1.4.11 ZIP or label 1.5 stable until physical testing succeeds.
 
-## Purpose
+Two ESP32-C3 Super Minis connected to two Chromium tabs on one laptop. Native USB Serial/JTAG, Wi-Fi ESP-NOW, channel 6, AES-256-GCM browser encryption, ESP32 NVS pairing keys. No router, Wi-Fi access point, internet, GPS, LoRa, Meshtastic, third-party services, or new hardware.
 
-Compare Long Range mode on two ESP32-C3 Super Minis sitting close together **without claiming a distant-range measurement**:
+## What's new
 
-1. **Real low-power test:** reduce transmit power on each ESP32 using `esp_wifi_set_max_tx_power()` to weaken received signal. This is a real RF change; displayed RSSI is measured from incoming packets.
-2. **Simulated signal:** supply an artificial RSSI to the firmware's **automatic PHY rate-selection algorithm**, allowing it to step into LR 500/250 without changing physical signal strength. Real RSSI remains separately reported.
-3. **Real benchmark:** send 32/64/128 short test packets over ESP-NOW and collect ESP32-to-ESP32 ACK success/loss/retries, average ACK milliseconds and effective KiB/s; these do not appear in chat history.
+### A. Two-way-verified adaptive PHY and safe Long Range recovery
 
-**This cannot prove a 500 m / 1 km range.** Even 20 dBm -> 2 dBm is at most an 18 dB reduction in transmit power, and it does not reproduce multipath, foliage, obstructions, changing antenna geometry or real outdoor noise. The transmitter power range and step mapping are from [Espressif's ESP32-C3 Wi-Fi API](https://docs.espressif.com/projects/esp-idf/en/v5.4.2/esp32c3/api-reference/network/esp_wifi.html).
+**The essential fix:** RSSI is *real*, but **RSSI alone cannot prove that a packet/ACK returns to the sender**. Phase 1.5 uses unicast ESP-NOW **application-layer PING/PONG** (internal `TYPE_HELLO` with bounded IDs and a matched 32-bit session token), plus existing acknowledged chat/data/benchmark packets. No browser, USB or pairing-key dependency for liveness.
 
-## What's new (deliberately narrow)
+- A sender with no outstanding transfer sends a short unicast PING about every 2.4 seconds. Its recipient replies with a PONG at its currently configured peer PHY.
+- A matched PONG is proof of a completed **bidirectional** radio exchange. Stale, unmatched or forged ID-only replays aren't treated as current confirmations. **Radio probes are not cryptographically authenticated, unlike encrypted chat**; MAC/session matching only detects obvious stale packets and off-peer traffic.
+- If a PONG is not returned within 1.8 seconds, AUTO/SPEED downgrade the current rate **one step**: 12 → 6 → 1 Mbps → LR500 → LR250, with a minimum interval between rate changes. The photo browser's missing acknowledgments can also cause a downgrade, but many simultaneously failing photo chunks cannot instantly skip five PHY rates.
+- Peer disappears: its MAC remains stored in the existing `offgrid` NVS namespace. AUTO attempts LR250 peer unicast rather than relying on short-range-only 1 Mbps broadcast.
+- **Promotion is intentionally slow:** require at least three recent, confirmed two-way deliveries, fresh *measured* RSSI, no pending chat packets, a dwell interval, and an upgrade cooldown. Upgrade at most **one PHY step**. Never promote simply because broadcast RSSI looks good. A failed recent promotion results in 45-second retry suppression to prevent flapping at a marginal boundary.
+- Explicit manual LR500/LR250 settings remain available in Settings as in the **1.4.11 stable baseline**. AUTO will not override an explicitly forced mode. **RF Lab and transmit-power experiments are NOT included.**
+- `LINK|...` telemetry adds `HEALTHGOOD`, `PINGOK`, `PINGLOST`; accessible from **Chat information** and the link badge tooltip. These are link-level reports, not authenticated/encrypted user messages.
+- No GPS or distance inference. No automatic rate can guarantee a specific range without field testing.
 
-- Firmware UART/USB command grammar: `RFTEST STATUS`, `RFTEST POWER 2|5|10|15|20`, `RFTEST POWER DEFAULT`, `RFTEST SIM -105..-30`, `RFTEST SIM OFF`, `RFTEST PING`, `RFTEST OFF`.
-- Transmit-power cap: the firmware snapshots the driver power limit on boot. Test mode can **never set a higher maximum than that original boot limit**; a request above it returns `RFTEST_ERROR|ABOVE_BOOT_POWER`.
-- Real power confirmed with `esp_wifi_get_max_tx_power()`; the driver rounds requested values to discrete supported levels.
-- Artificial RSSI only feeds `og_lr_target` when the user selects **Auto**; real signal telemetry, peer discovery, retries, received packets and the original message protocol are untouched.
-- Every RF experiment is **runtime-only**, never stored in flash/NVS, and automatically resets **120 seconds** after the last test control/heartbeat. While the RF Lab is open, its browser refreshes the lease at 15-second intervals. A reboot or `RFTEST OFF` also restores normal settings.
-- UI: Settings → **RF Lab · power & range test**. Includes measured vs. simulated signal, applied power, actual configured PHY, a live ESP-NOW benchmark, and a copyable report.
-- No changes to browser-side AES-256-GCM, encrypted IndexedDB history, NVS pairing keys, USB interrupt-driven driver, photo gallery, text ACKs, selective-ACK transfer, watchdog fix, or manual LR quick switch.
+### B. Encrypted voice notes
 
-## Flash (both boards)
+- Tap **microphone** in the composer to record; tap again to stop and send, or press **Esc** to discard. Hard limit: 30 seconds; encoded audio limit: 80 KiB.
+- Uses Chromium `MediaRecorder`, preferring `audio/webm;codecs=opus` with an audio bitrate request of 12 Kbps (the browser may use a different bitrate). Alternative audio/ogg and audio/mp4 if locally supported. If unsupported, record is disabled with a clear error; no insecure codec guessing.
+- The microphone is **on the laptop/browser**. ESP32 doesn't need microphone, speaker, storage, or audio libraries.
+- Encoded bytes are placed into the **existing encrypted AES-256-GCM envelope**, with voice kind `7`, codec tag, and millisecond duration (in the existing 16-bit metadata width slot). Same 160-byte fragmented transport, selective ACK, retries, blue ticks and encrypted IndexedDB storage as photos. The same shared 256-bit key stays in NVS and in browser memory only.
+- Receiver authenticates the complete GCM payload before it is stored/displayed. Inline `<audio controls>` never auto-plays. Recordings are reclaimed from memory when closing/rebuilding the chat.
+- Voice has the same total-transfer limitation as photos. A recording larger than 80 KiB is rejected locally; it is not sent partly.
 
-1. Keep your verified `OffGridMessenger_Phase1_4_10_2_InterruptUSB.zip` safe.
-2. Open this folder in VS Code with Espressif IDF extension. Set the target to `esp32c3`.
-3. Build and flash the same **experimental** firmware to both ESP32-C3 boards, one at a time. **Do not use Erase Flash**: normal Flash preserves NVS pairing keys and remembered peer MAC.
-4. Close the serial monitor, then in the project root run:
+## Installing and testing (both boards)
 
-```bash
-python3 -m http.server 8765 --directory web
-```
+1. Preserve the **original Phase 1.4.11 ZIP**. Extract this 1.5 experimental folder separately.
+2. In VS Code ESP-IDF set target `esp32c3`, use an ESP-IDF **5.2+** toolchain and build the new firmware. This build **has not been performed in this environment** (no ESP-IDF toolchain).
+3. **Flash both ESP32s without erasing NVS.** Existing shared encryption keys and peer MAC addresses remain stored. Pair nearby if a peer MAC has never been learned.
+4. From the extracted root:
 
-5. Open `http://localhost:8765/?v=1.4.11.2` in two Chromium tabs. Hard-refresh. Connect each tab to its respective ESP32 via Web Serial.
-6. First verify encrypted short text **both directions** and one delivered/read receipt. **Do not start an RF test until the basic chat passes.**
+   ```bash
+   python3 -m http.server 8765 --directory web
+   ```
 
-## Practical at-home test (same laptop)
+   Open **http://localhost:8765/?v=1.5** in two Chromium tabs, one USB port per tab, and hard-refresh both. Microphone access requires `localhost` or HTTPS (secure context).
+5. **Messaging regression:** send five texts in both directions; verify delivered and read ticks. Send one photo and verify its gallery and progress. Run the existing USB/radio/encrypted diagnostics.
+6. **Voice:** grant microphone permission in the sending browser. Record 3–5 seconds, stop, wait for delivered ticks; listen on other tab using the audio controls. Repeat in both directions. Test one 25–30 second recording, check it fits 80 KiB and transfers. Retry failed notes by clicking the bubble. Test Esc cancel and reconnect.
+7. **Automatic PHY:** set both Settings → Transfer profile to **Auto**. Watch `LINK` values. At short distances, 3+ successful peer PONGs and real RSSI may upgrade 1→6→12 Mbps. On link loss the rate descends toward LR250. Use the connection dialog tooltip/info to see PINGOK/PINGLOST, and check a failing link doesn't bounce repeatedly between fast rates.
+8. If any issue, reflash **the frozen Phase 1.4.11 baseline**. No RF Lab experimental code is required for this phase.
 
-### A. Real low-power test
+## Known limits and honesty about verification
 
-- Open **Settings → RF Lab · power & range test** in both tabs.
-- Note the measured RSSI, PHY and benchmark on both boards at default boot power, with both radios set to manual LR 500 Kbps.
-- On **both ESP32s**, apply `5 dBm` or `2 dBm`; note each board's **actual applied** power and measured RSSI once new radio packets arrive.
-- Run the 32-packet radio benchmark once from Tab A, then once from Tab B. Compare delivered/lost/retries/ACK time and throughput.
-- Repeat at manual **LR 250 Kbps**, with the same power setting. Then return both nodes to Auto and press **Restore normal RF** in **both tabs**.
-- If the signal is still strong (likely at 20 cm), that's expected: minimum power is not enough attenuation to emulate a long-distance outdoor path. **Never short the antenna against metal or wrap an exposed powered board in conductive foil.**
+- **Host-side syntax and browser simulations do not replace a real ESP-IDF build** or two-board transmission. We can test the policy and crypto locally but cannot guarantee real-world fallback/recovery, microphone compatibility or throughput until your hardware tests.
+- `esp_now_send()` success means an ESP-NOW packet was queued; the browser delivery status needs its own acknowledgement. Our new PONG provides an additional, application-level radio health signal, not proof of AES authentication.
+- The fallback is deterministic but cannot 'measure' RSSI after the peer disappears; it uses missing confirmations at that point. RF path asymmetry and the other board's configured PHY can delay reconnection.
+- 12/6/1 Mbps and 500/250 Kbps are **PHY choices**, not promised application data rates; quality and throughput still depend on overhead, USB, ACKs and environment.
+- Browser recording bitrate is a *request*, not a guarantee. The 80 KiB and 30-second limits are enforced.
+- Manual LR and automatic LR can be tested with both boards close together, but actual range and weak-signal sensitivity require field/attenuation tests.
 
-### B. Simulate weak RSSI to exercise automatic PHY selection
+## Official API references
 
-- Set radio mode **Auto** in both tabs (either Settings → Transfer profile or Force LR toggle OFF).
-- In RF Lab move the synthetic RSSI slider to `-70`, `-85`, `-95`, or `-105 dBm`, and press **Apply simulated RSSI**.
-- Watch **actual configured PHY** after the automatic rate controller's dwell time; rates move step by step with hysteresis and may be held down temporarily after missed ACKs.
-- The RF Lab must show **Measured RSSI** separately; synthetic RSSI is **not** a measurement. This test checks the algorithm, not the physical range.
-- Press **Use real RSSI** or **Restore normal RF** to return to normal adaptation. Repeat on the other board as necessary.
+- Espressif ESP32-C3 ESP-NOW guide: https://docs.espressif.com/projects/esp-idf/en/latest/esp32c3/api-reference/network/esp_now.html
+- Espressif ESP32-C3 Wi-Fi LR protocol guide: https://docs.espressif.com/projects/esp-idf/en/latest/esp32c3/api-guides/wifi-driver/overview.html
+- MDN MediaRecorder: https://developer.mozilla.org/en-US/docs/Web/API/MediaRecorder
+- MDN getUserMedia: https://developer.mozilla.org/en-US/docs/Web/API/MediaDevices/getUserMedia
 
-### C. Report results
-
-- Press **Copy results** in the RF Lab. Include chosen PHY, real RSSI, applied TX power, successful packets, lost packets, retries, ACK ms, and KiB/s.
-- Compare under the **same** transmit-power settings. Do not compare radio PHY numbers alone; those are raw rates, not throughput.
-
-## Technical details
-
-Firmware wire messages (only local Web Serial commands; no extra RF message types):
-
-```text
-RFTEST POWER 5
-RFTEST SIM -95
-RFTEST STATUS
-RFTEST PING
-RFTEST SIM OFF
-RFTEST POWER DEFAULT
-RFTEST OFF
-```
-
-Response examples (**illustrative**, not hardware measurements):
-
-```text
-RFTEST|ACTIVE=1|PWR=20|BASE=80|SIM=ON|LIVE=-34|PHY=0.5|MODE=AUTO|PEER=1|TTL=119
-RFTEST_SIM|RSSI=-95
-RFTEST_EXPIRED|RESTORED
-```
-
-`PWR` and `BASE` are in quarter-dBm units; e.g. 20 → 5 dBm, 80 → 20 dBm. `LIVE` is real RSSI. `PHY=0.5` is LR 500 Kbps. `TTL` is seconds before fail-safe reset. The reported `RFTEST|...` line is sourced from firmware state and `esp_wifi_get_max_tx_power()`, not a browser guess.
-
-## Tests included
+### Local tests
 
 ```bash
-node --check web/app.js
+node tests/test-voice.cjs
 node tests/test-protocol.cjs
 node tests/test-selective-ack.cjs
 node tests/test-adaptive.cjs
-python3 tests/test_rf_lab_source.py
-python3 tests/test-rf-lab-browser.py
-cc -std=c11 -Wall -Wextra -Werror tests/test-rf-lab.c -o /tmp/rflabtest && /tmp/rflabtest
+gcc -std=c11 -Wall -Wextra -Werror -I main tests/test-link-health.c -o /tmp/link-health && /tmp/link-health
+python tests/test-voice-browser.py
+python tests/test-auto-scroll-browser.py
+python tests/test-selective-ack-firmware.py
+python tests/test-long-range-contract.py
 ```
 
-These test protocol/parser assumptions, cryptography and browser UI but **are not a full ESP-IDF compilation or physical RF test**. A host-stub syntax check is included in `VALIDATION.md` and cannot replace your ESP-IDF build.
-
-## Troubleshooting / rollback
-
-- `RFTEST_ERROR|ABOVE_BOOT_POWER`: power request exceeds the original Wi-Fi driver/regulatory maximum; select a lower test power.
-- `RFTEST_ERROR|POWER_BASELINE_UNAVAILABLE`: driver did not provide an initial power; reset board and check Wi-Fi initialization logs.
-- Synthetic value doesn't change rate: select **Auto**, wait for rate dwell, make sure the peer has been discovered and there are no pending messages or rate cooldowns.
-- Real RSSI doesn't change much at 20 cm: minimum power cannot necessarily force a weak link at such short range.
-- Lost connection after reducing power: press **Restore normal RF**, wait for its 120-second fail-safe, or reboot the node.
-- Test build fails or is unstable: flash back the saved **1.4.10.2 InterruptUSB** firmware on both boards. This branch makes no irreversible NVS modifications.
-
-**No GPS/location feature is included or planned.** Voice notes and Android support remain subsequent roadmap items.
+`tests/smoke_browser.py` uses real loopback navigation and requires a browser environment that permits localhost (blocked by this isolated CI environment). The voice UI test runs locally with a **simulated microphone** and makes no claims of physical hardware validation.

@@ -4,7 +4,7 @@
 const enc=new TextEncoder(), dec=new TextDecoder('utf-8',{fatal:true});
 const HEX='0123456789ABCDEF';
 const CHUNK=160, FRAME_HEADER=20, FRAME_MAX=180, MAX_BLOB=104000, MAX_PACKET=105000;
-const types=Object.freeze({text:1,image:2,delivered:3,read:4,probe:5,probeAck:6});
+const types=Object.freeze({text:1,image:2,delivered:3,read:4,probe:5,probeAck:6,voice:7});
 const randomBytes=(n)=>{const b=new Uint8Array(n);for(let i=0;i<n;i+=65536)crypto.getRandomValues(b.subarray(i,Math.min(i+65536,n)));return b;};
 const hex=(bytes)=>Array.from(bytes,b=>HEX[b>>4]+HEX[b&15]).join('');
 function unhex(value){if(typeof value!=='string'||value.length%2||!/^[a-f0-9]*$/i.test(value))throw Error('Invalid hex');const a=new Uint8Array(value.length/2);for(let i=0;i<a.length;i++)a[i]=parseInt(value.slice(i*2,i*2+2),16);return a;}
@@ -55,9 +55,37 @@ function parseFrame(data){
   if(data.length!==20+expect)return null;
   return {transferId:hex(data.subarray(4,12)),index,count,length,bytes:data.subarray(20),bulk};
 }
+
+/* Voice messages carry a one-byte authenticated codec tag inside the GCM
+ * envelope. Durations travel in the existing envelope's width field (ms).
+ * No unencrypted audio is ever sent to ESP-NOW or stored in browser history. */
+const VOICE_MAX=80*1024;
+const voiceCodecs=Object.freeze([
+  {id:0,mime:'audio/webm',preferred:'audio/webm;codecs=opus'},
+  {id:1,mime:'audio/ogg',preferred:'audio/ogg;codecs=opus'},
+  {id:2,mime:'audio/mp4',preferred:'audio/mp4'}
+]);
+function voiceCodecForMime(mime){
+  if(typeof mime!=='string')return null;
+  const name=mime.toLowerCase().split(';')[0].trim();
+  return voiceCodecs.find(c=>c.mime===name)||null;
+}
+function packVoice(mime,data){
+  const codec=voiceCodecForMime(mime),bytes=asBytes(data);
+  if(!codec||bytes.length<256||bytes.length>VOICE_MAX)throw Error('Unsupported audio format or voice message too large');
+  return concat(Uint8Array.of(codec.id),bytes);
+}
+function unpackVoice(body,durationMs){
+  if(!body||body.length<257||body.length>VOICE_MAX+1||!Number.isInteger(durationMs)||durationMs<100||durationMs>30000)
+    throw Error('Invalid voice message');
+  const codec=voiceCodecs.find(c=>c.id===body[0]);
+  if(!codec)throw Error('Unrecognized audio format');
+  return {mime:codec.mime,bytes:body.slice(1),durationMs};
+}
+
 const textBytes=s=>enc.encode(s);
 const textFrom=bytes=>dec.decode(bytes);
 const asBytes=x=>x instanceof Uint8Array?x:new Uint8Array(x);
-const api={CHUNK,FRAME_MAX,MAX_BLOB,MAX_PACKET,types,hex,unhex,concat,newId,randomBytes,base64url,fromBase64url,importKey,seal,open,sealAtRest,openAtRest,makeEnvelope,parseEnvelope,frames,parseFrame,textBytes,textFrom,asBytes};
+const api={CHUNK,FRAME_MAX,MAX_BLOB,MAX_PACKET,VOICE_MAX,voiceCodecs,voiceCodecForMime,packVoice,unpackVoice,types,hex,unhex,concat,newId,randomBytes,base64url,fromBase64url,importKey,seal,open,sealAtRest,openAtRest,makeEnvelope,parseEnvelope,frames,parseFrame,textBytes,textFrom,asBytes};
 root.OGP=api;if(typeof module!=='undefined'&&module.exports)module.exports=api;
 })(typeof globalThis!=='undefined'?globalThis:this);
