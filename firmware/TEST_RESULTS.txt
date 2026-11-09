@@ -27,11 +27,19 @@ PASS | Diagnostics crypto and protocol
 PASS encrypted 8 KiB benchmark, fragment reassembly, final ACK type, tamper rejection
 
 PASS | Voice AES-GCM and tamper/limits
-PASS: encrypted 3-codec voice wire format, 160B fragmentation, tamper rejection, payload+duration bounds
+PASS: voice 120000 ms, 384 KiB limit, 2400+ fragments, original 30s compatibility, authenticated played receipt, tamper protection
 
 PASS | Voice Chromium mock mic · desktop and mobile
 PASS Chromium 1100px: record, stop, queued audio, playback bubble, 13 fragments, incoming playback, Esc discard, clean mic release
 PASS Chromium 390px: record, stop, queued audio, playback bubble, 13 fragments, incoming playback, Esc discard, clean mic release
+
+PASS | Two-minute simulated recording · desktop and mobile
+PASS Chromium 1100px: simulated full 120s recording, 240 KiB encoded audio accepted, encryption job queued, time capped
+PASS Chromium 390px: simulated full 120s recording, 240 KiB encoded audio accepted, encryption job queued, time capped
+
+PASS | Played receipt DOM/logic · desktop and mobile
+PASS Chromium 1100px: play is not played, playing triggers once, blue mic on both ends, no text spoof, persistent indicator, 112s receive
+PASS Chromium 390px: play is not played, playing triggers once, blue mic on both ends, no text spoof, persistent indicator, 112s receive
 
 PASS | Chat auto-scroll Chromium
 PASS: new incoming messages auto scroll to the latest message
@@ -93,4 +101,4 @@ NOT RUN | Two-tab Web Serial smoke test: Chromium loopback navigation blocked by
 
 NOT AVAILABLE | Full ESP-IDF toolchain build and physical ESP32-C3 test.
 
-NOT AVAILABLE | Actual microphone codec quality / outdoor range measurements.
+NOT AVAILABLE | Actual two-minute recording, recipient audio playback over two physical boards, and outdoor range measurements.
