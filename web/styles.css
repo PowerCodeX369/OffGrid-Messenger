@@ -188,3 +188,28 @@ body.viewer-open{overflow:hidden}
 .diagnostic-actions{display:flex;gap:8px;flex-wrap:wrap;margin:12px 0}
 
 .modal:has(.diagnostic-results){width:min(680px,calc(100vw - 24px));max-height:92dvh;overflow-y:auto}
+
+/* Phase 1.4.11.1: manual LR switch — only presentation/control; preserves accepted chat UI */
+.lr-test-panel{padding:11px 12px;margin:7px 0 10px;border:1px solid var(--line);border-radius:12px;background:var(--raised)}
+.lr-test-heading{display:flex;align-items:center;justify-content:space-between;gap:12px}
+.lr-test-heading strong,.lr-test-heading small{display:block}
+.lr-test-heading strong{font-size:12px;letter-spacing:.01em;color:var(--ink)}
+.lr-test-heading small{font-size:10px;line-height:1.4;color:var(--muted);margin-top:4px}
+.lr-toggle{display:inline-flex;flex:none;cursor:pointer;align-items:center;position:relative}
+.lr-toggle input{position:absolute;opacity:0;width:1px;height:1px}
+.lr-toggle-track{display:block;width:41px;height:23px;background:#677981;border-radius:999px;position:relative;transition:background .2s ease,box-shadow .2s ease}
+.lr-toggle-track::before{content:"";display:block;position:absolute;top:3px;left:3px;width:17px;height:17px;border-radius:50%;background:#fff;box-shadow:0 1px 4px #0004;transition:transform .2s ease}
+.lr-toggle input:checked+.lr-toggle-track{background:var(--accent)}
+.lr-toggle input:checked+.lr-toggle-track::before{transform:translateX(18px)}
+.lr-toggle input:focus-visible+.lr-toggle-track{outline:2px solid var(--blue);outline-offset:3px}
+.lr-rate-row{display:flex;align-items:center;gap:8px;margin-top:12px;flex-wrap:wrap}
+.lr-rate-row[hidden]{display:none!important}
+.lr-rate-row label{font-size:11px;color:var(--muted);flex:0 0 auto}
+.lr-rate-row select{flex:1 1 140px;min-width:0;border:1px solid var(--line);border-radius:8px;padding:9px 8px;background:var(--shell);color:var(--ink);font-size:11px;line-height:1.2}
+.lr-test-status{margin-top:10px;color:var(--muted);font-size:10px;line-height:1.5;overflow-wrap:anywhere}
+.lr-test-status.is-confirmed{color:var(--accent-strong);font-weight:650}
+.lr-test-status.is-error{color:var(--danger)}
+.lr-test-hint{display:block;margin-top:9px;color:var(--muted);font-size:10px;line-height:1.5}
+body.light .lr-test-panel{background:#f3faf8;border-color:#cce6dc}
+body.light .lr-rate-row select{background:#fff;border-color:#cde2de;color:#21363a}
+@media(max-width:800px){.lr-test-panel{padding:10px}.lr-test-heading{gap:6px}}

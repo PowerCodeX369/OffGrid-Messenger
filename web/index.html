@@ -4,12 +4,12 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#101b21">
-  <title>OffGrid Messenger — Phase 1.4.11 Auto-scroll</title>
+  <title>OffGrid Messenger — Phase 1.4.11.1 Manual Long Range</title>
   <link rel="icon" href="logo.svg" type="image/svg+xml">
-  <link rel="stylesheet" href="styles.css?v=1.4.11">
-  <script src="protocol.js?v=1.4.11" defer></script>
-  <script src="adaptive.js?v=1.4.11" defer></script>
-  <script src="app.js?v=1.4.11" defer></script>
+  <link rel="stylesheet" href="styles.css?v=1.4.11.1.1">
+  <script src="protocol.js?v=1.4.11.1.1" defer></script>
+  <script src="adaptive.js?v=1.4.11.1.1" defer></script>
+  <script src="app.js?v=1.4.11.1.1" defer></script>
 </head>
 <body>
 <div class="app" id="app">
@@ -39,6 +39,24 @@
         <button class="usb-diagnostics-btn" id="usbDiagnosticsButton" type="button">Diagnostics</button>
       </div>
       <div class="link-health" title="Link profile uses acknowledgment latency and retries, not physical distance"><span class="link-health-dot"></span><span id="linkModeLabel">Auto · learning link quality</span></div>
+      <div class="lr-test-panel" aria-label="Manual ESP-NOW Long Range test">
+        <div class="lr-test-heading">
+          <div><strong>Force Long Range</strong><small>Test LR even when nodes are nearby</small></div>
+          <label class="lr-toggle" title="Turn manual ESP-NOW Long Range on or return to Auto">
+            <input type="checkbox" id="lrForceToggle" role="switch" aria-label="Force Long Range mode">
+            <span class="lr-toggle-track" aria-hidden="true"></span>
+          </label>
+        </div>
+        <div class="lr-rate-row" id="lrRateRow" hidden>
+          <label for="lrRateSelect">LR radio rate</label>
+          <select id="lrRateSelect" aria-label="Long Range rate">
+            <option value="lr500">500 Kbps · long range</option>
+            <option value="lr250">250 Kbps · extended range</option>
+          </select>
+        </div>
+        <div class="lr-test-status" id="lrTestStatus" role="status" aria-live="polite">Auto mode · connect a node to test LR</div>
+        <small class="lr-test-hint">Switch LR on in <b>both tabs</b> to test sending and receipts. This controls only the USB-connected node.</small>
+      </div>
       <button class="security-line" id="securityButton" type="button"><span id="securityIcon">♢</span><span id="securityLabel">Connect to configure encryption</span><span class="security-chevron">›</span></button>
     </div>
     <div class="chats-heading"><h2>Chats</h2><span class="tiny-badge">1</span></div>
@@ -47,7 +65,7 @@
       <span class="contact-body"><span class="contact-top"><strong id="contactSidebarName">Nearby node</strong><span class="contact-time" id="lastChatTime"></span></span><span class="contact-preview" id="lastChatPreview">Your off-grid conversation</span></span>
     </button>
     <div class="phase-banner">
-      <span>Phase 1.4.11 Auto-scroll</span>
+      <span>Phase 1.4.11.1 Manual Long Range</span>
       <strong>Encrypted chat · responsive UI · adaptive PHY · photo gallery</strong>
       <small>No cloud. No server. No internet.</small>
     </div>
