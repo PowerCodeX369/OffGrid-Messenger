@@ -60,6 +60,14 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import dev.chrisbanes.haze.HazeInput
+import dev.chrisbanes.haze.HazeState
+import dev.chrisbanes.haze.hazeSource
+import dev.chrisbanes.haze.rememberHazeState
+import dev.chrisbanes.haze.blur.HazeBlurStyle
+import dev.chrisbanes.haze.blur.hazeBlur
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collect
 import java.text.SimpleDateFormat
@@ -71,6 +79,11 @@ private val VividBlue = Color(0xFF4386FF)
 private val Midnight = Color(0xFF080E20)
 private val Ink = Color(0xFF162437)
 
+// Actual captured-source blur, not a gradient pretending to blur the backdrop.
+// Haze sources contain only the decorative scene (never the decrypted chat text).
+private val LocalOffGridHaze = compositionLocalOf<HazeState?> { null }
+
+
 @Composable
 fun OffGridPremiumTheme(dark: Boolean, content: @Composable () -> Unit) {
     // Explicit semantic colors: toggling dark appearance must update *text* as
@@ -78,9 +91,9 @@ fun OffGridPremiumTheme(dark: Boolean, content: @Composable () -> Unit) {
     val colors = if (dark) darkColorScheme(
         primary=Color(0xFF9DD0FF),onPrimary=Color(0xFF09223D),primaryContainer=Color(0xFF193B62),
         onPrimaryContainer=Color(0xFFE2F1FF),secondary=Color(0xFF85E0E4),onSecondary=Color(0xFF002C32),
-        background=Color(0xFF080F1D),onBackground=Color(0xFFF5F8FF),
-        surface=Color(0xFF131F32),onSurface=Color(0xFFF5F8FF),
-        surfaceVariant=Color(0xFF253750),onSurfaceVariant=Color(0xFFCEDAEE),
+        background=Color(0xFF0D1523),onBackground=Color(0xFFE5ECF6),
+        surface=Color(0xFF142238),onSurface=Color(0xFFE5ECF6),
+        surfaceVariant=Color(0xFF263850),onSurfaceVariant=Color(0xFFB6C6D9),
         outline=Color(0xFF8296B0),outlineVariant=Color(0xFF43536B),
         error=Color(0xFFFFB4B4),onError=Color(0xFF540000),
     ) else lightColorScheme(
@@ -98,20 +111,33 @@ fun OffGridPremiumTheme(dark: Boolean, content: @Composable () -> Unit) {
     ),content=content)
 }
 
-/** Translucent acrylic approximation, not an unrestricted backdrop blur.
- * Uses GPU-friendly gradients and a restrained border for stable resizing. */
+/** 2.4.2 frosted card. Haze samples the scene drawn behind the card.
+ * Content remains crisp and high-contrast; alpha scrims protect legibility.
+ * If blur is unsupported by the device, the opaque-tinted fallback remains readable.
+ */
 @Composable
 private fun GlassCard(
     modifier:Modifier=Modifier, dark:Boolean, radius:Dp=22.dp,
     content: @Composable ColumnScope.() -> Unit
 ) {
     val shape=RoundedCornerShape(radius)
-    val upper=if(dark) Color(0xFF2B4368).copy(alpha=.72f) else Color.White.copy(alpha=.91f)
-    val lower=if(dark) Color(0xFF172943).copy(alpha=.82f) else Color(0xFFE6F0FF).copy(alpha=.82f)
-    Column(modifier.shadow(if(radius==0.dp)0.dp else 6.dp,shape).clip(shape)
-        .background(Brush.linearGradient(listOf(upper,lower)))
-        .border(BorderStroke(1.dp,if(dark)Color(0xFFB0D4FF).copy(alpha=.32f)
-            else Color.White.copy(alpha=.96f)),shape), content=content)
+    val haze=LocalOffGridHaze.current
+    val frostStyle=remember(dark) { HazeBlurStyle {
+        blurRadius(22.dp)
+        noiseFactor(0.055f)
+    } }
+    val highlight=if(dark)Color(0xFFB9D7FF).copy(alpha=.15f) else Color.White.copy(alpha=.72f)
+    val upper=if(dark) Color(0xFF203349).copy(alpha=.61f) else Color.White.copy(alpha=.76f)
+    val lower=if(dark) Color(0xFF142236).copy(alpha=.65f) else Color(0xFFEAF3FF).copy(alpha=.72f)
+    val panel=modifier
+        .shadow(if(radius==0.dp) 0.dp else 2.dp,shape)
+        .clip(shape)
+        .then(if(haze!=null) Modifier.hazeBlur(
+            input=HazeInput.Sources(haze), style=frostStyle
+        ) else Modifier)
+        .background(Brush.verticalGradient(listOf(upper,lower)))
+        .border(1.dp,highlight,shape)
+    Column(panel,content=content)
 }
 
 private fun timeOf(millis:Long)=SimpleDateFormat("h:mm a",Locale.getDefault()).format(Date(millis))
@@ -168,6 +194,7 @@ fun PremiumMessenger(
         if(dark)Color(0xFF091125) else Color(0xFFE6F2FF),
         animationSpec=androidx.compose.animation.core.tween(360),label="theme background end")
     val bg=listOf(bgStart,bgMiddle,bgEnd)
+    val hazeState=rememberHazeState()
     BoxWithConstraints(Modifier.fillMaxSize()
         .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Top+WindowInsetsSides.Horizontal))
         .background(Brush.linearGradient(bg))) {
@@ -176,20 +203,27 @@ fun PremiumMessenger(
         if(!wide && page=="chat") BackHandler { page="chats" }
         if(page=="settings") BackHandler { page=if(wide)"chat" else "chats" }
         LaunchedEffect(page,wide) { actions.chatVisibility(page=="chat" || (wide && page!="settings")) }
-        // A soft blurred ambient layer lives BEHIND translucent glass cards;
-        // blurring the cards themselves would also blur text and controls.
-        Box(Modifier.size(220.dp).offset(x=(-68).dp,y=95.dp).blur(75.dp)
-            .background(Color(0xFF55B6ED).copy(alpha=if(dark).10f else .15f),CircleShape))
-        Box(Modifier.size(190.dp).align(Alignment.BottomEnd).offset(x=55.dp,y=(-80).dp)
-            .blur(76.dp).background(Color(0xFF6B7DFA).copy(alpha=if(dark).12f else .10f),CircleShape))
+        // Real sampled blur uses this restrained background as its source.
+        // Radial fades have transparent edges: no visible boxes or sharp blur bounds.
+        Box(Modifier.matchParentSize().hazeSource(hazeState)
+            .background(Brush.linearGradient(bg))) {
+            Box(Modifier.align(Alignment.TopStart).size(310.dp)
+                .offset(x=(-115).dp,y=25.dp)
+                .background(Brush.radialGradient(listOf(
+                    Color(0xFF3DAED5).copy(alpha=if(dark).17f else .14f), Color.Transparent))))
+            Box(Modifier.align(Alignment.BottomEnd).size(270.dp)
+                .offset(x=90.dp,y=(-95).dp)
+                .background(Brush.radialGradient(listOf(
+                    Color(0xFF607FE4).copy(alpha=if(dark).12f else .10f),Color.Transparent))))
+        }
+        CompositionLocalProvider(LocalOffGridHaze provides hazeState) {
         Row(Modifier.fillMaxSize()) {
             if(wide) {
                 NavigationPane(
                     modifier=Modifier.widthIn(min=250.dp,max=314.dp).fillMaxHeight().navigationBarsPadding(),dark=dark,
                     items=items,connected=connected,status=status,selected=page,
                     contactName=contactName,avatarBytes=avatarBytes,
-                    openChat={page="chat"},openSettings={page="settings"},onConnect=actions.connect,
-                    query=query,queryChange={query=it}
+                    openChat={page="chat"},openSettings={page="settings"},onConnect=actions.connect
                 )
                 VerticalDivider(color=textColor.copy(alpha=.08f))
             }
@@ -212,9 +246,8 @@ fun PremiumMessenger(
                     destination=="chats" && !wide -> NavigationPane(
                         modifier=Modifier.fillMaxSize(),dark=dark,items=items,connected=connected,
                         status=status,selected=page,contactName=contactName,avatarBytes=avatarBytes,
-                        openChat={page="chat"},openSettings={page="settings"},onConnect=actions.connect,
-                        query=query,queryChange={query=it}
-                    )
+                        openChat={page="chat"},openSettings={page="settings"},onConnect=actions.connect
+                        )
                     else -> {
                         Column(Modifier.fillMaxSize()) {
                         ChatTopBar(
@@ -262,6 +295,7 @@ fun PremiumMessenger(
                 }
                 }
             }
+        }
         }
     }
     chosenMessage?.let { message ->
@@ -373,8 +407,7 @@ private fun NodeAvatar(size:Dp,dark:Boolean,avatarBytes:ByteArray?=null) {
 @Composable
 private fun NavigationPane(
     modifier:Modifier,dark:Boolean,items:List<ChatItem>,connected:Boolean,status:String,
-    selected:String,contactName:String,avatarBytes:ByteArray?,openChat:()->Unit,openSettings:()->Unit,onConnect:()->Unit,
-    query:String,queryChange:(String)->Unit
+    selected:String,contactName:String,avatarBytes:ByteArray?,openChat:()->Unit,openSettings:()->Unit,onConnect:()->Unit
 ) {
     GlassCard(modifier,dark=dark,radius=0.dp) {
         Row(Modifier.fillMaxWidth().padding(start=20.dp,end=10.dp,top=19.dp,bottom=10.dp),verticalAlignment=Alignment.CenterVertically) {
@@ -384,12 +417,9 @@ private fun NavigationPane(
         }
         Text("PRIVATE MESSENGER",style=MaterialTheme.typography.labelSmall,
             color=MaterialTheme.colorScheme.onSurfaceVariant,modifier=Modifier.padding(start=22.dp,bottom=17.dp))
-        OutlinedTextField(query,queryChange,modifier=Modifier.fillMaxWidth().padding(horizontal=16.dp),
-            singleLine=true,leadingIcon={Icon(Icons.Default.Search,null)},
-            placeholder={Text("Search chats")},shape=RoundedCornerShape(24.dp))
-        Spacer(Modifier.height(14.dp))
-        if(contactName.contains(query,ignoreCase=true) || items.any{it.text.contains(query,ignoreCase=true)}) {
-            val latest=items.lastOrNull()
+        Spacer(Modifier.height(10.dp))
+        // Exactly one conversation exists; no chat-list search or filtering.
+        val latest=items.lastOrNull()
             Row(Modifier.fillMaxWidth().clickable(onClick=openChat).padding(16.dp),verticalAlignment=Alignment.CenterVertically) {
                 NodeAvatar(55.dp,dark,avatarBytes)
                 Spacer(Modifier.width(13.dp))
@@ -404,7 +434,6 @@ private fun NavigationPane(
                         color=MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }
-        }
         HorizontalDivider(Modifier.padding(horizontal=18.dp),color=MaterialTheme.colorScheme.onSurface.copy(alpha=.08f))
         if(!connected) TextButton(onClick=onConnect,modifier=Modifier.padding(10.dp)) {
             Icon(Icons.Default.Bluetooth,null);Spacer(Modifier.width(6.dp));Text("Connect to node")
@@ -429,15 +458,26 @@ private fun ChatTimeline(
         it.text.contains(filter,ignoreCase=true) || (it.kind==OgmCodec.IMAGE && "photo".contains(filter,true)) ||
             (it.kind==OgmCodec.VOICE && "voice".contains(filter,true))
     } }
-    val lazy=rememberLazyListState()
-    LaunchedEffect(visibleItems.size) {
-        val isNearBottom = lazy.layoutInfo.totalItemsCount <= 2 ||
-            lazy.layoutInfo.totalItemsCount - (lazy.firstVisibleItemIndex + lazy.layoutInfo.visibleItemsInfo.size) <= 3
-        if(visibleItems.isNotEmpty() && isNearBottom) lazy.animateScrollToItem(visibleItems.size)
+    // Start at the newest entry. Opening a long chat must never animate through history.
+    val lazy=rememberLazyListState(initialFirstVisibleItemIndex=visibleItems.size)
+    var previousCount by remember { mutableIntStateOf(-1) }
+    LaunchedEffect(visibleItems.size,filter) {
+        val current=visibleItems.size
+        if(current==0)return@LaunchedEffect // first restored content must snap, not animate
+        val firstOpen=previousCount<0
+        val prior=previousCount
+        val lastVisible=lazy.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0
+        val nearBottom=(lazy.layoutInfo.totalItemsCount-lastVisible)<=3
+        previousCount=current
+        when {
+            current==0 -> Unit
+            firstOpen -> lazy.scrollToItem(current) // index 0 is the info banner
+            current>prior && nearBottom -> lazy.animateScrollToItem(current)
+        }
     }
     LaunchedEffect(lazy,visibleItems,connected,appVisible) {
         snapshotFlow { lazy.layoutInfo.visibleItemsInfo.map { it.index } }.collect { indices ->
-            if(connected && appVisible) onVisible(indices.mapNotNull { visibleItems.getOrNull(it-1)?.takeIf { entry -> !entry.outgoing }?.id }.toSet())
+            if(connected && appVisible) onVisible(indices.mapNotNull { visibleItems.getOrNull(it-1)?.takeIf { entry -> !entry.outgoing && !entry.deleted }?.id }.toSet())
         }
     }
     LazyColumn(modifier,state=lazy,contentPadding=PaddingValues(horizontal=12.dp,vertical=16.dp),
@@ -465,9 +505,8 @@ private fun ChatTimeline(
             }
         }
         items(visibleItems,key={it.id}) { message ->
-            Box(Modifier.animateItem()) {
-                ChatBubble(message,dark,playingId==message.id,openPhoto,playVoice,onRetry,onLongPress)
-            }
+            // No disappearing-item overlay: deleted bubbles are immediately removed.
+            ChatBubble(message,dark,playingId==message.id,openPhoto,playVoice,onRetry,onLongPress)
         }
     }
 }
@@ -481,7 +520,7 @@ private fun ChatBubble(message:ChatItem,dark:Boolean,playing:Boolean,openPhoto:(
     val shape=RoundedCornerShape(topStart=19.dp,topEnd=19.dp,
         bottomStart=if(message.outgoing)19.dp else 6.dp,
         bottomEnd=if(message.outgoing)6.dp else 19.dp)
-    Row(Modifier.fillMaxWidth().animateContentSize(),horizontalArrangement=if(message.outgoing)Arrangement.End else Arrangement.Start) {
+    Row(Modifier.fillMaxWidth(),horizontalArrangement=if(message.outgoing)Arrangement.End else Arrangement.Start) {
         BoxWithConstraints(Modifier.fillMaxWidth()) {
             val bound = (maxWidth*.84f).coerceAtMost(350.dp)
             Column(Modifier.align(if(message.outgoing)Alignment.CenterEnd else Alignment.CenterStart)
@@ -528,10 +567,22 @@ private fun ChatBubble(message:ChatItem,dark:Boolean,playing:Boolean,openPhoto:(
 @OptIn(ExperimentalFoundationApi::class)
 private fun ResponsivePhoto(message:ChatItem,maxBubble:Dp,onOpen:(ChatItem)->Unit,
                             onLongPress:(ChatItem)->Unit) {
-    val bitmap=remember(message.id,message.bytes) {
-        message.bytes?.let { bytes -> runCatching {
-            BitmapFactory.decodeByteArray(bytes,0,bytes.size)?.asImageBitmap()
-        }.getOrNull() }
+    // Avoid main-thread BitmapFactory.decodeByteArray in scrolling LazyColumn:
+    // photos are loaded off-thread and downsampled for the bubble only.
+    val bitmap by produceState<androidx.compose.ui.graphics.ImageBitmap?>(
+        initialValue=null,key1=message.id,key2=message.bytes
+    ) {
+        val bytes=message.bytes
+        value=if(bytes==null)null else withContext(Dispatchers.Default) {
+            runCatching {
+                val bounds=BitmapFactory.Options().apply {inJustDecodeBounds=true}
+                BitmapFactory.decodeByteArray(bytes,0,bytes.size,bounds)
+                var sample=1
+                while(maxOf(bounds.outWidth,bounds.outHeight)/sample>800) sample*=2
+                val options=BitmapFactory.Options().apply {inSampleSize=sample}
+                BitmapFactory.decodeByteArray(bytes,0,bytes.size,options)?.asImageBitmap()
+            }.getOrNull()
+        }
     }
     val ratio=(message.width.toFloat()/message.height.coerceAtLeast(1)).coerceIn(.2f,5f)
     val maxH=286.dp
@@ -543,6 +594,7 @@ private fun ResponsivePhoto(message:ChatItem,maxBubble:Dp,onOpen:(ChatItem)->Uni
         .combinedClickable(enabled=bitmap!=null,onClick={onOpen(message)},onLongClick={onLongPress(message)}),
         contentAlignment=Alignment.Center) {
         if(bitmap!=null) Image(bitmap,"Open encrypted photo",Modifier.fillMaxSize(),contentScale=ContentScale.Fit)
+        else if(message.bytes!=null) CircularProgressIndicator(Modifier.size(22.dp),strokeWidth=2.dp)
         else Icon(Icons.Default.BrokenImage,"Photo unavailable")
     }
     Spacer(Modifier.height(4.dp))
@@ -596,16 +648,18 @@ private fun GlassComposer(draft:String,onDraft:(String)->Unit,connected:Boolean,
     tapMode:Boolean,onSend:()->Unit,onPhoto:()->Unit,onPress:()->Unit,onRelease:()->Unit,onCancel:()->Unit) {
     var seconds by remember { mutableIntStateOf(0) }
     var slide by remember { mutableFloatStateOf(0f) }
+    var locked by remember { mutableStateOf(false) }
+    var cancelArmed by remember { mutableStateOf(false) }
     var trashFlash by remember { mutableStateOf(false) }
     val haptics=LocalHapticFeedback.current
     LaunchedEffect(recording) {
         seconds=0
-        if(!recording)slide=0f
+        if(!recording){slide=0f;locked=false;cancelArmed=false}
         while(recording) {delay(1000L);seconds++}
     }
     LaunchedEffect(trashFlash) {if(trashFlash){delay(650);trashFlash=false}}
     val micScale by animateFloatAsState(if(recording)1.15f else 1f,label="voice pulse")
-    val canceled=slide < -78f || trashFlash
+    val canceled=(!locked && cancelArmed) || trashFlash
     val trashScale by animateFloatAsState(if(trashFlash)1.45f else if(canceled)1.17f else 1f,
         animationSpec=androidx.compose.animation.core.spring(),label="trash bounce")
     GlassCard(Modifier.fillMaxWidth(),dark=dark,radius=if(small)18.dp else 23.dp) {
@@ -620,16 +674,28 @@ private fun GlassComposer(draft:String,onDraft:(String)->Unit,connected:Boolean,
                 }
                 Spacer(Modifier.width(10.dp))
                 Text(when {trashFlash -> "Recording discarded";canceled -> "Release to cancel";
-                        else -> "0:${seconds.toString().padStart(2,'0')}  ·  Slide left to cancel" },
+                        locked -> "0:${seconds.toString().padStart(2,'0')}  ·  Recording locked";
+                        else -> "0:${seconds.toString().padStart(2,'0')}  ·  ← Cancel   ↑ Lock" },
                     style=MaterialTheme.typography.labelMedium,
                     color=if(canceled)MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurface,
                     modifier=Modifier.weight(1f))
-                if(recording && !canceled)Icon(Icons.Default.KeyboardDoubleArrowLeft,null,
-                    modifier=Modifier.size(24.dp),tint=MaterialTheme.colorScheme.onSurfaceVariant)
+                if(recording && locked) Icon(Icons.Default.Lock,"Recording locked",
+                    modifier=Modifier.size(22.dp),tint=MaterialTheme.colorScheme.primary)
+                else if(recording && !canceled) Icon(Icons.Default.ArrowUpward,"Swipe up to lock",
+                    modifier=Modifier.size(22.dp),tint=MaterialTheme.colorScheme.onSurfaceVariant)
             }
         }
         Row(Modifier.fillMaxWidth().padding(horizontal=10.dp,vertical=8.dp),
             verticalAlignment=Alignment.Bottom,horizontalArrangement=Arrangement.spacedBy(5.dp)) {
+            if(recording && locked) {
+                Row(Modifier.weight(1f).heightIn(min=50.dp),verticalAlignment=Alignment.CenterVertically) {
+                    Icon(Icons.Default.Lock,"Locked",tint=MaterialTheme.colorScheme.primary,
+                        modifier=Modifier.size(20.dp))
+                    Spacer(Modifier.width(9.dp))
+                    Text("Recording locked",style=MaterialTheme.typography.bodyMedium,
+                        color=MaterialTheme.colorScheme.onSurface,maxLines=1)
+                }
+            } else {
             IconButton(onClick=onPhoto,enabled=connected&&!recording,modifier=Modifier.size(43.dp)) {
                 Icon(Icons.Default.AddPhotoAlternate,"Attach photo",tint=MaterialTheme.colorScheme.primary)
             }
@@ -647,9 +713,17 @@ private fun GlassComposer(draft:String,onDraft:(String)->Unit,connected:Boolean,
                     focusedIndicatorColor=Color.Transparent,unfocusedIndicatorColor=Color.Transparent),
                 keyboardOptions=KeyboardOptions(imeAction=ImeAction.Send),
                 keyboardActions=KeyboardActions(onSend={onSend()}))
+            }
             if(draft.isNotBlank()) FilledIconButton(onClick=onSend,enabled=connected,
                 modifier=Modifier.size(50.dp)) {
                 Icon(Icons.AutoMirrored.Filled.Send,"Send message")
+            } else if(recording && locked) {
+                IconButton(onClick={onCancel();trashFlash=true},modifier=Modifier.size(44.dp)) {
+                    Icon(Icons.Default.DeleteOutline,"Discard locked recording",tint=MaterialTheme.colorScheme.error)
+                }
+                FilledIconButton(onClick=onRelease,modifier=Modifier.size(50.dp)) {
+                    Icon(Icons.Default.Send,"Stop and send locked recording")
+                }
             } else if(tapMode) {
                 FilledIconButton(onClick={if(recording)onRelease() else onPress()},
                     enabled=connected,modifier=Modifier.size(50.dp)) {
@@ -664,7 +738,7 @@ private fun GlassComposer(draft:String,onDraft:(String)->Unit,connected:Boolean,
                 val cancel by rememberUpdatedState(onCancel)
                 Box(Modifier.size(50.dp).scale(micScale).clip(CircleShape)
                     .background(if(canceled)MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary)
-                    .semantics {contentDescription="Hold to record. Slide left to delete. Release to send."}
+                    .semantics {contentDescription="Hold to record. Slide left to cancel; slide up to lock recording. Release sends unless locked."}
                     .pointerInput(connected,cancelPx) {
                         awaitEachGesture {
                             val down=awaitFirstDown(requireUnconsumed=false)
@@ -673,15 +747,28 @@ private fun GlassComposer(draft:String,onDraft:(String)->Unit,connected:Boolean,
                             var cancelled=false
                             var finished=false
                             while(!finished) {
-                                val change=awaitPointerEvent().changes.firstOrNull {it.id==down.id} ?: break
-                                slide=(change.position.x-down.position.x)/density.density
-                                if(change.position.x-down.position.x < -cancelPx) {
+                                val change=awaitPointerEvent().changes.firstOrNull {it.id==down.id}
+                                if(change==null) { cancelled=!locked;break }
+                                val dx=change.position.x-down.position.x
+                                val dy=change.position.y-down.position.y
+                                slide=dx/density.density
+                                if(!locked && !cancelled && VoiceGestureRules.classify(
+                    dx/density.density,dy/density.density,locked,cancelled)==VoiceGestureRules.Action.LOCK) {
+                                    locked=true
+                                    haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                                } else if(VoiceGestureRules.classify(
+                    dx/density.density,dy/density.density,locked,cancelled)==VoiceGestureRules.Action.CANCEL) {
                                     if(!cancelled)haptics.performHapticFeedback(HapticFeedbackType.LongPress)
                                     cancelled=true
+                                    cancelArmed=true
                                 }
-                                if(!change.pressed)finished=true
+                                if(!change.pressed) finished=true
                             }
-                            if(cancelled){cancel();trashFlash=true}else release()
+                            when {
+                                cancelled -> {cancel();trashFlash=true}
+                                locked -> Unit // persistent recording; send/discard buttons take over
+                                else -> release()
+                            }
                             slide=0f
                         }
                     },contentAlignment=Alignment.Center) {
@@ -738,7 +825,7 @@ private fun SettingsPane(
                 TextButton(onClick=onShowDiagnostics){Text("View BLE diagnostics")}
                 TextButton(onClick=onClear){Text("Delete encrypted chat history")}
             } } }
-            item { Text("OffGrid Messenger 2.4.1 · Offline · AES-256-GCM · Binary BLE",
+            item { Text("OffGrid Messenger 2.4.2 · Offline · AES-256-GCM · Binary BLE",
                 style=MaterialTheme.typography.labelSmall,color=MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier=Modifier.padding(8.dp)) }
         }

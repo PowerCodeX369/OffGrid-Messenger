@@ -4,7 +4,7 @@ plugins { id("com.android.application"); id("org.jetbrains.kotlin.android"); id(
 android {
  namespace="com.offgrid.messenger"
  compileSdk=36
- defaultConfig { applicationId="com.offgrid.messenger"; minSdk=26; targetSdk=36; versionCode=241; versionName="2.4.1-polish" }
+ defaultConfig { applicationId="com.offgrid.messenger"; minSdk=26; targetSdk=36; versionCode=242; versionName="2.4.2-stability" }
  buildFeatures { compose=true }
  compileOptions { sourceCompatibility=JavaVersion.VERSION_17; targetCompatibility=JavaVersion.VERSION_17 }
 
@@ -20,6 +20,9 @@ kotlin {
 dependencies {
  val bom=platform("androidx.compose:compose-bom:2026.06.01")
  implementation(bom)
+ // Haze 2.1: source-backed backdrop blur, not a blur of the card text.
+ implementation("dev.chrisbanes.haze:haze:2.1.0")
+ implementation("dev.chrisbanes.haze:haze-blur:2.1.0")
  implementation("androidx.compose.ui:ui")
  implementation("androidx.compose.foundation:foundation")
  implementation("androidx.compose.material3:material3")
