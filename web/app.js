@@ -1,11 +1,11 @@
 'use strict';
 const $=id=>document.getElementById(id);
-let port=null,reader=null,writer=null,readLoopPromise=null,closing=false,serialBuffer='';
+let port=null,reader=null,writer=null,readLoopPromise=null,closing=false,serialBuffer='',verified=false,handshakeTimer=null;
 const encoder=new TextEncoder(),decoder=new TextDecoder('utf-8',{fatal:false});
 let pendingLocal=[];
 const messages=new Map(),seenIncoming=new Set(),pendingReceipts=new Map();
 let writeChain=Promise.resolve();
-function status(connected,label){$('status').textContent=label;$('dot').classList.toggle('online',connected);$('connect').disabled=connected;$('disconnect').disabled=!connected;$('message').disabled=!connected;$('send').disabled=!connected;}
+function status(connected,label){$('status').textContent=label;$('dot').classList.toggle('online',connected&&verified);$('connect').disabled=connected;$('disconnect').disabled=!connected;$('message').disabled=!(connected&&verified);$('send').disabled=!(connected&&verified);}
 function bubble(text,kind='system',stateLabel=''){
   const el=document.createElement('div');el.className='bubble '+kind;
   const body=document.createElement('div');body.textContent=text;el.appendChild(body);
@@ -23,14 +23,14 @@ function sendCommand(line){const task=writeChain.then(async()=>{if(!writer)throw
 function requestAck(mac,session,id){const cmd=`APPACK ${mac} ${session} ${id}`;sendCommand(cmd).catch(e=>bubble('Could not confirm incoming message: '+e.message));}
 function parseLine(raw){
   const line=raw.trim();if(!line)return;
-  if(line.startsWith('READY|')){const parts=line.split('|');status(true,`Connected • ${parts[1]} • channel 6 • protocol 2`);$('device').textContent=parts[1]||'Unknown';return;}
+  if(line.startsWith('READY|')){const parts=line.split('|');const proto=parts.find(p=>p.startsWith('PROTO='));if(proto!=='PROTO=2'){verified=false;status(true,'Firmware protocol mismatch — flash Phase 1.1 firmware on both boards');bubble('Firmware version mismatch: expected PROTO=2.');return;}verified=true;if(handshakeTimer){clearInterval(handshakeTimer);handshakeTimer=null;}status(true,`Connected • ${parts[1]} • channel 6 • protocol 2`);$('device').textContent=parts[1]||'Unknown';return;}
   if(line.startsWith('QUEUED|')){
     const [,session,id,hex]=line.split('|');const idx=pendingLocal.findIndex(p=>p.hex===hex);
     if(idx>=0){const [item]=pendingLocal.splice(idx,1);messages.set(idKey(session,id),item.el);setBubbleState(item.el,'◷ Queued');}
     return;
   }
   if(line.startsWith('RX|')){
-    const [,mac,session,id,hex]=line.split('|');if(!validMac(mac)||!/^\d+$/.test(session)||!/^\d+$/.test(id))return;
+    const [,mac,session,id,hex]=line.split('|');if(!validMac(mac)||!/^\d+$/.test(session)||!/^\d+$/.test(id)||typeof hex!=='string'||hex.length>360)return;
     const key=`${mac}:${session}:${id}`;
     if(!seenIncoming.has(key)){
       try{bubble(fromHex(hex),'theirs');seenIncoming.add(key);}catch{bubble('Received malformed data');return;}
@@ -56,16 +56,17 @@ async function readLoop(){
 }
 async function connect(){
   if(!('serial' in navigator)){bubble('Web Serial needs a supported Chromium browser on localhost.');return;}
-  try{port=await navigator.serial.requestPort();await port.open({baudRate:115200});writer=port.writable.getWriter();status(true,'USB connected • checking firmware');readLoopPromise=readLoop();await sendCommand('STATUS');}
+  try{port=await navigator.serial.requestPort();await port.open({baudRate:115200});writer=port.writable.getWriter();verified=false;status(true,'USB connected • checking firmware protocol 2');readLoopPromise=readLoop();await sendCommand('STATUS');handshakeTimer=setInterval(()=>{if(!verified&&writer)sendCommand('STATUS').catch(()=>{});},1200);}
   catch(e){bubble('Connection failed: '+e.message);await disconnect();}
 }
 async function disconnect(){
   if(closing)return;closing=true;
-  try{if(reader)try{await reader.cancel();}catch{};if(readLoopPromise)try{await readLoopPromise;}catch{};
+  try{if(handshakeTimer){clearInterval(handshakeTimer);handshakeTimer=null;}verified=false;if(reader)try{await reader.cancel();}catch{};if(readLoopPromise)try{await readLoopPromise;}catch{};
     if(writer){try{writer.releaseLock();}catch{}writer=null;}
     if(port){try{await port.close();}catch{}port=null;}
   }finally{readLoopPromise=null;serialBuffer='';pendingLocal.forEach(p=>setBubbleState(p.el,'! Disconnected'));pendingLocal=[];status(false,'Disconnected');$('device').textContent='—';closing=false;}
 }
+console.info('OffGrid Web v1.1.1 loaded: parsed ACK protocol, firmware PROTO=2 required');
 $('connect').addEventListener('click',connect);$('disconnect').addEventListener('click',disconnect);
 $('sendForm').addEventListener('submit',async e=>{
   e.preventDefault();const text=$('message').value.trim();if(!text)return;
