@@ -168,7 +168,7 @@ fun PremiumMessenger(
     diagnostics:List<String>, actions:PremiumActions,
     contactName:String="Nearby node",avatarBytes:ByteArray?=null
 ) {
-    var page by rememberSaveableString("chat")
+    var page by rememberSaveableString("chats")
     var query by remember { mutableStateOf("") }
     var showSearch by remember { mutableStateOf(false) }
     var enlargedPhoto by remember { mutableStateOf<ChatItem?>(null) }
@@ -183,6 +183,7 @@ fun PremiumMessenger(
     var renameDraft by remember(contactName) { mutableStateOf(contactName) }
     var draft by rememberSaveableString("")
     val textColor=MaterialTheme.colorScheme.onSurface
+    val unreadCount=ConversationUiRules.unreadCount(items)
     val bgStart by androidx.compose.animation.animateColorAsState(
         if(dark)Midnight else Color(0xFFEAF1FF),
         animationSpec=androidx.compose.animation.core.tween(360),label="theme background start")
@@ -195,9 +196,10 @@ fun PremiumMessenger(
     val bg=listOf(bgStart,bgMiddle,bgEnd)
     BoxWithConstraints(Modifier.fillMaxSize()
         .background(Brush.linearGradient(bg)) // cover the system status-bar region too
-        .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Top+WindowInsetsSides.Horizontal))) {
-        val wide=maxWidth>=720.dp
-        val micro=maxWidth<355.dp
+        .windowInsetsPadding(WindowInsets.safeContent.only(WindowInsetsSides.Top+WindowInsetsSides.Horizontal))) {
+        val wide=maxWidth>=720.dp && maxHeight>=420.dp
+        val micro=maxWidth<355.dp || maxHeight<420.dp
+        val compactHeight=maxHeight<470.dp
         if(!wide && page=="chat") BackHandler { page="chats" }
         if(page=="settings") BackHandler { page=if(wide)"chat" else "chats" }
         LaunchedEffect(page,wide) { actions.chatVisibility(page=="chat" || (wide && page!="settings")) }
@@ -207,7 +209,7 @@ fun PremiumMessenger(
             if(wide) {
                 NavigationPane(
                     modifier=Modifier.widthIn(min=250.dp,max=314.dp).fillMaxHeight().navigationBarsPadding(),dark=dark,
-                    items=items,connected=connected,status=status,selected=page,
+                    items=items,connected=connected,status=status,unreadCount=unreadCount,compactHeight=compactHeight,selected=page,
                     contactName=contactName,avatarBytes=avatarBytes,
                     openChat={page="chat"},openSettings={page="settings"},onConnect=actions.connect
                 )
@@ -231,58 +233,54 @@ fun PremiumMessenger(
                     )
                     destination=="chats" && !wide -> NavigationPane(
                         modifier=Modifier.fillMaxSize(),dark=dark,items=items,connected=connected,
-                        status=status,selected=page,contactName=contactName,avatarBytes=avatarBytes,
+                        status=status,unreadCount=unreadCount,compactHeight=compactHeight,selected=page,contactName=contactName,avatarBytes=avatarBytes,
                         openChat={page="chat"},openSettings={page="settings"},onConnect=actions.connect
                         )
                     else -> {
-                        // Keep the chat viewport behind the pinned opaque toolbars,
-                        // preserving scroll/inset behavior without expensive capture effects.
-                        Box(Modifier.fillMaxSize().imePadding().navigationBarsPadding()) {
+                        // Layout in measured vertical regions instead of painting fixed-height
+                        // overlays over the chat. This survives one-handed/reduced-height windows,
+                        // Samsung multi-window, gesture nav and IME resize without clipping.
+                        Column(Modifier.fillMaxSize().imePadding().navigationBarsPadding()) {
+                            ChatTopBar(
+                                dark=dark,connected=connected,status=status,
+                                contactName=contactName,avatarBytes=avatarBytes,
+                                showBack=!wide,compact=micro,onBack={page="chats"},
+                                onInfo={showChatInfo=true},onSearch={showSearch=!showSearch}
+                            )
+                            AnimatedVisibility(showSearch) {
+                                GlassCard(Modifier.fillMaxWidth(),dark=dark,radius=0.dp,frost=true) {
+                                    OutlinedTextField(query,{query=it},
+                                        modifier=Modifier.fillMaxWidth().padding(horizontal=16.dp,vertical=6.dp),
+                                        singleLine=true,leadingIcon={Icon(Icons.Default.Search,null)},
+                                        trailingIcon={IconButton(onClick={query="";showSearch=false}) {Icon(Icons.Default.Close,"Close search")}},
+                                        placeholder={Text("Search this conversation")},shape=RoundedCornerShape(24.dp))
+                                }
+                            }
+                            // Only this central region scrolls. Header and composer remain fixed.
                             ChatTimeline(items=items,filter=if(showSearch)query else "",dark=dark,
                                 playingId=playingId,connected=connected,appVisible=appVisible,
                                 openPhoto={enlargedPhoto=it},playVoice=actions.playVoice,
                                 onVisible=actions.markVisible,onRetry=actions.retry,
                                 onLongPress={chosenMessage=it},
-                                topSpace=if(showSearch)150.dp else 94.dp,
-                                bottomSpace=if(recording)170.dp else 112.dp,
-                                modifier=Modifier.fillMaxSize())
-                            Column(Modifier.fillMaxWidth().align(Alignment.TopCenter)) {
-                                ChatTopBar(
-                                    dark=dark,connected=connected,status=status,
-                                    contactName=contactName,avatarBytes=avatarBytes,
-                                    showBack=!wide,compact=micro,onBack={page="chats"},
-                                    onInfo={showChatInfo=true},onSearch={showSearch=!showSearch}
-                                )
-                                AnimatedVisibility(showSearch) {
-                                    GlassCard(Modifier.fillMaxWidth(),dark=dark,radius=0.dp,frost=true) {
-                                        OutlinedTextField(query,{query=it},
-                                            modifier=Modifier.fillMaxWidth().padding(horizontal=16.dp,vertical=6.dp),
-                                            singleLine=true,leadingIcon={Icon(Icons.Default.Search,null)},
-                                            trailingIcon={IconButton(onClick={query="";showSearch=false}) {Icon(Icons.Default.Close,"Close search")}},
-                                            placeholder={Text("Search this conversation")},shape=RoundedCornerShape(24.dp))
+                                modifier=Modifier.weight(1f).fillMaxWidth())
+                            AnimatedVisibility(!connected,enter=fadeIn(),exit=fadeOut()) {
+                                GlassCard(Modifier.fillMaxWidth(),dark=dark,radius=0.dp,frost=true) {
+                                    Row(Modifier.fillMaxWidth().padding(horizontal=14.dp,vertical=5.dp),
+                                        verticalAlignment=Alignment.CenterVertically) {
+                                        Text("Offline · connect your node",style=MaterialTheme.typography.labelMedium,
+                                            color=MaterialTheme.colorScheme.onSurfaceVariant,modifier=Modifier.weight(1f))
+                                        TextButton(onClick=actions.connect){Text("Connect")}
                                     }
                                 }
                             }
-                            Column(Modifier.align(Alignment.BottomCenter).fillMaxWidth()) {
-                                AnimatedVisibility(!connected,enter=fadeIn(),exit=fadeOut()) {
-                                    GlassCard(Modifier.fillMaxWidth(),dark=dark,radius=0.dp,frost=true) {
-                                        Row(Modifier.fillMaxWidth().padding(horizontal=14.dp,vertical=5.dp),
-                                            verticalAlignment=Alignment.CenterVertically) {
-                                            Text("Offline · connect your node",style=MaterialTheme.typography.labelMedium,
-                                                color=MaterialTheme.colorScheme.onSurfaceVariant,modifier=Modifier.weight(1f))
-                                            TextButton(onClick=actions.connect){Text("Connect")}
-                                        }
-                                    }
-                                }
-                                GlassComposer(
-                                    draft=draft,onDraft={draft=it.take(500)},connected=connected,
-                                    recording=recording,small=micro,dark=dark,
-                                    tapMode=accessibleVoiceTap,
-                                    onSend={if(draft.isNotBlank()){actions.sendText(draft);draft=""}},
-                                    onPhoto=actions.photo,onCamera=actions.camera,onPress=actions.micPress,
-                                    onRelease=actions.micRelease,onCancel=actions.micCancel
-                                )
-                            }
+                            GlassComposer(
+                                draft=draft,onDraft={draft=it.take(500)},connected=connected,
+                                recording=recording,small=micro,dark=dark,
+                                tapMode=accessibleVoiceTap,
+                                onSend={if(draft.isNotBlank()){actions.sendText(draft);draft=""}},
+                                onPhoto=actions.photo,onCamera=actions.camera,onPress=actions.micPress,
+                                onRelease=actions.micRelease,onCancel=actions.micCancel
+                            )
                         }
                     }
                 }
@@ -433,7 +431,7 @@ private fun NodeAvatar(size:Dp,dark:Boolean,avatarBytes:ByteArray?=null) {
 @Composable
 private fun NavigationPane(
     modifier:Modifier,dark:Boolean,items:List<ChatItem>,connected:Boolean,status:String,
-    selected:String,contactName:String,avatarBytes:ByteArray?,openChat:()->Unit,openSettings:()->Unit,onConnect:()->Unit
+    unreadCount:Int,compactHeight:Boolean,selected:String,contactName:String,avatarBytes:ByteArray?,openChat:()->Unit,openSettings:()->Unit,onConnect:()->Unit
 ) {
     GlassCard(modifier,dark=dark,radius=0.dp) {
         Row(Modifier.fillMaxWidth().padding(start=20.dp,end=10.dp,top=19.dp,bottom=10.dp),verticalAlignment=Alignment.CenterVertically) {
@@ -441,9 +439,23 @@ private fun NavigationPane(
                 color=MaterialTheme.colorScheme.primary,modifier=Modifier.weight(1f))
             IconButton(onClick=openSettings){Icon(Icons.Default.Settings,"Settings")}
         }
-        Text("PRIVATE MESSENGER",style=MaterialTheme.typography.labelSmall,
+        if(!compactHeight) Text("PRIVATE MESSENGER",style=MaterialTheme.typography.labelSmall,
             color=MaterialTheme.colorScheme.onSurfaceVariant,modifier=Modifier.padding(start=22.dp,bottom=17.dp))
-        Spacer(Modifier.height(10.dp))
+        // The two badges deliberately count the same unread incoming messages,
+        // matching the desktop chat header and the sole conversation row.
+        Row(Modifier.fillMaxWidth().padding(start=20.dp,end=21.dp,bottom=7.dp),
+            verticalAlignment=Alignment.CenterVertically) {
+            Text("Chats",style=MaterialTheme.typography.titleLarge,fontWeight=FontWeight.Bold,
+                color=MaterialTheme.colorScheme.onSurface)
+            if(unreadCount>0) {
+                Spacer(Modifier.width(9.dp))
+                Badge(containerColor=Color(0xFF148E80),
+                    contentColor=Color.White) {
+                    Text(unreadCount.coerceAtMost(99).toString() + if(unreadCount>99) "+" else "")
+                }
+            }
+        }
+        Spacer(Modifier.height(4.dp))
         // Exactly one conversation exists; no chat-list search or filtering.
         val latest=items.lastOrNull()
         Row(Modifier.fillMaxWidth().clickable(onClick=openChat).padding(16.dp),
@@ -465,13 +477,20 @@ private fun NavigationPane(
                     maxLines=1,overflow=TextOverflow.Ellipsis,style=MaterialTheme.typography.bodySmall,
                     color=MaterialTheme.colorScheme.onSurfaceVariant)
             }
+            if(unreadCount>0) {
+                Spacer(Modifier.width(8.dp))
+                Badge(containerColor=Color(0xFF148E80),
+                    contentColor=Color.White) {
+                    Text(unreadCount.coerceAtMost(99).toString() + if(unreadCount>99) "+" else "")
+                }
+            }
         }
         HorizontalDivider(Modifier.padding(horizontal=18.dp),color=MaterialTheme.colorScheme.onSurface.copy(alpha=.08f))
         if(!connected) TextButton(onClick=onConnect,modifier=Modifier.padding(10.dp)) {
             Icon(Icons.Default.Bluetooth,null);Spacer(Modifier.width(6.dp));Text("Connect to node")
         }
         Spacer(Modifier.weight(1f))
-        Row(Modifier.fillMaxWidth().padding(16.dp),verticalAlignment=Alignment.CenterVertically) {
+        if(!compactHeight) Row(Modifier.fillMaxWidth().padding(16.dp),verticalAlignment=Alignment.CenterVertically) {
             Icon(Icons.Default.Lock,null,modifier=Modifier.size(16.dp),tint=MaterialTheme.colorScheme.primary)
             Spacer(Modifier.width(6.dp))
             Text("Offline · End-to-end encrypted",style=MaterialTheme.typography.labelSmall,
@@ -484,38 +503,46 @@ private fun NavigationPane(
 private fun ChatTimeline(
     items:List<ChatItem>,filter:String,dark:Boolean,playingId:String?,connected:Boolean,appVisible:Boolean,
     openPhoto:(ChatItem)->Unit,playVoice:(ChatItem)->Unit,onVisible:(Set<String>)->Unit,
-    onRetry:(ChatItem)->Unit,onLongPress:(ChatItem)->Unit,modifier:Modifier,
-    topSpace:Dp=94.dp,bottomSpace:Dp=112.dp
+    onRetry:(ChatItem)->Unit,onLongPress:(ChatItem)->Unit,modifier:Modifier
 ) {
     val visibleItems=remember(items,filter) { if(filter.isBlank())items else items.filter {
         it.text.contains(filter,ignoreCase=true) || (it.kind==OgmCodec.IMAGE && "photo".contains(filter,true)) ||
             (it.kind==OgmCodec.VOICE && "voice".contains(filter,true))
     } }
-    // Start at the newest entry. Opening a long chat must never animate through history.
-    val lazy=rememberLazyListState(initialFirstVisibleItemIndex=visibleItems.size)
-    var previousCount by remember { mutableIntStateOf(-1) }
-    LaunchedEffect(visibleItems.size,filter) {
-        val current=visibleItems.size
-        if(current==0)return@LaunchedEffect // first restored content must snap, not animate
-        val firstOpen=previousCount<0
-        val prior=previousCount
-        val lastVisible=lazy.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0
-        val nearBottom=(lazy.layoutInfo.totalItemsCount-lastVisible)<=3
-        previousCount=current
+    // Reverse layout anchors the newest message at the *bottom* on first open;
+    // there is no expensive animated traversal through old photos/history.
+    val newestFirst=remember(visibleItems) { visibleItems.asReversed() }
+    val lazy=rememberLazyListState(initialFirstVisibleItemIndex=0)
+    var lastObservedId by remember(filter) { mutableStateOf<String?>(null) }
+    val latest=visibleItems.lastOrNull()
+    LaunchedEffect(latest?.id,filter) {
+        val latestId=latest?.id
+        val priorId=lastObservedId
+        lastObservedId=latestId
         when {
-            current==0 -> Unit
-            firstOpen -> lazy.scrollToItem(current) // index 0 is the info banner
-            current>prior && nearBottom -> lazy.animateScrollToItem(current)
+            latestId==null -> Unit
+            priorId==null -> lazy.scrollToItem(0)
+            priorId!=latestId && ConversationUiRules.followNewMessage(
+                latest.outgoing,lazy.firstVisibleItemIndex,lazy.isScrollInProgress
+            ) -> {
+                // Never animate through a huge message/photo history after sending.
+                if(lazy.firstVisibleItemIndex>8) lazy.scrollToItem(0)
+                else lazy.animateScrollToItem(0)
+            }
         }
     }
-    LaunchedEffect(lazy,visibleItems,connected,appVisible) {
+    LaunchedEffect(lazy,newestFirst,connected,appVisible) {
         snapshotFlow { lazy.layoutInfo.visibleItemsInfo.map { it.index } }.collect { indices ->
-            if(connected && appVisible) onVisible(indices.mapNotNull { visibleItems.getOrNull(it-1)?.takeIf { entry -> !entry.outgoing && !entry.deleted }?.id }.toSet())
+            if(connected && appVisible) onVisible(indices.mapNotNull { newestFirst.getOrNull(it)?.takeIf { entry -> !entry.outgoing && !entry.deleted }?.id }.toSet())
         }
     }
-    LazyColumn(modifier,state=lazy,contentPadding=PaddingValues(start=12.dp,end=12.dp,top=topSpace,bottom=bottomSpace),
+    LazyColumn(modifier,state=lazy,reverseLayout=true,
+        contentPadding=PaddingValues(start=12.dp,end=12.dp,top=12.dp,bottom=12.dp),
         verticalArrangement=Arrangement.spacedBy(10.dp)) {
-        item {
+        items(newestFirst,key={it.id}) { message ->
+            ChatBubble(message,dark,playingId==message.id,openPhoto,playVoice,onRetry,onLongPress)
+        }
+        item(key="offgrid-encryption-banner") {
             Box(Modifier.fillMaxWidth().padding(bottom=18.dp),contentAlignment=Alignment.Center) {
                 GlassCard(dark=dark,radius=17.dp) {
                     Row(Modifier.padding(horizontal=14.dp,vertical=9.dp),verticalAlignment=Alignment.CenterVertically) {
@@ -527,7 +554,8 @@ private fun ChatTimeline(
             }
         }
         if(visibleItems.isEmpty()) item {
-            Column(Modifier.fillMaxWidth().padding(top=76.dp),horizontalAlignment=Alignment.CenterHorizontally) {
+            Column(Modifier.fillParentMaxHeight(.65f).fillMaxWidth(),
+                verticalArrangement=Arrangement.Center,horizontalAlignment=Alignment.CenterHorizontally) {
                 Icon(Icons.Default.Forum,null,modifier=Modifier.size(42.dp),tint=MaterialTheme.colorScheme.primary.copy(alpha=.56f))
                 Spacer(Modifier.height(12.dp))
                 Text(if(filter.isBlank())"Your private conversation starts here" else "No matching messages",
@@ -536,10 +564,6 @@ private fun ChatTimeline(
                 Text("Text, photos and voice—without the internet",style=MaterialTheme.typography.bodySmall,
                     color=MaterialTheme.colorScheme.onSurfaceVariant)
             }
-        }
-        items(visibleItems,key={it.id}) { message ->
-            // No disappearing-item overlay: deleted bubbles are immediately removed.
-            ChatBubble(message,dark,playingId==message.id,openPhoto,playVoice,onRetry,onLongPress)
         }
     }
 }
