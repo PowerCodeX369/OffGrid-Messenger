@@ -14,6 +14,6 @@ assert 'esp_task_wdt_deinit' not in s
 assert 'esp_task_wdt_delete' not in s
 # No changes to the radio payload and stored-key interface.
 assert '#define MAX_TEXT 180' in s
-assert 'send_frame(BROADCAST,&o->frame)' in s
+assert '?peer_mac:BROADCAST' in s  # adaptive unicast with original broadcast recovery
 assert all(x in s for x in ['KEYGET','KEYSET','nvs_get_blob','nvs_set_blob'])
 print('Watchdog scheduler regression checks: PASS')

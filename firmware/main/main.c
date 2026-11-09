@@ -1,9 +1,9 @@
-/* OffGrid Messenger Phase 1.4.5.2 WATCHDOG FIX — ESP-IDF 5.x / ESP32-C3.
- * Rollback to tested Phase 1.4 broadcast ESP-NOW transport.
- * AES-256-GCM encryption/decryption is in the browser, NOT in the ESP32.
- * Node only forwards ciphertext and stores the pairing key in NVS.
- * Application-level ACKs still prove remote browser received the fragment.
- * Radio PHY deliberately stays at the safe default 1 Mbps until link is stable.
+/* OffGrid Messenger Phase 1.4.7 Adaptive PHY — ESP-IDF >= 5.2 / ESP32-C3.
+ * EXPERIMENTAL branch of FROZEN Phase 1.4.5.2 WatchdogFix.
+ * AES-256-GCM runs in the BROWSER. NVS key management unchanged.
+ * 1 Mbps broadcast HELLO/recovery; peer-aware 1/6/12 Mbps unicast for data.
+ * Browser protocol, app ACK, retry IDs, USB READY, and task watchdog fix preserved.
+ * Revert to 1.4.5.2 firmware immediately if this branch underperforms.
  */
 #include <stdio.h>
 #include <string.h>
@@ -27,6 +27,11 @@
 #include "esp_timer.h"
 #include "nvs_flash.h"
 #include "nvs.h"
+#include "esp_idf_version.h"
+#include "link_rate_policy.h"
+#if ESP_IDF_VERSION < ESP_IDF_VERSION_VAL(5,2,0)
+#error "Adaptive PHY requires ESP-IDF 5.2 or newer"
+#endif
 
 #define CHANNEL 6
 #define MAX_TEXT 180
@@ -40,6 +45,11 @@
 #define TYPE_TEXT 1
 #define TYPE_RECEIPT 2
 #define TYPE_READ 3
+#define TYPE_HELLO 4 /* broadcast discovery/keepalive: unchanged radio 1 Mbps */
+#define HELLO_MS 1800
+#define PEER_TIMEOUT_MS 12000
+#define PHY_DWELL_MS 4200
+#define PHY_HOLD_MS 10000
 #define EVENT_QUEUE_LEN 32
 #define SERIAL_LINE 512
 #define LINK_REPORT_MS 2500
@@ -68,6 +78,7 @@ typedef struct {
     event_type_t type;
     uint8_t mac[6];
     int8_t rssi;
+    uint8_t rate_mode;
     uint32_t session;
     uint32_t id;
     uint16_t length;
@@ -97,6 +108,16 @@ static uint8_t last_remote_mac[6];
 static bool have_remote=false;
 static int32_t remote_rssi=-127;
 static uint32_t tx_ok=0,tx_fail=0,rx_ok=0,delivery_count=0,retry_count=0,failure_count=0;
+/* New state is isolated from original ACK / encryption / USB protocol. */
+static uint8_t peer_mac[6];
+static bool peer_known=false;
+static int64_t peer_last_seen_ms=0, last_hello_ms=0, last_phy_change_ms=0;
+static int64_t rate_hold_until_ms=0, rate_error_until_ms=0;
+static uint8_t phy_mbps=1;
+static uint8_t link_mode=OG_RATE_AUTO;
+static uint32_t hello_rx=0, hello_tx=0, valid_rssi_samples=0;
+static uint32_t phy_changes=0, rate_errors=0;
+static bool phy_configured=false;
 static int64_t last_report_ms=0;
 static int64_t last_ready_beacon_ms=0;
 static uint8_t pairing_key[32];
@@ -143,6 +164,9 @@ static void print_hex(const uint8_t *p, size_t n) {
     static const char h[]="0123456789ABCDEF";
     for (size_t i=0;i<n;i++) { putchar(h[p[i]>>4]); putchar(h[p[i]&15]); }
 }
+static const char *link_mode_name(void) {
+    return link_mode==OG_RATE_RANGE?"RANGE":link_mode==OG_RATE_SPEED?"SPEED":"AUTO";
+}
 static void emit_link(void){
     char peer[20];
     if(have_remote){
@@ -152,11 +176,11 @@ static void emit_link(void){
     }else{
         snprintf(peer,sizeof(peer),"BROADCAST");
     }
-    printf("LINK|%s|RSSI=%ld|PHY=1|MODE=STABLE|OK=%" PRIu32
+    printf("LINK|%s|RSSI=%ld|PHY=%u|MODE=%s|OK=%" PRIu32
            "|RETRY=%" PRIu32 "|FAIL=%" PRIu32 "|TXOK=%" PRIu32
-           "|TXFAIL=%" PRIu32 "|RX=%" PRIu32 "|HELLO=0\n",
-           peer,(long)remote_rssi,delivery_count,retry_count,failure_count,
-           tx_ok,tx_fail,rx_ok);
+           "|TXFAIL=%" PRIu32 "|RX=%" PRIu32 "|HELLO=%" PRIu32 "|CHANGES=%" PRIu32 "\n",
+           peer,(long)remote_rssi,(unsigned)(peer_known?phy_mbps:1),link_mode_name(),
+           delivery_count,retry_count,failure_count,tx_ok,tx_fail,rx_ok,hello_rx,phy_changes);
 }
 static bool parse_mac(const char *s, uint8_t *m) {
     unsigned a[6]; int end = 0;
@@ -187,7 +211,7 @@ static bool read_hex(const char *s,uint8_t *dst,uint16_t *len) {
  * IMPORTANT: single printf to avoid splitting the READY frame over lines. */
 static void show_ready(const char *source) {
     printf("READY|%02X:%02X:%02X:%02X:%02X:%02X|CHANNEL=%d|SESSION=%" PRIu32
-           "|PROTO=2|CAP=180|STABLE=1|NVSKEY=1|FROM=%s\n",
+           "|PROTO=2|CAP=180|STABLE=1|NVSKEY=1|ADAPTIVEPHY=1|FROM=%s\n",
            own_mac[0],own_mac[1],own_mac[2],own_mac[3],own_mac[4],own_mac[5],
            CHANNEL,boot_session,source);
 }
@@ -201,8 +225,8 @@ static void on_receive(const esp_now_recv_info_t *info,const uint8_t *data,int l
     frame_t *f=&ev.frame;
     if(f->magic!=PROTOCOL_MAGIC||f->version!=PROTOCOL_VERSION)return;
     if(f->length>MAX_TEXT||(size_t)len!=base+f->length)return;
-    if(f->type!=TYPE_TEXT&&f->type!=TYPE_RECEIPT&&f->type!=TYPE_READ)return;
-    if((f->type==TYPE_RECEIPT||f->type==TYPE_READ)&&f->length!=0)return;
+    if(f->type!=TYPE_TEXT&&f->type!=TYPE_RECEIPT&&f->type!=TYPE_READ&&f->type!=TYPE_HELLO)return;
+    if((f->type==TYPE_RECEIPT||f->type==TYPE_READ||f->type==TYPE_HELLO)&&f->length!=0)return;
     if(memcmp(f->sender,ev.mac,6)!=0||memcmp(f->sender,own_mac,6)==0)return;
     (void)xQueueSend(event_queue,&ev,0); /* Wi-Fi callback must never block */
 }
@@ -221,16 +245,99 @@ static esp_err_t send_frame(const uint8_t *dest, const frame_t *f) {
     if(err==ESP_OK)tx_ok++;else tx_fail++;
     return err;
 }
+
+/* Called ONLY on dispatcher task. Never perform rate changes in a Wi-Fi callback. */
+static bool set_peer_phy(uint8_t rate) {
+    if(!peer_known || (rate!=1 && rate!=6 && rate!=12))return false;
+    if(phy_configured && phy_mbps==rate)return true;
+    if(now_ms()<rate_error_until_ms)return false;
+    esp_now_rate_config_t cfg={0};
+    cfg.phymode=(rate==1)?WIFI_PHY_MODE_11B:WIFI_PHY_MODE_11G;
+    cfg.rate=(rate==1)?WIFI_PHY_RATE_1M_L:(rate==6?WIFI_PHY_RATE_6M:WIFI_PHY_RATE_12M);
+    esp_err_t err=esp_now_set_peer_rate_config(peer_mac,&cfg);
+    if(err!=ESP_OK){
+        rate_errors++;
+        rate_error_until_ms=now_ms()+5000;
+        printf("RATE_ERROR|%u|%s\n",(unsigned)rate,esp_err_to_name(err));
+        return false;
+    }
+    phy_configured=true;phy_mbps=rate;
+    last_phy_change_ms=now_ms();phy_changes++;
+    printf("RATE|%u|%s\n",(unsigned)rate,link_mode_name());
+    return true;
+}
+static bool any_pending(void) {
+    for(int i=0;i<MAX_PENDING;i++)if(pending[i].active)return true;
+    return false;
+}
+/* A successful 1 Mbps broadcast discovery frame is our independent RSSI sample.
+ * A peer can appear even when there are no chat messages yet. */
+static bool learn_or_observe_peer(const uint8_t *mac, int8_t rssi) {
+    if(!peer_known){
+        if(!ensure_peer(mac))return false;
+        memcpy(peer_mac,mac,6);peer_known=true;
+        memcpy(last_remote_mac,mac,6);have_remote=true;
+        phy_configured=false;phy_mbps=1;
+        remote_rssi=-127;valid_rssi_samples=0;
+        rate_hold_until_ms=0;last_phy_change_ms=now_ms();
+        (void)set_peer_phy(1);
+        printf("PEER|");print_mac(peer_mac);putchar('\n');
+    }
+    if(memcmp(mac,peer_mac,6)!=0)return false;
+    peer_last_seen_ms=now_ms();
+    if(rssi>=-105 && rssi<=-5){
+        remote_rssi=(remote_rssi==-127)?rssi:(remote_rssi*7+rssi*3)/10;
+        if(valid_rssi_samples<1000000)valid_rssi_samples++;
+    }
+    return true;
+}
+static void downgrade_on_missing_ack(void) {
+    rate_hold_until_ms=now_ms()+PHY_HOLD_MS;
+    if(peer_known && phy_mbps!=1)(void)set_peer_phy(1);
+}
+static void adjust_phy(void) {
+    if(!peer_known)return;
+    const int64_t now=now_ms();
+    if(now-peer_last_seen_ms>PEER_TIMEOUT_MS){
+        (void)set_peer_phy(1);
+        /* Rediscover peer through low-rate HELLO; broadcast text remains usable. */
+        peer_known=false;phy_configured=false;phy_mbps=1;
+        remote_rssi=-127;have_remote=false;valid_rssi_samples=0;
+        return;
+    }
+    if(link_mode==OG_RATE_RANGE){if(phy_mbps!=1)(void)set_peer_phy(1);return;}
+    if(remote_rssi==-127 || valid_rssi_samples<3)return;
+    if(now<rate_hold_until_ms)return;
+    uint8_t desired=og_rate_target(phy_mbps,remote_rssi,link_mode);
+    if(desired==phy_mbps)return;
+    /* Downgrade without delay. On upgrade, use a dwell interval to prevent flapping. */
+    if(desired>phy_mbps){
+        if(now-last_phy_change_ms<PHY_DWELL_MS || any_pending())return;
+    }
+    (void)set_peer_phy(desired);
+}
+static void send_hello(void) {
+    /* Discovery remains broadcast/default-1-Mbps; unicast rate config never
+     * changes it. Ignore busy errors; next periodic HELLO will retry. */
+    frame_t hello={0};
+    hello.magic=PROTOCOL_MAGIC;hello.version=PROTOCOL_VERSION;
+    hello.type=TYPE_HELLO;memcpy(hello.sender,own_mac,6);
+    hello.session=boot_session;
+    if(send_frame(BROADCAST,&hello)==ESP_OK)hello_tx++;
+}
+
 static received_t *find_history(const uint8_t *mac,uint32_t session,uint32_t id) {
     for(int i=0;i<RX_HISTORY;i++)if(history[i].active&&history[i].session==session&&history[i].id==id&&memcmp(history[i].mac,mac,6)==0)return &history[i];
     return NULL;
 }
 static void receipt(const received_t *r) {
-    if(!ensure_peer(r->mac))return;
     frame_t ack={0};ack.magic=PROTOCOL_MAGIC;ack.version=PROTOCOL_VERSION;
     ack.type=TYPE_RECEIPT;memcpy(ack.sender,own_mac,6);
     ack.session=r->session;ack.id=r->id;
-    (void)send_frame(r->mac,&ack); /* sender retries if receipt is lost */
+    /* Keep ACK frames at the reliable 1-Mbps broadcast PHY, independent of
+     * the other node's current unicast data rate. This prevents an asymmetric
+     * high-rate link from losing all confirmations after a sender downgrade. */
+    (void)send_frame(BROADCAST,&ack);
 }
 static void display_rx(const frame_t *f,const uint8_t *mac) {
     printf("RX|");print_mac(mac);
@@ -240,9 +347,17 @@ static void display_rx(const frame_t *f,const uint8_t *mac) {
 static void process_event(const event_t *e) {
     if(e->type==EV_STATUS){show_ready("STATUS");emit_link();return;}
     if(e->type==EV_RATE){
-        /* Kept for web settings compatibility. STABLE intentionally fixes radio PHY. */
-        emit_link();
-        return;
+        link_mode=e->rate_mode;
+        if(link_mode==OG_RATE_RANGE){
+            rate_hold_until_ms=now_ms()+PHY_HOLD_MS;
+            if(peer_known)(void)set_peer_phy(1);
+        }else{
+            rate_hold_until_ms=0;
+            /* Allow immediate signal-based update, but never bypass 3 RSSI samples. */
+            last_phy_change_ms=now_ms()-PHY_DWELL_MS;
+            adjust_phy();
+        }
+        emit_link();return;
     }
     if(e->type==EV_SEND) {
         outgoing_t *slot=NULL;
@@ -265,7 +380,8 @@ static void process_event(const event_t *e) {
         read_frame.type=TYPE_READ;memcpy(read_frame.sender,own_mac,6);
         read_frame.session=e->session;read_frame.id=e->id;
         for(int n=0;n<3;n++) {
-            if(send_frame(e->mac,&read_frame)!=ESP_OK)puts("ERROR|READ_SEND");
+            /* Read control stays on the robust broadcast PHY. */
+            if(send_frame(BROADCAST,&read_frame)!=ESP_OK)puts("ERROR|READ_SEND");
             vTaskDelay(pdMS_TO_TICKS(35));
         }
         return;
@@ -279,11 +395,9 @@ static void process_event(const event_t *e) {
     }
     if(e->type!=EV_RX)return;
     const frame_t *f=&e->frame;
+    if(!learn_or_observe_peer(e->mac,e->rssi))return;
+    if(f->type==TYPE_HELLO){hello_rx++;return;}
     rx_ok++;
-    memcpy(last_remote_mac,e->mac,6);have_remote=true;
-    if(e->rssi>=-110&&e->rssi<=-10){
-        remote_rssi=(remote_rssi==-127)?e->rssi:(remote_rssi*7+e->rssi*3)/10;
-    }
     if(f->type==TYPE_READ) {
         /* Sender browser decides whether this ID belongs to its outgoing chat. */
         printf("READ|%" PRIu32 "|%" PRIu32 "\n",f->session,f->id);
@@ -320,6 +434,8 @@ static void dispatcher(void *arg) {
         if(xQueueReceive(event_queue,&e,pdMS_TO_TICKS(5) + 1)==pdTRUE)process_event(&e);
         int64_t t=now_ms();
         if(t-last_report_ms>=LINK_REPORT_MS){last_report_ms=t;emit_link();}
+        if(t-last_hello_ms>=HELLO_MS){last_hello_ms=t;send_hello();}
+        adjust_phy();
         /* USB handshake resilience: no dependency on STATUS arriving intact. */
         if(t-last_ready_beacon_ms>=READY_BEACON_MS){
             last_ready_beacon_ms=t;
@@ -330,11 +446,16 @@ static void dispatcher(void *arg) {
             if(o->attempts>0 && t-o->last_send_ms<RETRY_MS)continue;
             if(o->attempts>=MAX_ATTEMPTS) {
                 printf("FAILED|%" PRIu32 "|%" PRIu32 "|NO_APP_RECEIPT\n",o->frame.session,o->frame.id);
-                o->active=false;failure_count++;continue;
+                o->active=false;failure_count++;downgrade_on_missing_ack();continue;
             }
-            esp_err_t err=send_frame(BROADCAST,&o->frame);
+            if(o->attempts==1){retry_count++;downgrade_on_missing_ack();}
+            else if(o->attempts>1){retry_count++;}
+            /* Once discovered, unicast uses adaptive rate. On repeated missing
+             * ACKs recover using the original 1 Mbps broadcast route. */
+            const uint8_t *dest=(peer_known && t-peer_last_seen_ms<PEER_TIMEOUT_MS && o->attempts<2)
+                ?peer_mac:BROADCAST;
+            esp_err_t err=send_frame(dest,&o->frame);
             o->last_send_ms=now_ms();o->attempts++;
-            if(o->attempts>1)retry_count++;
             if(err==ESP_OK) {
                 if(o->attempts==1)printf("SENT|%" PRIu32 "|%" PRIu32 "\n",o->frame.session,o->frame.id);
                 else printf("RETRY|%" PRIu32 "|%" PRIu32 "|%d\n",o->frame.session,o->frame.id,o->attempts);
@@ -366,7 +487,10 @@ static void serial_task(void *arg) {
             }
             else if(strncmp(line,"RATE ",5)==0){
                 if(strcmp(line+5,"AUTO")==0||strcmp(line+5,"RANGE")==0||strcmp(line+5,"SPEED")==0){
-                    e.type=EV_RATE;send=true;
+                    e.type=EV_RATE;
+                    e.rate_mode=!strcmp(line+5,"RANGE")?OG_RATE_RANGE:
+                        (!strcmp(line+5,"SPEED")?OG_RATE_SPEED:OG_RATE_AUTO);
+                    send=true;
                 }else puts("ERROR|BAD_RATE_MODE");
             }
             else if(strncmp(line,"MSGHEX ",7)==0) {
@@ -401,7 +525,7 @@ static void serial_task(void *arg) {
 }
 void app_main(void) {
     setvbuf(stdout,NULL,_IONBF,0);
-    puts("BOOT|OffGrid Messenger Phase 1.4.5.2 WDT FIX / broadcast protocol 2");
+    puts("BOOT|OffGrid Messenger Phase 1.4.7 Adaptive PHY / stable USB, NVS, ACK");
     esp_err_t e=nvs_flash_init();
     if(e==ESP_ERR_NVS_NO_FREE_PAGES||e==ESP_ERR_NVS_NEW_VERSION_FOUND){ESP_ERROR_CHECK(nvs_flash_erase());e=nvs_flash_init();}
     ESP_ERROR_CHECK(e);
