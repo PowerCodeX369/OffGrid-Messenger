@@ -3,7 +3,7 @@
    Keys are stored on each ESP32 and imported only into browser RAM over physical USB. No external servers. */
 const P=globalThis.OGP,$=id=>document.getElementById(id);
 const MAX_CHARS=500,MAX_PHOTO=96*1024,STORE='OffGridMessengerV14';
-const APP_VERSION='1.4.10.3-selective-ack';
+const APP_VERSION='1.4.11.1-manual-lr';
 const stateRank={sending:0,queued:0,sent:1,failed:1,delivered:2,read:3};
 const encoder=new TextEncoder();
 let port=null,reader=null,writer=null,readPromise=null,closing=false,verified=false,serialBuffer='',writeChain=Promise.resolve(),handshakeTimer=null;
@@ -46,6 +46,7 @@ let selectivePhotoAcks=true;
 const radioByHex=new Map(),radioByWire=new Map();
 const linkStats={samples:0,avgMs:0,cleanStreak:0,retries:0,mode:'starting',window:1,lastKBs:0};
 let linkPreference='auto';
+let lastManualLR='lr500',lrControlError=''; // Only the UI changes; firmware RATE protocol remains unchanged.
 const photoFlow=new globalThis.OffGridAdaptive.PhotoFlowController();
 let adaptivePhotos=true;
 let queuedReceipts=new Set(),pendingReads=new Set(),theme='dark';
@@ -199,6 +200,7 @@ async function runDiagnostics(){
 }
 
 try{theme=localStorage.getItem('offgrid_theme')==='light'?'light':'dark';imageMode=localStorage.getItem('offgrid_image_mode')==='lossless'?'lossless':'hq';linkPreference=['auto','range','speed','lr500','lr250'].includes(localStorage.getItem('offgrid_link_preference'))?localStorage.getItem('offgrid_link_preference'):'auto';adaptivePhotos=localStorage.getItem('offgrid_adaptive_photos')!=='off';selectivePhotoAcks=localStorage.getItem('offgrid_sack_photos')!=='off';}catch{}
+try{const saved=localStorage.getItem('offgrid_last_manual_lr');if(saved==='lr500'||saved==='lr250')lastManualLR=saved;}catch{}
 document.body.classList.toggle('light',theme==='light');
 const macKey=()=>localMac||'unknown';
 const nameKey=()=>`offgrid_phase14_name_${macKey()}`;
@@ -255,16 +257,74 @@ function photoBudget(){
  if(linkPreference==='speed'||(linkStats.mode==='strong'&&radioTelemetry.rssi!==null&&radioTelemetry.rssi>=-65))return 60*1024;
  return 48*1024;
 }
+function updateLRQuickControl(){
+ const toggle=$('lrForceToggle'),rate=$('lrRateSelect'),row=$('lrRateRow'),status=$('lrTestStatus');
+ if(!toggle||!rate||!row||!status)return;
+ const force=linkPreference==='lr500'||linkPreference==='lr250';
+ toggle.checked=force;
+ row.hidden=!force;
+ rate.value=force?linkPreference:lastManualLR;
+ const desired=linkPreference==='lr250'?0.25:0.5;
+ const desiredLabel=linkPreference==='lr250'?'250':'500';
+ status.className='lr-test-status';
+ if(!verified){
+   status.textContent=force?`Manual LR ${desiredLabel} Kbps queued · connect ESP32`:'Auto mode · connect an ESP32';
+   return;
+ }
+ if(lrControlError){status.textContent=lrControlError;status.classList.add('is-error');return;}
+ if(!radioTelemetry.available){
+   status.textContent=force?'Sending LR request · waiting for radio telemetry':'Auto selected · waiting for radio telemetry';
+   return;
+ }
+ if(!force){
+   status.textContent=`Auto selected · current PHY ${radioTelemetry.phy<1?radioTelemetry.phy*1000+' Kbps':radioTelemetry.phy+' Mbps'}`;
+   return;
+ }
+ const modeConfirmed=radioTelemetry.mode===linkPreference.toUpperCase();
+ const rateConfirmed=Math.abs(radioTelemetry.phy-desired)<0.001;
+ if(modeConfirmed&&rateConfirmed){
+   status.textContent=`Confirmed by ESP32 · LR ${desiredLabel} Kbps${radioTelemetry.rssi!==null?' · '+radioTelemetry.rssi+' dBm':''}`;
+   status.classList.add('is-confirmed');
+ }else if(modeConfirmed){
+   status.textContent=radioTelemetry.peer==='BROADCAST'||radioTelemetry.peer==='NONE'
+     ?`LR ${desiredLabel} requested · waiting for peer discovery`
+     :`LR ${desiredLabel} requested · waiting for PHY switch (currently ${radioTelemetry.phy} Mbps)`;
+ }else{
+   status.textContent=`LR ${desiredLabel} requested · waiting for ESP32 confirmation`;
+ }
+}
+async function applyRadioPreference(mode){
+ if(!['auto','range','speed','lr500','lr250'].includes(mode))return;
+ linkPreference=mode;
+ if(mode==='lr500'||mode==='lr250')lastManualLR=mode;
+ lrControlError='';
+ try{
+  localStorage.setItem('offgrid_link_preference',mode);
+  localStorage.setItem('offgrid_last_manual_lr',lastManualLR);
+ }catch{}
+ updateLinkBadge();
+ if(!verified)return;
+ try{
+   await writeLine('RATE '+mode.toUpperCase());
+   // Both commands enter the existing serial command queue in order.
+   await writeLine('STATUS');
+ }catch(e){
+   lrControlError='Cannot apply rate: '+e.message;
+   updateLRQuickControl();
+   toast(lrControlError);
+ }
+}
 function updateLinkBadge(){
  const node=$('linkModeLabel');if(!node)return;
  const speed=chosenWindow({kind:'image',control:false}),budget=Math.round(photoBudget()/1024);
  const name=linkPreference==='auto'?'Auto compression':linkPreference==='range'?'Smaller photos':linkPreference==='lr500'?'Long Range 500':linkPreference==='lr250'?'Long Range 250':'Higher-quality photos';
  let quality='learning';
  if(linkStats.samples>3)quality=linkStats.mode==='strong'?'strong':linkStats.mode==='weak'?'weak':'steady';
- const phy=radioTelemetry.available?`${radioTelemetry.phy<1?'LR ': 'adaptive '}${radioTelemetry.phy} Mbps PHY`:'radio discovery starting';
+ const phy=radioTelemetry.available?(radioTelemetry.phy<1?`LR ${Math.round(radioTelemetry.phy*1000)} Kbps PHY`:`adaptive ${radioTelemetry.phy} Mbps PHY`):'radio discovery starting';
  const signal=radioTelemetry.available&&radioTelemetry.rssi!==null?`${radioTelemetry.rssi} dBm`:'signal —';
  node.textContent=`${name} · ${phy} · ${signal} · ${selectivePhotoAcks&&speedDiagnostics.sackCapable&&adaptivePhotos?"batch ACK":"legacy ACK"} · photo window ${speed} · ~${budget} KB${photoFlow.samples?` · ACK ${Math.round(photoFlow.emaMs)} ms`:``}${linkStats.lastKBs?` · ${linkStats.lastKBs.toFixed(1)} KB/s`:``}`;
  node.title=`ESP-NOW peer: ${radioTelemetry.peer}. TX successful: ${radioTelemetry.txok}, TX failures: ${radioTelemetry.txfail}, received: ${radioTelemetry.rx}, discovery beacons received: ${radioTelemetry.hello}. Reported PHY rate is not actual file throughput.`;
+ updateLRQuickControl();
 }
 function recordLinkResult(rtt,attempts,isPhoto=false){
  if(isPhoto)photoFlow.success(rtt,attempts);
@@ -698,8 +758,8 @@ function parseLine(raw){const s=raw.trim();if(!s)return;
   }
   return;
  }
- if(s.startsWith('RATE_ERROR|')){console.warn('Radio PHY configuration:',s);toast('ESP32 PHY rate could not be applied; falling back to safe rate.');return;}
- if(s.startsWith('RATE|')||s.startsWith('PEER|'))return;
+ if(s.startsWith('RATE_ERROR|')){console.warn('Radio PHY configuration:',s);lrControlError='Radio rejected rate: '+s.slice('RATE_ERROR|'.length);updateLRQuickControl();toast('ESP32 PHY rate could not be applied; see Force Long Range status.');return;}
+ if(s.startsWith('RATE|')||s.startsWith('PEER|')){if(s.startsWith('RATE|'))lrControlError='';return;}
  if(s.startsWith('READY|')){const parts=s.split('|');speedDiagnostics.capable=parts.includes('DIAG=1');speedDiagnostics.sackCapable=parts.includes('SACK=1');if(!parts.includes('PROTO=2')||!parts.includes('CAP=180')||!parts.includes('STABLE=1')||!parts.includes('NVSKEY=1')){if(!firmwareMismatchNotified){toast('Wrong ESP32 firmware protocol; open Diagnostics to see its READY response.');firmwareMismatchNotified=true;}showUsbHint('Incompatible READY. Expected PROTO=2, CAP=180, STABLE=1, NVSKEY=1, LR=1.');console.warn('Incompatible firmware READY:',s);return;}const mac=parts[1];if(!/^[0-9A-Fa-f:]{17}$/.test(mac))return;if(!parts.includes('LR=1'))toast('ESP32 Wi-Fi driver did not enable Long Range; normal messaging remains available.');if(verified&&localMac===mac)return;void onReady(mac);return;}
  if(s.startsWith('QUEUED|')){const [,session,id,hex]=s.split('|'),slot=radioByHex.get(hex);if(slot){slot.wire=`${session}:${id}`;radioByWire.set(slot.wire,slot);}return;}
  if(s.startsWith('RX|')){const [,mac,session,id,data]=s.split('|');if(mac&&session&&id&&data)void processRx(mac,session,id,data);return;}
@@ -835,10 +895,10 @@ function showRename(){showDialog('Contact name',body=>{body.append(el('p','','Th
 async function clearHistory(){if(!verified||!secretKey)return;if(runningTransfers||pendingRadio()||transferQueue.length){toast('Finish active transfers before clearing history.');return;}if(!confirm('Delete encrypted chat history for this ESP32 from this browser? This cannot be undone.'))return;
  await wipeStored();records=[];recordMap.clear();revokePhotos();renderHistory();toast('Local chat history cleared.');closeDialog();}
 function showInfo(){showDialog('Chat information',body=>{[['Contact',activeContact],['Your ESP32',localMac||'Disconnected'],['Protocol','ESP-NOW firmware protocol 2 / encrypted app protocol OGM4'],['Security',secretKey?'AES-256-GCM, 256-bit random shared key':'Not paired'],['Photo target',`${Math.round(photoBudget()/1024)} KB optimized, 96 KB absolute`],['Radio PHY',radioTelemetry.available?`${radioTelemetry.phy} Mbps TX, RSSI ${radioTelemetry.rssi===null?'unknown':radioTelemetry.rssi+' dBm'}`:'Waiting for telemetry'],['Link profile',`${linkPreference}; adaptive PHY; photo window ${chosenWindow({kind:'image',control:false})}; auto ${adaptivePhotos?'on':'off'}`],['Key storage','ESP32 NVS, browser RAM only'],['History','AES-GCM encrypted IndexedDB']].forEach(([a,b])=>{const line=el('div','info-line');line.append(el('span','',a),el('strong','',b));body.append(line);});body.append(el('p','','Grey single tick = transmitted; grey double tick = peer decrypted and confirmed; blue double tick = peer app reported it was viewed. Browser history is stored encrypted at rest.'));});}
-function showSettings(){showDialog('Settings',body=>{body.append(el('p','','Experimental Phase 1.4.11: Espressif LR 500/250 kbps with existing 1/6/12 Mbps adaptive modes. 1.4.10.2 remains the frozen baseline. Test text before photos.'));
+function showSettings(){showDialog('Settings',body=>{body.append(el('p','','Experimental Phase 1.4.11.1: Espressif LR 500/250 kbps with existing 1/6/12 Mbps adaptive modes. 1.4.10.2 remains the frozen baseline. Test text before photos.'));
  const linkLabel=el('label','','Transfer profile');body.append(linkLabel);const linkSelect=document.createElement('select');linkSelect.className='setting-select';
- [['auto','Auto · 12 / 6 / 1 Mbps, LR500 / LR250 when weak'],['range','Standard 1 Mbps · conservative non-LR'],['speed','Speed first · prefer faster radio rates'],['lr500','Manual LR 500 kbps · outdoor distance test'],['lr250','Manual LR 250 kbps · maximum sensitivity test']].forEach(([v,t])=>{const opt=document.createElement('option');opt.value=v;opt.textContent=t;linkSelect.append(opt);});
- linkSelect.value=linkPreference;linkSelect.onchange=()=>{linkPreference=linkSelect.value;try{localStorage.setItem('offgrid_link_preference',linkPreference);}catch{}if(verified)void writeLine('RATE '+linkPreference.toUpperCase()).catch(()=>{});updateLinkBadge();};body.append(linkSelect);
+ [['auto','Auto · 12 / 6 / 1 Mbps, LR500 / LR250 when weak'],['range','Standard 1 Mbps · conservative non-LR'],['speed','Speed first · prefer faster radio rates'],['lr500','Manual LR 500 kbps · test nearby or outdoors'],['lr250','Manual LR 250 kbps · test nearby or outdoors']].forEach(([v,t])=>{const opt=document.createElement('option');opt.value=v;opt.textContent=t;linkSelect.append(opt);});
+ linkSelect.value=linkPreference;linkSelect.onchange=()=>{void applyRadioPreference(linkSelect.value);};body.append(linkSelect);
  const flowLabel=el('label','','Photo transfer throughput');body.append(flowLabel);const flowSelect=document.createElement('select');flowSelect.className='setting-select';
  [['on','Automatic · up to 6 in-flight batch fragments on strong links'],['off','Stable · legacy one-fragment transfer (instant rollback)']].forEach(([v,t])=>{const opt=document.createElement('option');opt.value=v;opt.textContent=t;flowSelect.append(opt);});
  flowSelect.value=adaptivePhotos?'on':'off';flowSelect.onchange=()=>{adaptivePhotos=flowSelect.value==='on';try{localStorage.setItem('offgrid_adaptive_photos',adaptivePhotos?'on':'off');}catch{}updateLinkBadge();};body.append(flowSelect);
@@ -853,12 +913,18 @@ function showSettings(){showDialog('Settings',body=>{body.append(el('p','','Expe
  body.append(el('p','','Batch ACK requires 1.4.10.3 firmware on both boards and the new web app on both browsers. It only applies to NEW photo sends. Set Legacy before sending a photo to revert without flashing. Ordinary text, read/delivery receipts and encryption stay unchanged.'));
  body.append(el('p','','Photo batching is isolated from text messaging and blue ticks. If transfers regress, disable Selective batch ACK or switch Photo transfer throughput to Stable. A full image is Delivered only after the receiver authenticates its AES-GCM payload.'));
 
- body.append(el('p','','Link quality comes from real browser acknowledgments and ESP32 RSSI, not distance. 1 Mbps broadcast discovers nearby nodes; saved peer MAC enables LR recovery probes if a link becomes unreachable at normal rates. Automatic PHY adapts using RSSI and retries; manual LR500/LR250 are for outdoor testing. Both boards need Phase 1.4.11 firmware. Text/receipts keep the same encryption and acknowledgment protocol.')); 
+ body.append(el('p','','Link quality comes from real browser acknowledgments and ESP32 RSSI, not distance. 1 Mbps broadcast discovers nearby nodes; saved peer MAC enables LR recovery probes if a link becomes unreachable at normal rates. Automatic PHY adapts using RSSI and retries; manual LR500/LR250 also work for close-range testing. Both boards need Phase 1.4.11 firmware. Text/receipts keep the same encryption and acknowledgment protocol.')); 
  const modeLabel=el('label','','Image optimization');body.append(modeLabel);const select=document.createElement('select');select.className='setting-select';
  [['hq','Optimized WebP/JPEG (adaptive 32–60 KB target, may resize)'],['lossless','Lossless PNG + metadata stripping (reject if >96 KB)']].forEach(([v,t])=>{const opt=document.createElement('option');opt.value=v;opt.textContent=t;select.append(opt);});select.value=imageMode;select.onchange=()=>{imageMode=select.value;try{localStorage.setItem('offgrid_image_mode',imageMode);}catch{}updateLinkBadge();};body.append(select);
  body.append(el('p','','Metadata stripping does not make photos tiny. High-quality mode can reduce dimensions and introduce slight loss; lossless PNG keeps the canvas pixels exact but may not fit through this radio link.'));
  const buttons=el('div','settings-actions'),rename=el('button','quiet-button','Rename contact'),key=el('button','quiet-button','Node pairing key'),diagnostics=el('button','quiet-button','USB diagnostics'),speedTest=el('button','primary-button','Speed diagnostics'),clear=el('button','soft-button','Clear history');rename.onclick=showRename;key.onclick=showPairing;diagnostics.onclick=diagnoseUsb;speedTest.onclick=showSpeedDiagnostics;clear.onclick=()=>void clearHistory();buttons.append(speedTest,rename,key,diagnostics,clear);body.append(buttons);
  });}
+$('lrForceToggle').addEventListener('change',event=>{
+  void applyRadioPreference(event.target.checked?lastManualLR:'auto');
+});
+$('lrRateSelect').addEventListener('change',event=>{
+  if(event.target.value==='lr500'||event.target.value==='lr250')void applyRadioPreference(event.target.value);
+});
 $('viewerClose').onclick=closePhotoViewer;
 $('viewerPrevious').onclick=()=>navigatePhoto(-1);
 $('viewerNext').onclick=()=>navigatePhoto(1);
@@ -880,7 +946,8 @@ $('connectButton').onclick=()=>void connect();$('disconnectButton').onclick=()=>
 $('messageInput').addEventListener('input',updateByteCount);$('messageInput').addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();void sendText();}});
 $('attachments').onclick=()=>$('photoPicker').click();$('photoPicker').addEventListener('change',e=>{if(e.target.files?.length)void sendPhoto(e.target.files[0]);});
 $('securityButton').onclick=showPairing;$('renameButton').onclick=showRename;$('settingsButton').onclick=showSettings;$('infoButton').onclick=showInfo;
-$('themeToggle').onclick=()=>{theme=theme==='dark'?'light':'dark';document.body.classList.toggle('light',theme==='light');try{localStorage.setItem('offgrid_theme',theme);}catch{}};
+$('themeToggle').onclick=()=>{theme=theme==='dark'?'light':'dark';try{const saved=localStorage.getItem('offgrid_last_manual_lr');if(saved==='lr500'||saved==='lr250')lastManualLR=saved;}catch{}
+document.body.classList.toggle('light',theme==='light');try{localStorage.setItem('offgrid_theme',theme);}catch{}};
 $('contactButton').onclick=()=>{document.body.classList.add('mobile-chat');scrollToNewest(true);sendReadReceipts();};$('mobileBack').onclick=()=>document.body.classList.remove('mobile-chat');
 $('closeModal').onclick=closeDialog;$('modalBackdrop').onclick=e=>{if(e.target===$('modalBackdrop'))closeDialog();};document.addEventListener('keydown',e=>{if(e.key==='Escape')closeDialog();});
 document.addEventListener('visibilitychange',sendReadReceipts);window.addEventListener('focus',sendReadReceipts);

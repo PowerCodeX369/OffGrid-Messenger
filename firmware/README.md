@@ -1,3 +1,35 @@
+# OffGrid Messenger — Phase 1.4.11.1 Manual LR Quick Switch
+
+**Web-only UI patch on top of the experimental 1.4.11 LongRange build.** No ESP32 reflash is needed if both boards already run 1.4.11 LR firmware. The firmware, encrypted protocol, Web Serial, selective ACK, photo gallery, auto-scroll, and message code remain untouched.
+
+## Testing LR on your one laptop
+
+1. Power both ESP32-C3 Super Minis over USB and start the local server with `python3 -m http.server 8765 --directory web`.
+2. In Chromium, open `http://localhost:8765/?v=1.4.11.1` in two tabs; each tab connects to a different board.
+3. Send a normal message with both set to Auto. This confirms peer discovery before forced-rate testing.
+4. In **each tab**, turn on **Force Long Range** below the radio-link badge.
+5. Select **500 Kbps** on both. Wait until the live status reads `Confirmed by ESP32 · LR 500 Kbps`. Send five texts in each direction and confirm delivery/seen receipts.
+6. Select **250 Kbps** on both. Verify `Confirmed by ESP32 · LR 250 Kbps` on each; repeat the message tests.
+7. Turn both switches **off** to return to **Auto**.
+
+Both boards may remain close, even on the same laptop. Manual LR is a radio mode, not a proximity-triggered feature. A close-range test confirms mode selection, protocol interoperability and receipts, but it does **not** verify long-distance reliability or maximum range.
+
+## Status messages
+
+- `Confirmed by ESP32 · LR 500 Kbps`: firmware LINK telemetry reports MODE=LR500 and PHY=0.5.
+- `Confirmed by ESP32 · LR 250 Kbps`: firmware reports MODE=LR250 and PHY=0.25.
+- `waiting for peer discovery`: local node has not learned the other board's MAC.
+- `waiting for PHY switch`: requested manual mode, but PHY telemetry has not confirmed it.
+- `Radio rejected rate`: firmware replied RATE_ERROR; check the firmware and its diagnostics.
+
+The switch affects **only the USB-connected ESP32**. To exchange messages with manual LR consistently, set the desired speed separately in both browser tabs. When a node reconnects, the browser reapplies its selected mode. The existing Settings → Transfer profile selector remains available and stays in sync with the quick switch.
+
+## Preservation and safety
+
+The official stable baseline stays **1.4.10.2 InterruptUSB**. This is a separate experimental LR patch. 1.4.11 is not claimed hardware-verified, and this UI patch has no new radio firmware. Keys are still held in ESP32 NVS and imported into browser memory over USB. The actual LR-mode confirmation must come from physical ESP32 telemetry.
+
+---
+
 # OffGrid Messenger — Phase 1.4.11 (Experimental ESP-NOW Long Range)
 
 **Hardware:** two ESP32-C3 Super Minis, one laptop, USB-C cables. **Firmware:** ESP-IDF 5.2+ (ESP32-C3 target) in VS Code. **Web app:** local Chromium Web Serial. **No LoRa radio, Wi-Fi AP, router, cloud server, or GPS required.**
