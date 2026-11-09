@@ -1,17 +1,21 @@
-# Phase 1.5 validation record
+# Phase 1.5.1 validation record
 
-**Origin:** exact copy of 1.4.11 LongRange. 1.4.11.1/1.4.11.2 test-only branches not included. The frozen 1.4.11 source files were not modified.
+**Source**: byte-for-byte firmware copy of working Phase 1.5 (`main/` unchanged), originally based on official stable Phase 1.4.11. No ManualLR / RFTest code included. The `web/` source adds the 120-second recording limit and authenticated `played` receipt type.
 
-**Verified in container:**
+## Automated tests
 
-- Inspected current official Espressif ESP-NOW and Wi-Fi LR documentation and current MDN MediaRecorder docs.
-- Host-side GCC C syntax checked with provided ESP-IDF stubs in both IRQ and legacy USB configurations. These stubs are NOT full ESP-IDF.
-- Pure C link-policy tests: RSSI alone not sufficient for promotion, 3 confirmations needed, freshness, cooldown and failed-upgrade hold, one-step upgrade, correct 12→6→1→500→250 fallback.
-- Standalone AES-GCM voice encoding, audio data length, duration, 160-byte fragmentation/reassembly, wrong-tag rejection, and three allowed audio containers.
-- Existing encryption, photo selective-ACK, USB output and IDF watchdog regression tests.
-- Real headless Chromium interface with a **mock MediaRecorder** at 1100 px and 390 px: start, stop, microphone release, voice preview/audio controls and queued message. Real microphone was not available for testing.
-- Existing Chromium auto-scroll test passed.
+- Node WebCrypto AES-256-GCM: 12/105/120-second voice durations (including >65535-ms metadata), 32 KiB/250000 B/384 KiB payloads across three codecs, chunk reassembly, tamper rejection, correct played receipt type, and compatibility with original 30-second Phase 1.5 notes.
+- Headless Chromium at 1100 px and 390 px: start/stop/cancel capture (mock MediaRecorder), 120-second simulated recording acceptance, `playing` event (not `play`) triggers local blue mic and one receipt, sender preview cannot falsely mark remote play, authenticated-style receipt marks sender icon, state persisted in encrypted record payload, old ticks unaffected, and no browser exceptions.
+- Original 1.5 firmware, AES, photo, auto-scroll, radio rate, USB, watchdog, and selective-ACK regression suite.
+- ZIP integrity and SHA-256 comparison of unchanged firmware against 1.5.
 
-**Not verified:** real 5.x ESP-IDF compilation, hardware LR fallback and recovery, real microphone codec interoperability, two-board voice sending throughput, actual open-field range, maximum voice bitrate.
+## Limitations
 
-**Do not treat simulated policy tests as proof that any particular physical distance will work.**
+Automated browser events are simulated. **No actual ESP32 radio, physical microphone, 2-minute real-Opus capture, or ESP-IDF compiler is available in this runtime.** An encoded voice note exceeding 384 KiB is rejected rather than truncated. `played` signifies audio playback started; it does not prove the entire recording was listened to. Both web tabs must run Phase 1.5.1 to exchange the new receipt.
+
+## API documentation
+
+- Media `playing` event: https://developer.mozilla.org/en-US/docs/Web/API/HTMLMediaElement/playing_event
+- Media `play` event: https://developer.mozilla.org/en-US/docs/Web/API/HTMLMediaElement/play_event
+- MediaRecorder capture: https://developer.mozilla.org/en-US/docs/Web/API/MediaRecorder/start
+- ESP-NOW application-level receipts: https://docs.espressif.com/projects/esp-idf/en/latest/esp32c3/api-reference/network/esp_now.html

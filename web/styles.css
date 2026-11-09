@@ -204,3 +204,11 @@ body.viewer-open{overflow:hidden}
 
 /* Long settings and diagnostics remain keyboard/scroll accessible at desktop heights. */
 .modal{max-height:min(90dvh,900px);overflow-y:auto;overscroll-behavior:contain}
+
+/* Phase 1.5.1: a voice note is played only on actual audio playback.
+ * The mic is independent from delivered/read message ticks. */
+.voice-played-icon{display:inline-flex;flex:none;align-items:center;justify-content:center;
+ width:20px;height:24px;color:#9cabb0;transition:color .2s ease;opacity:.96}
+.voice-played-icon.played{color:#53bdeb}
+body.light .voice-played-icon{color:#87969c}
+body.light .voice-played-icon.played{color:#168bd5}
