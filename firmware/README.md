@@ -1,114 +1,96 @@
-# Phase 1.1.1 browser compatibility fix
+# OffGrid Messenger — Phase 1.2
 
-**Issue fixed:** On one browser tab, a cached Phase 1 `app.js` could load with the new Phase 1.1 HTML. That old script renders session/id/hex as raw chat text and never sends `APPACK`, causing all outgoing messages to fail. The HTML now includes a versioned JavaScript URL, visibly identifies the web build, and blocks sending until the board reports `PROTO=2`. The browser retries `STATUS` until it receives that response.
+Professional, responsive offline web chat. Firmware runs on **two ESP32-C3 Super Mini** boards using **ESP-IDF**. Desktop browsers connect to each board using **USB Web Serial**; the boards communicate using **ESP-NOW on channel 6**. No router, internet access, or extra radio is required.
 
-## Upgrade steps
+## Important safety and feature boundaries
 
-1. Close **both** previous chat tabs and stop the old `python3 -m http.server` process.
-2. Extract this ZIP into a **new** folder; run `python3 -m http.server 8765 --directory web` from its project root.
-3. In Chrome/Chromium open `http://localhost:8765/?v=1.1.1` in two separate tabs. Force-refresh **both** using Ctrl+Shift+R.
-4. Plug in both boards, click Connect USB in each tab and select different serial ports.
-5. Wait until **both** show `Connected • MAC • channel 6 • protocol 2`, and `Your board` displays the actual MAC address. Do **not** send messages while the page says checking firmware or waiting for ESP32.
-6. Send 'yes' from the left and 'hello' from the right. Both should show readable text and two gray ticks after the remote browser confirms.
-7. If any page still displays `session|id|HEX` instead of the message, check DevTools > Network and verify that `app.js?v=1.1.1-fix-20261107` is loaded, not cached Phase 1 `app.js`.
+**Phase 1.2 is an UNENCRYPTED TEST BUILD.** Do not transmit private or sensitive information. AES-256-GCM end-to-end encryption, persistent chat history, file transfer, voice notes, GPS and the Android BLE app belong to later phases. This web-only phase requires both browser clients to remain open for end-to-end delivery receipts and read receipts. Read receipts are *best effort* and not persisted if a client disconnects.
 
-Both ESP32 boards must be running the **same Phase 1.1 protocol 2 firmware**. If they already are, you can **skip reflashing**: only the browser files need replacement. If one page reports a firmware protocol mismatch, reflash that ESP32 with the `main/` firmware in this ZIP.
+## What is new in 1.2
 
-This is test-only firmware; messages are **not encrypted**. Sender `SENT` means accepted by the radio API, not delivered to the person. `DELIVERED` confirms receipt by the remote browser. The recipient must have the browser tab connected for a delivery receipt.
+- Modern messaging UI: sidebar, responsive chat, mobile-width navigation, message bubbles, timestamps, contact naming, dark/light mode, connection status, 180-byte UTF-8 length meter, failure states.
+- **Single tick** = sender ESP32 submitted message for ESP-NOW transmission.
+- **Double grey tick** = recipient *browser* displayed the text and sent `APPACK`; originating ESP32 received its delivery ACK.
+- **Double blue tick** = recipient browser had chat visible and focused, then sent `READ` back across ESP-NOW, and sender browser received it.
+- Retries, duplicate protection and sender IDs preserved from Phase 1.1.
+- Both boards use the SAME firmware; each has its own hardware MAC and random boot session.
 
----
+**A focused browser is required for blue ticks.** If you have two tabs in the same Chromium window, only the active tab is normally focused. To test blue ticks, select the receiving tab *after* sending a message. To view both clients simultaneously, open two separate browser windows side by side and click the receiving one to mark as read.
 
-# OffGrid Messenger — Phase 1.1 (reliable text transport)
+## Build / flash
 
-**Hardware:** two ESP32-C3 Super Mini boards connected via USB-C to one laptop.  
-**Firmware:** ESP-IDF 5.x (VS Code ESP-IDF extension).  
-**Web:** Chrome/Chromium with Web Serial, two tabs, one per board.
+1. Open this project directory in **VS Code** with the **Espressif IDF** extension (ESP-IDF 5.x recommended).
+2. Select target **esp32c3**.
+3. Build and flash **Board A**.
+4. Unplug, attach **Board B**, then flash exactly the same firmware.
+5. Power both via two USB-C cables connected to the laptop.
+6. Expect `READY|<MAC>|CHANNEL=6|SESSION=<number>|PROTO=2` on each board. The browser queries `STATUS` if it misses this initial line.
 
-## Changes from Phase 1
+CLI equivalents (with the ESP-IDF environment initialized):
 
-- Unique IDs per message, plus a random session ID on each ESP32 boot.
-- Seven transmission attempts separated by about 850 ms (approx. 5–7 seconds to conclude failure).
-- Receiver-side duplicate history (24 entries) to prevent retries appearing as new messages.
-- **Browser-confirmed delivery:** the receiving web app sends `APPACK` back over USB; the receiving ESP32 sends a unicast receipt back to the sender. The sender only shows double checkmarks when that receipt arrives.
-- Short 65 ms gap between radio sends, limited outgoing queue (8 messages), clear queue-full/failure signals.
-- Automatic `STATUS` command on connection, so opening a browser *after* ESP32 startup still works.
-- Message bodies transported over USB as UTF-8 bytes encoded in HEX, preventing `|` or newline from breaking the serial protocol.
-
-This is **not encrypted** yet. Phase 1.1 is strictly for test messages and is neither private nor authenticated. Read receipts (blue ticks) are NOT part of this phase. One tick is **radio transmission queued**, not proof the peer received it. Two ticks mean the remote browser confirmed receiving the message, subject to the limitations of an unencrypted test protocol.
-
-## IMPORTANT: flash both boards
-
-The Phase 1.1 packet format is intentionally incompatible with Phase 1. Both boards **must** be flashed with this new firmware. Keep the two boards on the same Wi-Fi channel 6.
-
-1. Extract ZIP to a fresh directory.
-2. VS Code → Open Folder → `OffGridMessenger_Phase1_1`.
-3. Open ESP-IDF extension, configure toolchain and set target `esp32c3`.
-4. Build and flash board A. Repeat for board B using the *same* firmware.
-5. Disconnect ESP-IDF serial monitors before opening Web Serial (only one client can use a USB serial port at a time).
-6. Connect both boards by USB to your one laptop.
-
-CLI alternative if ESP-IDF CLI environment is activated:
-
-```sh
+```bash
 idf.py set-target esp32c3
 idf.py build
 idf.py -p /dev/ttyACM0 flash
-# Flash second board (check actual device path)
-idf.py -p /dev/ttyACM1 flash
 ```
 
-## Start the browser
+When flashing the second board, select its actual port as appropriate. On Linux, permissions may require membership in `dialout` (or your distribution's equivalent group). Close any serial monitor before connecting a browser tab.
 
-From the extracted project's root:
+**Both boards MUST run this 1.2 firmware for genuine blue read receipts.** Older 1.1.1 boards can still process normal messages, but they do not understand the new read-receipt frame.
 
-```sh
+## Run web app
+
+With both ESP32 nodes connected via USB, launch from **this project folder**:
+
+```bash
 python3 -m http.server 8765 --directory web
 ```
 
-In Chrome/Chromium, open **two separate tabs** with `http://localhost:8765`.
+Open `http://localhost:8765/?v=1.2.0` in **Chromium / Chrome** and open a second tab or window at the same address. In each, click **Connect ESP32**, then pick a different USB serial device (do not select the same board in both). The app uses Web Serial, which needs a supported browser in a secure context (localhost is supported). No internet requests, remote CSS libraries, or cloud dependencies are present.
 
-1. Connect tab A to ESP32 A using **Connect USB**.
-2. Connect tab B to ESP32 B using **Connect USB**.
-3. Each tab should show its own MAC address and channel 6.
-4. Send a message from A. See `◷ Sending` → `◷ Queued` → `✓ Sent` → `✓✓ Delivered`.
-5. Verify it appears **once** in tab B, even if the transmitter retransmitted.
-6. Try the reverse direction.
+## Acceptance checks
 
-### Reliability test
+1. Both browser clients show **Connected**, unique MAC addresses, channel 6, protocol 2.
+2. From A, send `Hello from A` to B. It should display at B, then show **double grey tick** at A.
+3. Click/focus B's chat tab or window. A should switch to **double blue tick**.
+4. Reverse B → A; verify both receipt states.
+5. Send the same text 3 times quickly. Each must appear exactly 3 times, not 1 or 9 times.
+6. Disable/disconnect B's browser. Messages from A should ultimately show **Failed** rather than falsely show Delivered.
+7. Rename the contact in the chat header (pencil icon). Reload and verify its display name remains.
+8. Switch theme; inspect layout at mobile-sized window. Theme/name persist in localStorage, but messages do not.
 
-- Send 20 messages one at a time in each direction and check for `✓✓ Delivered`.
-- Disconnect tab B, then send a message from tab A. It should ultimately show `! Failed`, not a false double-check mark. Reconnecting B while retries remain may allow delivery.
-- Reconnect B and resend a *new* message. It should deliver.
-- Keep test messages short (max **180 UTF-8 bytes**, not characters). Arabic and emojis take multiple bytes.
+## Why there are no unread counters yet
 
-## Serial protocol (for debugging)
+There is only one peer in this two-node prototype; conversation persistence and a multi-contact model are deferred to Phase 1.3. Blue ticks are already genuine, but there is no read-receipt queue across disconnected clients; such persistence will be addressed in later stages.
 
-From browser to board:
+## Protocol (v2)
 
-- `STATUS` — prints readiness, MAC and session ID.
-- `MSGHEX 48656C6C6F` — sends `Hello` as UTF-8 bytes.
-- `MSG Hello` — console debugging shortcut (ASCII or UTF-8 through terminal).
-- `APPACK AA:BB:CC:DD:EE:FF 123456 7` — confirms to ESP32 that the browser received a particular message.
+Browser → ESP32 USB serial:
 
-From board to browser:
+- `STATUS`
+- `MSGHEX <UTF8_HEX>`
+- `APPACK <SENDER_MAC> <SESSION> <ID>` — browser received text
+- `READ <SENDER_MAC> <SESSION> <ID>` — browser viewed chat
 
-- `READY|MAC|CHANNEL=6|SESSION=NNN|PROTO=2`
-- `QUEUED|SESSION|ID|HEX` — accepted into outgoing queue.
-- `SENT|SESSION|ID` — ESP-NOW accepted the send call locally.
-- `RETRY|SESSION|ID|ATTEMPT` — automatic retransmission.
-- `RX|MAC|SESSION|ID|HEX` — received and forwarded to browser; browser auto-acknowledges.
-- `DELIVERED|SESSION|ID` — receipt confirmed from recipient browser.
-- `FAILED|SESSION|ID|NO_APP_RECEIPT` — retries exhausted.
-- `ERROR|...` — malformed input or full queue.
+ESP32 → Browser USB serial:
 
-## Limitations and next stages
+- `READY|<MAC>|CHANNEL=6|SESSION=<BOOT_SESSION>|PROTO=2`
+- `QUEUED|<SESSION>|<ID>|<HEX>`
+- `SENT|<SESSION>|<ID>`
+- `RX|<SENDER_MAC>|<SESSION>|<ID>|<HEX>`
+- `DELIVERED|<SESSION>|<ID>`
+- `READ|<SESSION>|<ID>`
+- `FAILED|<SESSION>|<ID>|<REASON>`
+- `ERROR|<CODE>`
 
-- Phase 1.1 still uses ESP-NOW broadcast for data to support zero-configuration discovery, while receipts use unicast to the sender learned from received frames. The next stages can add paired unicast data, encryption, and peer authentication.
-- If both browser tabs share the same physical board, messages cannot travel between two separate nodes: connect each tab to a different ESP32.
-- Browser chat history is temporary. A browser reload clears the view; persistence is planned for Phase 1.3.
-- App ACK means the browser script processed the message, **not** that a human opened/read the chat. Read receipts will be added later.
-- If the receiving browser is closed, the board cannot generate genuine browser acknowledgments. Packets are not durably stored by ESP32; failed messages must be manually resent.
-- Receiver duplicate memory is bounded (24 entries) and reset on boot. This is adequate for sequential Phase 1.1 testing, not yet a production-grade exactly-once system.
-- Broadcast traffic is unencrypted and unauthenticated. Do NOT send sensitive content or locations yet.
-- No BLE, Android, GPS, voice, or professional chat UI in this milestone, intentionally.
-- Not compiled or flashed in this delivery environment: build it with your locally installed ESP-IDF. JavaScript syntax and ZIP contents were checked.
+Radio frames: protocol 2 magic `OGM2`, types `TEXT=1`, `DELIVERY_RECEIPT=2`, `READ=3`. This is unauthenticated and unencrypted during testing. A malicious nearby actor could forge frames; **do not use for sensitive information**.
+
+## Troubleshooting
+
+- Browser says unsupported: use a current Chrome/Chromium, not Firefox; open `localhost` rather than `file://`.
+- USB busy: disconnect ESP-IDF Serial Monitor, Arduino Serial Monitor, or other application holding the port.
+- `READY` missing: ensure both boards were flashed with this project; disconnect/reconnect.
+- Grey ticks but no blue ticks: focus the **recipient** tab/window; blue requires the recipient to have an open, visible chat, then the sender's client must still be connected.
+- Delivered fails: close stale tabs, hard-refresh both pages, and make sure both nodes are powered and flashed.
+- Message disappears on refresh: by design for Phase 1.2; persistent history comes in Phase 1.3.
+- Duplicate chat messages after retries: should be suppressed with sender MAC + session + ID. If duplicates appear, capture the browser console and both devices' boot output.

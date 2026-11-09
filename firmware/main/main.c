@@ -1,4 +1,4 @@
-/* OffGrid Messenger Phase 1.1: ESP32-C3 ESP-IDF 5.x
+/* OffGrid Messenger Phase 1.2: ESP32-C3 ESP-IDF 5.x
  * Same firmware on both boards. Educational unencrypted transport.
  * USB browser acknowledgment determines DELIVERED; not merely radio send success.
  */
@@ -35,6 +35,7 @@
 #define PROTOCOL_VERSION 2
 #define TYPE_TEXT 1
 #define TYPE_RECEIPT 2
+#define TYPE_READ 3
 #define EVENT_QUEUE_LEN 32
 #define SERIAL_LINE 400
 
@@ -56,7 +57,7 @@ typedef struct __attribute__((packed)) {
     uint8_t text[MAX_TEXT];
 } frame_t;
 
-typedef enum { EV_RX = 1, EV_SEND, EV_APPACK, EV_STATUS } event_type_t;
+typedef enum { EV_RX = 1, EV_SEND, EV_APPACK, EV_STATUS, EV_READ } event_type_t;
 typedef struct {
     event_type_t type;
     uint8_t mac[6];
@@ -129,8 +130,8 @@ static void on_receive(const esp_now_recv_info_t *info,const uint8_t *data,int l
     frame_t *f=&ev.frame;
     if(f->magic!=PROTOCOL_MAGIC||f->version!=PROTOCOL_VERSION)return;
     if(f->length>MAX_TEXT||(size_t)len!=base+f->length)return;
-    if(f->type!=TYPE_TEXT&&f->type!=TYPE_RECEIPT)return;
-    if(f->type==TYPE_RECEIPT&&f->length!=0)return;
+    if(f->type!=TYPE_TEXT&&f->type!=TYPE_RECEIPT&&f->type!=TYPE_READ)return;
+    if((f->type==TYPE_RECEIPT||f->type==TYPE_READ)&&f->length!=0)return;
     if(memcmp(f->sender,ev.mac,6)!=0||memcmp(f->sender,own_mac,6)==0)return;
     (void)xQueueSend(event_queue,&ev,0); /* Wi-Fi callback must never block */
 }
@@ -179,6 +180,19 @@ static void process_event(const event_t *e) {
         print_hex(f->text,f->length);putchar('\n');
         return;
     }
+    if(e->type==EV_READ) {
+        /* Read receipts are separate from delivery ACKs, directed to sender node. */
+        if(!ensure_peer(e->mac)){puts("ERROR|READ_PEER");return;}
+        frame_t read_frame={0};
+        read_frame.magic=PROTOCOL_MAGIC;read_frame.version=PROTOCOL_VERSION;
+        read_frame.type=TYPE_READ;memcpy(read_frame.sender,own_mac,6);
+        read_frame.session=e->session;read_frame.id=e->id;
+        for(int n=0;n<3;n++) {
+            if(send_frame(e->mac,&read_frame)!=ESP_OK)puts("ERROR|READ_SEND");
+            vTaskDelay(pdMS_TO_TICKS(35));
+        }
+        return;
+    }
     if(e->type==EV_APPACK) {
         received_t *r=find_history(e->mac,e->session,e->id);
         if(!r){puts("ERROR|UNKNOWN_APPACK");return;}
@@ -188,6 +202,11 @@ static void process_event(const event_t *e) {
     }
     if(e->type!=EV_RX)return;
     const frame_t *f=&e->frame;
+    if(f->type==TYPE_READ) {
+        /* Sender browser decides whether this ID belongs to its outgoing chat. */
+        printf("READ|%" PRIu32 "|%" PRIu32 "\n",f->session,f->id);
+        return;
+    }
     if(f->type==TYPE_RECEIPT) {
         for(int i=0;i<MAX_PENDING;i++) {
             outgoing_t *o=&pending[i];
@@ -234,7 +253,7 @@ static void dispatcher(void *arg) {
 }
 static void serial_task(void *arg) {
     char line[SERIAL_LINE];size_t used=0;
-    puts("HELP|MSGHEX <UTF8-HEX>, STATUS, HELP, APPACK <MAC> <SESSION> <ID>");
+    puts("HELP|MSGHEX <UTF8-HEX>, STATUS, HELP, APPACK <MAC> <SESSION> <ID>, READ <MAC> <SESSION> <ID>");
     while(true) {
         int ch=getchar();
         if(ch==EOF){clearerr(stdin);vTaskDelay(pdMS_TO_TICKS(20));continue;}
@@ -256,8 +275,14 @@ static void serial_task(void *arg) {
                    session<=UINT32_MAX&&id<=UINT32_MAX&&parse_mac(mac_str,e.mac)) {
                     e.type=EV_APPACK;e.session=(uint32_t)session;e.id=(uint32_t)id;send=true;
                 }else puts("ERROR|BAD_APPACK");
+            }else if(strncmp(line,"READ ",5)==0) {
+                char mac_str[32],extra;unsigned long session,id;
+                if(sscanf(line+5,"%31s %lu %lu %c",mac_str,&session,&id,&extra)==3&&
+                   session<=UINT32_MAX&&id<=UINT32_MAX&&parse_mac(mac_str,e.mac)) {
+                    e.type=EV_READ;e.session=(uint32_t)session;e.id=(uint32_t)id;send=true;
+                }else puts("ERROR|BAD_READ");
             }else if(strcmp(line,"STATUS")==0) {e.type=EV_STATUS;send=true;}
-            else if(strcmp(line,"HELP")==0)puts("HELP|MSGHEX <UTF8-HEX>, MSG <text>, STATUS, APPACK <MAC> <SESSION> <ID>");
+            else if(strcmp(line,"HELP")==0)puts("HELP|MSGHEX <UTF8-HEX>, MSG <text>, STATUS, APPACK <MAC> <SESSION> <ID>, READ <MAC> <SESSION> <ID>");
             else if(used)puts("ERROR|UNKNOWN_COMMAND");
             if(send&&!xQueueSend(event_queue,&e,pdMS_TO_TICKS(100)))puts("ERROR|EVENT_QUEUE_FULL");
             used=0;
@@ -267,7 +292,7 @@ static void serial_task(void *arg) {
 }
 void app_main(void) {
     setvbuf(stdout,NULL,_IONBF,0);
-    puts("BOOT|OffGrid Messenger Phase 1.1 / protocol 2");
+    puts("BOOT|OffGrid Messenger Phase 1.2 / protocol 2");
     esp_err_t e=nvs_flash_init();
     if(e==ESP_ERR_NVS_NO_FREE_PAGES||e==ESP_ERR_NVS_NEW_VERSION_FOUND){ESP_ERROR_CHECK(nvs_flash_erase());e=nvs_flash_init();}
     ESP_ERROR_CHECK(e);
