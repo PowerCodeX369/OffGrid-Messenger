@@ -1,9 +1,9 @@
 'use strict';
-/* OffGrid Phase 1.4.1: responsive layout + adaptive reliable encrypted transport over unchanged ESP-NOW protocol 2.
+/* OffGrid Phase 1.4.2: adaptive peer PHY firmware with encrypted transport and in-app photo gallery.
    Keys are stored as non-extractable CryptoKey objects in IndexedDB. No external servers. */
 const P=globalThis.OGP,$=id=>document.getElementById(id);
 const MAX_CHARS=500,MAX_PHOTO=96*1024,STORE='OffGridMessengerV14';
-const APP_VERSION='1.4.1';
+const APP_VERSION='1.4.2';
 const stateRank={sending:0,queued:0,sent:1,failed:1,delivered:2,read:3};
 const encoder=new TextEncoder();
 let port=null,reader=null,writer=null,readPromise=null,closing=false,verified=false,serialBuffer='',writeChain=Promise.resolve(),handshakeTimer=null;
@@ -15,6 +15,8 @@ const linkStats={samples:0,avgMs:0,cleanStreak:0,retries:0,mode:'starting',windo
 let linkPreference='auto';
 let queuedReceipts=new Set(),pendingReads=new Set(),theme='dark';
 let imageMode='hq';
+let radioTelemetry={peer:'NONE',rssi:null,phy:1,mode:'AUTO',delivered:0,retries:0,failures:0,available:false};
+let selectedPhotoId=null,viewerZoomed=false,viewerTouchX=null,viewerPreviousFocus=null;
 try{theme=localStorage.getItem('offgrid_theme')==='light'?'light':'dark';imageMode=localStorage.getItem('offgrid_image_mode')==='lossless'?'lossless':'hq';linkPreference=['auto','range','speed'].includes(localStorage.getItem('offgrid_link_preference'))?localStorage.getItem('offgrid_link_preference'):'auto';}catch{}
 document.body.classList.toggle('light',theme==='light');
 const macKey=()=>localMac||'unknown';
@@ -62,8 +64,10 @@ function updateLinkBadge(){
  const name=linkPreference==='auto'?'Auto':linkPreference==='range'?'Range first':'Speed first';
  let quality='learning';
  if(linkStats.samples>3)quality=linkStats.mode==='strong'?'strong':linkStats.mode==='weak'?'weak':'steady';
- node.textContent=`${name} · ${quality} · ${speed} in flight · ~${budget} KB photos`;
- node.title='Estimated from delivery acknowledgments, not actual measured physical distance or RF data rate.';
+ const phy=radioTelemetry.available?`${radioTelemetry.phy} Mbps PHY`:'radio starting';
+ const signal=radioTelemetry.available&&radioTelemetry.rssi!==null?`${radioTelemetry.rssi} dBm`:'signal —';
+ node.textContent=`${name} · ${phy} · ${signal} · ${speed} in flight · ~${budget} KB photos`;
+ node.title='Reported TX PHY rate and received peer RSSI. Mbps is PHY bitrate, not photo transfer throughput. ACK/retry pacing is separately estimated by the web client.';
 }
 function recordLinkResult(rtt,attempts){
  linkStats.samples++;
@@ -110,7 +114,8 @@ function makeBubble(record,animate=true){
  if(record.kind==='image'){
    const img=document.createElement('img');img.className='chat-photo';img.alt='Shared photograph';img.loading='lazy';
    const mime=record.mime||'image/webp',url=URL.createObjectURL(new Blob([record.bytes],{type:mime}));photoUrls.set(record.id,url);img.src=url;
-   img.onclick=()=>{const win=window.open(url,'_blank','noopener,noreferrer');if(!win)toast('Allow popups to open the photo.');};
+   img.tabIndex=0;img.setAttribute('role','button');img.setAttribute('aria-label','Open photograph in gallery');
+   img.onclick=()=>openPhotoViewer(record.id);img.onkeydown=e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();openPhotoViewer(record.id);}};
    bubble.append(img);
    const photoCaption=document.createElement('div');photoCaption.className='photo-caption';photoCaption.textContent=`${record.width||'?'} × ${record.height||'?'} · ${formatBytes(record.bytes?.length||0)}`;bubble.append(photoCaption);
  }else{const content=document.createElement('div');content.className='message-text';content.textContent=record.text;bubble.append(content);}
@@ -124,8 +129,53 @@ function updateBubble(r){const row=Array.from($('messages').children).find(el=>e
  const prog=row.querySelector('[data-role="progress"]');if(prog)prog.textContent=r.status==='sending'&&r.progress?`${r.progress}%`:'';
  if(r.dir==='out'){row.title=(r.status||'Sending')+(r.error?': '+r.error:'');row.classList.toggle('retryable',r.status==='failed');if(r.status==='failed')row.onclick=()=>retryMessage(r.id);else row.onclick=null;}
 }
-function revokePhotos(){for(const url of photoUrls.values())URL.revokeObjectURL(url);photoUrls.clear();}
+function revokePhotos(){closePhotoViewer();for(const url of photoUrls.values())URL.revokeObjectURL(url);photoUrls.clear();}
 function renderHistory(){revokePhotos();$('messages').replaceChildren();for(const r of records)makeBubble(r,false);updateSidebar();}
+/* In-app viewer. Photo blobs are already authenticated, decrypted and locally stored. */
+function galleryPhotos(){return records.filter(r=>r.kind==='image'&&r.bytes?.length>0);}
+function showSelectedPhoto(animated=true){
+ const gallery=galleryPhotos(),index=gallery.findIndex(r=>r.id===selectedPhotoId);
+ if(index<0){closePhotoViewer();return;}
+ const photo=gallery[index],image=$('viewerImage');
+ const url=photoUrls.get(photo.id);
+ if(!url){closePhotoViewer();return;}
+ viewerZoomed=false;$('viewerCanvas').classList.remove('zoomed');
+ image.src=url;
+ $('photoViewerCounter').textContent=`${index+1} of ${gallery.length}`;
+ $('photoViewerInfo').textContent=`${photo.width||'?'} × ${photo.height||'?'} · ${formatBytes(photo.bytes.length)}`;
+ $('photoViewerName').textContent=activeContact;
+ $('photoViewerDate').textContent=fmtTime(photo.ts);
+ $('viewerPrevious').disabled=index<=0;
+ $('viewerNext').disabled=index>=gallery.length-1;
+ $('viewerPrevious').classList.toggle('viewer-hidden',index<=0);
+ $('viewerNext').classList.toggle('viewer-hidden',index>=gallery.length-1);
+ $('viewerDownload').href=url;
+ $('viewerDownload').download=`offgrid-${new Date(photo.ts).toISOString().slice(0,10)}.${photo.mime==='image/png'?'png':photo.mime==='image/jpeg'?'jpg':'webp'}`;
+ if(animated){image.classList.remove('photo-enter');void image.offsetWidth;image.classList.add('photo-enter');}
+}
+function openPhotoViewer(id){
+ if(!photoUrls.has(id))return;
+ if($('photoViewer').classList.contains('hidden'))viewerPreviousFocus=document.activeElement;
+ selectedPhotoId=id;$('photoViewer').classList.remove('hidden');
+ document.body.classList.add('viewer-open');showSelectedPhoto(true);$('photoViewer').focus();
+}
+function closePhotoViewer(){
+ if($('photoViewer').classList.contains('hidden'))return;
+ $('photoViewer').classList.add('hidden');document.body.classList.remove('viewer-open');
+ $('viewerImage').removeAttribute('src');selectedPhotoId=null;
+ if(viewerPreviousFocus?.isConnected)viewerPreviousFocus.focus({preventScroll:true});
+ viewerPreviousFocus=null;
+}
+function navigatePhoto(delta){
+ if($('photoViewer').classList.contains('hidden'))return;
+ const gallery=galleryPhotos();const index=gallery.findIndex(r=>r.id===selectedPhotoId);
+ const next=index+delta;
+ if(next>=0&&next<gallery.length){selectedPhotoId=gallery[next].id;showSelectedPhoto(true);}
+}
+function togglePhotoZoom(){
+ if($('photoViewer').classList.contains('hidden'))return;
+ viewerZoomed=!viewerZoomed;$('viewerCanvas').classList.toggle('zoomed',viewerZoomed);
+}
 function serializeRecord(r){return {id:r.id,kind:r.kind,dir:r.dir,ts:r.ts,text:r.text||'',mime:r.mime||'',width:r.width||0,height:r.height||0,bytes:r.bytes?P.base64url(r.bytes):'',readSent:!!r.readSent,deliveredAckSent:!!r.deliveredAckSent,peerMac:r.peerMac||null};}
 async function storeRecord(r){if(!secretKey||!localMac)return;const payload=P.textBytes(JSON.stringify(serializeRecord(r)));const sealed=await P.sealAtRest(secretKey,payload,macKey(),r.id);await dbPut('messages',{pk:macKey()+'/'+r.id,owner:macKey(),id:r.id,ts:r.ts,dir:r.dir,status:r.status,seal:sealed});}
 async function storeStatus(r){if(!secretKey||!localMac)return;const old=await dbGet('messages',macKey()+'/'+r.id);if(old){old.status=r.status;await dbPut('messages',old);}else await storeRecord(r);}
@@ -251,6 +301,19 @@ async function runTransfers(){
  }finally{runningTransfers=false;}
 }
 function parseLine(raw){const s=raw.trim();if(!s)return;
+ if(s.startsWith('LINK|')){
+  const parts=s.split('|'),fields={};for(const bit of parts.slice(2)){const j=bit.indexOf('=');if(j>0)fields[bit.slice(0,j)]=bit.slice(j+1);}
+  const phy=Number(fields.PHY),rssi=Number(fields.RSSI);
+  if([1,6,12].includes(phy)){
+   radioTelemetry={peer:parts[1],phy,rssi:Number.isFinite(rssi)&&rssi>-120&&rssi<0?rssi:null,
+     mode:fields.MODE||'AUTO',delivered:Number(fields.OK)||0,retries:Number(fields.RETRY)||0,
+     failures:Number(fields.FAIL)||0,available:true};
+   updateLinkBadge();
+  }
+  return;
+ }
+ if(s.startsWith('RATE_ERROR|')){console.warn('Radio PHY configuration:',s);toast('ESP32 PHY rate could not be applied; falling back to safe rate.');return;}
+ if(s.startsWith('RATE|')||s.startsWith('PEER|'))return;
  if(s.startsWith('READY|')){const parts=s.split('|');if(!parts.includes('PROTO=2')){toast('Incompatible firmware. Flash working Phase 1.2/1.3 firmware.');return;}const mac=parts[1];if(!/^[0-9A-Fa-f:]{17}$/.test(mac))return;if(verified&&localMac===mac)return;void onReady(mac);return;}
  if(s.startsWith('QUEUED|')){const [,session,id,hex]=s.split('|'),slot=radioByHex.get(hex);if(slot){slot.wire=`${session}:${id}`;radioByWire.set(slot.wire,slot);}return;}
  if(s.startsWith('RX|')){const [,mac,session,id,data]=s.split('|');if(mac&&session&&id&&data)void processRx(mac,session,id,data);return;}
@@ -259,7 +322,8 @@ function parseLine(raw){const s=raw.trim();if(!s)return;
 }
 function consume(data){serialBuffer+=new TextDecoder().decode(data);let i;while((i=serialBuffer.indexOf('\n'))>=0){parseLine(serialBuffer.slice(0,i));serialBuffer=serialBuffer.slice(i+1);}if(serialBuffer.length>8192)serialBuffer='';}
 async function readLoop(){try{while(port?.readable&&!closing){reader=port.readable.getReader();try{while(!closing){const {value,done}=await reader.read();if(done)break;if(value)consume(value);}}finally{reader.releaseLock();reader=null;}if(!closing&&port?.readable)await wait(100);}}catch(e){if(!closing)toast('Serial disconnected: '+e.message);}finally{if(!closing){readPromise=null;void disconnect();}}}
-async function onReady(mac){localMac=mac.toUpperCase();verified=true;if(handshakeTimer){clearInterval(handshakeTimer);handshakeTimer=null;}try{
+async function onReady(mac){localMac=mac.toUpperCase();verified=true;
+ void writeLine('RATE '+linkPreference.toUpperCase()).catch(()=>{});if(handshakeTimer){clearInterval(handshakeTimer);handshakeTimer=null;}try{
  const saved=await dbGet('keys',macKey());secretKey=saved?.key||null;
  try{setName(localStorage.getItem(nameKey())||localStorage.getItem('offgrid_phase13_name_'+macKey().replace(/:/g,'-'))||'Nearby node');}catch{setName('Nearby node');}
  if(secretKey){await migrateLegacy();await hydrateHistory();for(const r of records){if(r.dir==='in'&&!r.deliveredAckSent)enqueueReceipt('delivered',r.id);}sendReadReceipts();}
@@ -272,7 +336,7 @@ async function connect(){if(!navigator.serial){toast('Use Chromium with Web Seri
 async function disconnect(){if(closing)return;closing=true;
  try{if(handshakeTimer)clearInterval(handshakeTimer);handshakeTimer=null;if(reader)try{await reader.cancel();}catch{}if(readPromise)try{await readPromise;}catch{}if(writer){try{writer.releaseLock();}catch{}writer=null;}if(port){try{await port.close();}catch{}port=null;}}
  finally{readPromise=null;serialBuffer='';verified=false;port=null;writer=null;if(pendingRadio())failPendingRadio(Error('Disconnected'));if(activeTransfer?.record)void setState(activeTransfer.record,'failed','Disconnected');
- transferQueue=[];runningTransfers=false;queuedReceipts.clear();pendingReads.clear();incoming.clear();localMac=null;secretKey=null;refreshStatus();closing=false;}}
+ transferQueue=[];runningTransfers=false;queuedReceipts.clear();pendingReads.clear();incoming.clear();localMac=null;secretKey=null;radioTelemetry.available=false;refreshStatus();closing=false;}}
 async function sendText(){const input=$('messageInput'),text=input.value.trim();if(!verified||!secretKey||!text)return;if(countChars(text)>MAX_CHARS){toast('Maximum 500 characters per text message.');return;}
  const r={id:P.newId(),kind:'text',dir:'out',ts:Date.now(),text,status:'sending',progress:0};await appendRecord(r);input.value='';updateByteCount();transferQueue.push(makeJob(r));runTransfers();}
 function updateByteCount(){const input=$('messageInput'),n=countChars(input.value);$('byteCount').textContent=`${n}/${MAX_CHARS}`;$('byteCount').classList.toggle('over',n>MAX_CHARS);input.style.height='36px';input.style.height=Math.min(120,input.scrollHeight)+'px';$('sendButton').disabled=!verified||!secretKey||!input.value.trim()||n>MAX_CHARS;}
@@ -340,17 +404,34 @@ async function migrateLegacy(){const oldKey='offgrid_phase13_history_'+macKey().
 function showRename(){showDialog('Contact name',body=>{body.append(el('p','','This is a local nickname for the remote node.'));const field=document.createElement('input');field.value=activeContact;field.maxLength=36;body.append(field);const save=el('button','primary-button','Save contact name');save.onclick=()=>{setName(field.value.trim());persistName();closeDialog();};body.append(el('div','modal-actions')).append(save);setTimeout(()=>{field.focus();field.select();},40);});}
 async function clearHistory(){if(!verified||!secretKey)return;if(runningTransfers||pendingRadio()||transferQueue.length){toast('Finish active transfers before clearing history.');return;}if(!confirm('Delete encrypted chat history for this ESP32 from this browser? This cannot be undone.'))return;
  await wipeStored();records=[];recordMap.clear();revokePhotos();renderHistory();toast('Local chat history cleared.');closeDialog();}
-function showInfo(){showDialog('Chat information',body=>{[['Contact',activeContact],['Your ESP32',localMac||'Disconnected'],['Protocol','ESP-NOW firmware protocol 2 / encrypted app protocol OGM4'],['Security',secretKey?'AES-256-GCM, 256-bit random shared key':'Not paired'],['Photo target',`${Math.round(photoBudget()/1024)} KB optimized, 96 KB absolute`],['Link profile',`${linkPreference}; app-level flow control, 1–3 in flight`],['Storage','AES-GCM encrypted local IndexedDB']].forEach(([a,b])=>{const line=el('div','info-line');line.append(el('span','',a),el('strong','',b));body.append(line);});body.append(el('p','','Grey single tick = transmitted; grey double tick = peer decrypted and confirmed; blue double tick = peer app reported it was viewed. Browser history is stored encrypted at rest.'));});}
-function showSettings(){showDialog('Settings',body=>{body.append(el('p','','Phase 1.4.1: responsive chat, 500-character encrypted messages, and photo transfer with adaptive flow control.'));
+function showInfo(){showDialog('Chat information',body=>{[['Contact',activeContact],['Your ESP32',localMac||'Disconnected'],['Protocol','ESP-NOW firmware protocol 2 / encrypted app protocol OGM4'],['Security',secretKey?'AES-256-GCM, 256-bit random shared key':'Not paired'],['Photo target',`${Math.round(photoBudget()/1024)} KB optimized, 96 KB absolute`],['Radio PHY',radioTelemetry.available?`${radioTelemetry.phy} Mbps TX, RSSI ${radioTelemetry.rssi===null?'unknown':radioTelemetry.rssi+' dBm'}`:'Waiting for telemetry'],['Link profile',`${linkPreference}; adaptive PHY and 1–3 fragments in flight`],['Storage','AES-GCM encrypted local IndexedDB']].forEach(([a,b])=>{const line=el('div','info-line');line.append(el('span','',a),el('strong','',b));body.append(line);});body.append(el('p','','Grey single tick = transmitted; grey double tick = peer decrypted and confirmed; blue double tick = peer app reported it was viewed. Browser history is stored encrypted at rest.'));});}
+function showSettings(){showDialog('Settings',body=>{body.append(el('p','','Phase 1.4.2: adaptive radio PHY (1/6/12 Mbps), reliable encrypted chat, and an in-app photo gallery.'));
  const linkLabel=el('label','','Transfer profile');body.append(linkLabel);const linkSelect=document.createElement('select');linkSelect.className='setting-select';
  [['auto','Auto · adapts 1–3 fragments in flight based on ACK latency/retries'],['range','Range first · 1 fragment in flight, ~48 KB images'],['speed','Speed first · up to 3 fragments in flight, ~72 KB images']].forEach(([v,t])=>{const opt=document.createElement('option');opt.value=v;opt.textContent=t;linkSelect.append(opt);});
- linkSelect.value=linkPreference;linkSelect.onchange=()=>{linkPreference=linkSelect.value;try{localStorage.setItem('offgrid_link_preference',linkPreference);}catch{}updateLinkBadge();};body.append(linkSelect);
- body.append(el('p','','Link quality is estimated from receiver acknowledgments and retries, not measured distance. This firmware keeps its original radio PHY rate; these settings adjust packet concurrency and photo size, not transmit power or maximum RF range.')); 
+ linkSelect.value=linkPreference;linkSelect.onchange=()=>{linkPreference=linkSelect.value;try{localStorage.setItem('offgrid_link_preference',linkPreference);}catch{}if(verified)void writeLine('RATE '+linkPreference.toUpperCase()).catch(()=>{});updateLinkBadge();};body.append(linkSelect);
+ body.append(el('p','','Link quality is estimated from receiver acknowledgments and retries, not measured distance. Phase 1.4.2 firmware adapts unicast transmit PHY between 1/6/12 Mbps using RSSI and successful acknowledgments; Range first locks 1 Mbps. Image size and packet concurrency also adapt. Actual range depends on interference and antenna orientation.')); 
  const modeLabel=el('label','','Image optimization');body.append(modeLabel);const select=document.createElement('select');select.className='setting-select';
  [['hq','Optimized WebP/JPEG (adaptive 48–72 KB target, may resize)'],['lossless','Lossless PNG + metadata stripping (reject if >96 KB)']].forEach(([v,t])=>{const opt=document.createElement('option');opt.value=v;opt.textContent=t;select.append(opt);});select.value=imageMode;select.onchange=()=>{imageMode=select.value;try{localStorage.setItem('offgrid_image_mode',imageMode);}catch{}updateLinkBadge();};body.append(select);
  body.append(el('p','','Metadata stripping does not make photos tiny. High-quality mode can reduce dimensions and introduce slight loss; lossless PNG keeps the canvas pixels exact but may not fit through this radio link.'));
  const buttons=el('div','settings-actions'),rename=el('button','quiet-button','Rename contact'),key=el('button','quiet-button','Encryption key'),clear=el('button','soft-button','Clear history');rename.onclick=showRename;key.onclick=showPairing;clear.onclick=()=>void clearHistory();buttons.append(rename,key,clear);body.append(buttons);
  });}
+$('viewerClose').onclick=closePhotoViewer;
+$('viewerPrevious').onclick=()=>navigatePhoto(-1);
+$('viewerNext').onclick=()=>navigatePhoto(1);
+$('viewerZoom').onclick=togglePhotoZoom;
+$('viewerImage').onclick=togglePhotoZoom;
+$('viewerStage').addEventListener('click',e=>{if(e.target===$('viewerStage'))closePhotoViewer();});
+$('viewerStage').addEventListener('touchstart',e=>{viewerTouchX=e.changedTouches[0]?.clientX??null;},{passive:true});
+$('viewerStage').addEventListener('touchend',e=>{
+ if(viewerTouchX===null)return;const diff=(e.changedTouches[0]?.clientX??viewerTouchX)-viewerTouchX;viewerTouchX=null;
+ if(Math.abs(diff)>=55&&!viewerZoomed)navigatePhoto(diff<0?1:-1);
+},{passive:true});
+document.addEventListener('keydown',e=>{
+ if($('photoViewer').classList.contains('hidden'))return;
+ if(e.key==='Escape'){e.preventDefault();closePhotoViewer();}
+ if(e.key==='ArrowLeft'){e.preventDefault();navigatePhoto(-1);}
+ if(e.key==='ArrowRight'){e.preventDefault();navigatePhoto(1);}
+});
 $('connectButton').onclick=()=>void connect();$('disconnectButton').onclick=()=>void disconnect();$('sendButton').onclick=()=>void sendText();
 $('messageInput').addEventListener('input',updateByteCount);$('messageInput').addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();void sendText();}});
 $('attachments').onclick=()=>$('photoPicker').click();$('photoPicker').addEventListener('change',e=>{if(e.target.files?.length)void sendPhoto(e.target.files[0]);});
@@ -362,4 +443,4 @@ document.addEventListener('visibilitychange',sendReadReceipts);window.addEventLi
 window.addEventListener('beforeunload',revokePhotos);
 setInterval(pruneIncoming,45000);
 (async()=>{try{db=await openDb();}catch(e){toast('IndexedDB unavailable. Encrypted storage cannot work: '+e.message);}refreshStatus();})();
-console.info('OffGrid Phase 1.4.1 — responsive UI and adaptive application transfer pacing; firmware PHY unchanged.');
+console.info('OffGrid Phase 1.4.2 — adaptive ESP-NOW PHY + encrypted gallery.');
