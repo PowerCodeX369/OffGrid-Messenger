@@ -54,5 +54,26 @@ class EncryptedHistory(context:Context) {
         try {output.write(stored);file.finishWrite(output)}
         catch(error:Exception){file.failWrite(output);throw error}
     }
+    private val avatarFile=AtomicFile(File(context.applicationContext.filesDir,"offgrid-contact-avatar.enc"))
+    private val avatarAad="OffGridMessenger/contact-avatar/1".toByteArray(Charsets.UTF_8)
+    fun loadAvatar():ByteArray? = synchronized(IO_LOCK) {
+        if(!avatarFile.baseFile.exists())return@synchronized null
+        val raw=avatarFile.openRead().use {it.readBytes()}
+        require(raw.size in 33..65536 && raw.copyOfRange(0,4).contentEquals("OGA1".toByteArray()))
+        val c=Cipher.getInstance("AES/GCM/NoPadding")
+        c.init(Cipher.DECRYPT_MODE,key(),GCMParameterSpec(128,raw.copyOfRange(4,16)))
+        c.updateAAD(avatarAad)
+        c.doFinal(raw.copyOfRange(16,raw.size))
+    }
+    fun saveAvatar(bytes:ByteArray) = synchronized(IO_LOCK) {
+        require(bytes.size in 1..32768)
+        val c=Cipher.getInstance("AES/GCM/NoPadding")
+        c.init(Cipher.ENCRYPT_MODE,key());c.updateAAD(avatarAad)
+        val data="OGA1".toByteArray()+c.iv+c.doFinal(bytes)
+        val out=avatarFile.startWrite()
+        try {out.write(data);avatarFile.finishWrite(out)}
+        catch(e:Exception){avatarFile.failWrite(out);throw e}
+    }
+    fun clearAvatar() = synchronized(IO_LOCK) {avatarFile.delete()}
     fun clear()=synchronized(IO_LOCK){file.delete()}
 }

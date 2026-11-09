@@ -2,6 +2,7 @@ package com.offgrid.messenger
 
 import android.graphics.BitmapFactory
 import androidx.activity.compose.BackHandler
+import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.Crossfade
 import androidx.compose.animation.animateContentSize
@@ -9,7 +10,12 @@ import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -35,6 +41,10 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
+import androidx.compose.ui.draw.blur
+import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
@@ -44,6 +54,7 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.window.Dialog
@@ -62,19 +73,29 @@ private val Ink = Color(0xFF162437)
 
 @Composable
 fun OffGridPremiumTheme(dark: Boolean, content: @Composable () -> Unit) {
+    // Explicit semantic colors: toggling dark appearance must update *text* as
+    // well as the underlying surfaces (including placeholders and dialogs).
     val colors = if (dark) darkColorScheme(
-        primary=Color(0xFF83BAFF), onPrimary=Midnight, primaryContainer=Color(0xFF173766),
-        background=Midnight, surface=Color(0xFF101B30), onSurface=Color(0xFFEDF4FF),
-        onSurfaceVariant=Color(0xFF9FB0CA), secondary=BlueGlow
+        primary=Color(0xFF9DD0FF),onPrimary=Color(0xFF09223D),primaryContainer=Color(0xFF193B62),
+        onPrimaryContainer=Color(0xFFE2F1FF),secondary=Color(0xFF85E0E4),onSecondary=Color(0xFF002C32),
+        background=Color(0xFF080F1D),onBackground=Color(0xFFF5F8FF),
+        surface=Color(0xFF131F32),onSurface=Color(0xFFF5F8FF),
+        surfaceVariant=Color(0xFF253750),onSurfaceVariant=Color(0xFFCEDAEE),
+        outline=Color(0xFF8296B0),outlineVariant=Color(0xFF43536B),
+        error=Color(0xFFFFB4B4),onError=Color(0xFF540000),
     ) else lightColorScheme(
-        primary=Color(0xFF2568DF), onPrimary=Color.White, primaryContainer=Color(0xFFDDEBFF),
-        background=Color(0xFFF3F7FF), surface=Color.White, onSurface=Ink,
-        onSurfaceVariant=Color(0xFF61728B), secondary=Color(0xFF057C9A)
+        primary=Color(0xFF175BC5),onPrimary=Color.White,primaryContainer=Color(0xFFD8E8FF),
+        onPrimaryContainer=Color(0xFF0B2F65),secondary=Color(0xFF007E90),onSecondary=Color.White,
+        background=Color(0xFFF5F8FD),onBackground=Color(0xFF111A29),
+        surface=Color(0xFFFFFFFF),onSurface=Color(0xFF111A29),
+        surfaceVariant=Color(0xFFE8F0FA),onSurfaceVariant=Color(0xFF3F5167),
+        outline=Color(0xFF6B7C92),outlineVariant=Color(0xFFCFDAE8),
+        error=Color(0xFFB3261E),onError=Color.White,
     )
     MaterialTheme(colorScheme=colors, shapes=Shapes(
         small=RoundedCornerShape(12.dp), medium=RoundedCornerShape(18.dp),
-        large=RoundedCornerShape(24.dp), extraLarge=RoundedCornerShape(30.dp)
-    ), content=content)
+        large=RoundedCornerShape(24.dp),extraLarge=RoundedCornerShape(30.dp)
+    ),content=content)
 }
 
 /** Translucent acrylic approximation, not an unrestricted backdrop blur.
@@ -87,8 +108,10 @@ private fun GlassCard(
     val shape=RoundedCornerShape(radius)
     val upper=if(dark) Color(0xFF2B4368).copy(alpha=.72f) else Color.White.copy(alpha=.91f)
     val lower=if(dark) Color(0xFF172943).copy(alpha=.82f) else Color(0xFFE6F0FF).copy(alpha=.82f)
-    Column(modifier.clip(shape).background(Brush.linearGradient(listOf(upper,lower)))
-        .border(BorderStroke(1.dp, if(dark) Color.White.copy(alpha=.14f) else Color.White.copy(alpha=.9f)),shape), content=content)
+    Column(modifier.shadow(if(radius==0.dp)0.dp else 6.dp,shape).clip(shape)
+        .background(Brush.linearGradient(listOf(upper,lower)))
+        .border(BorderStroke(1.dp,if(dark)Color(0xFFB0D4FF).copy(alpha=.32f)
+            else Color.White.copy(alpha=.96f)),shape), content=content)
 }
 
 private fun timeOf(millis:Long)=SimpleDateFormat("h:mm a",Locale.getDefault()).format(Date(millis))
@@ -105,7 +128,10 @@ data class PremiumActions(
     val changeNotifications:(Boolean)->Unit, val changePrivatePreview:(Boolean)->Unit,
     val changeBackground:(Boolean)->Unit, val changeAccessibleVoiceTap:(Boolean)->Unit,
     val clearHistory:()->Unit,
-    val retry:(ChatItem)->Unit
+    val retry:(ChatItem)->Unit,
+    val deleteForMe:(ChatItem)->Unit,val deleteForEveryone:(ChatItem)->Unit,
+    val editMessage:(ChatItem,String)->Unit,val copyMessage:(ChatItem)->Unit,
+    val chooseAvatar:()->Unit,val clearAvatar:()->Unit,val renameContact:(String)->Unit
 )
 
 @Composable
@@ -114,7 +140,8 @@ fun PremiumMessenger(
     dark:Boolean, fastPhotos:Boolean, notifications:Boolean, privatePreview:Boolean,
     backgroundEnabled:Boolean, recording:Boolean, playingId:String?, appVisible:Boolean,
     accessibleVoiceTap:Boolean,
-    diagnostics:List<String>, actions:PremiumActions
+    diagnostics:List<String>, actions:PremiumActions,
+    contactName:String="Nearby node",avatarBytes:ByteArray?=null
 ) {
     var page by rememberSaveableString("chat")
     var query by remember { mutableStateOf("") }
@@ -122,10 +149,25 @@ fun PremiumMessenger(
     var enlargedPhoto by remember { mutableStateOf<ChatItem?>(null) }
     var showDiagnostics by remember { mutableStateOf(false) }
     var confirmErase by remember { mutableStateOf(false) }
+    var showChatInfo by remember { mutableStateOf(false) }
+    var chosenMessage by remember { mutableStateOf<ChatItem?>(null) }
+    var confirmRemoteDelete by remember { mutableStateOf<ChatItem?>(null) }
+    var editTarget by remember { mutableStateOf<ChatItem?>(null) }
+    var editDraft by remember { mutableStateOf("") }
+    var renameDialog by remember { mutableStateOf(false) }
+    var renameDraft by remember(contactName) { mutableStateOf(contactName) }
     var draft by rememberSaveableString("")
     val textColor=MaterialTheme.colorScheme.onSurface
-    val bg=if(dark) listOf(Midnight,Color(0xFF111D32),Color(0xFF091125))
-        else listOf(Color(0xFFEAF1FF),Color(0xFFF9FBFF),Color(0xFFE6F2FF))
+    val bgStart by androidx.compose.animation.animateColorAsState(
+        if(dark)Midnight else Color(0xFFEAF1FF),
+        animationSpec=androidx.compose.animation.core.tween(360),label="theme background start")
+    val bgMiddle by androidx.compose.animation.animateColorAsState(
+        if(dark)Color(0xFF111D32) else Color(0xFFF9FBFF),
+        animationSpec=androidx.compose.animation.core.tween(360),label="theme background middle")
+    val bgEnd by androidx.compose.animation.animateColorAsState(
+        if(dark)Color(0xFF091125) else Color(0xFFE6F2FF),
+        animationSpec=androidx.compose.animation.core.tween(360),label="theme background end")
+    val bg=listOf(bgStart,bgMiddle,bgEnd)
     BoxWithConstraints(Modifier.fillMaxSize()
         .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Top+WindowInsetsSides.Horizontal))
         .background(Brush.linearGradient(bg))) {
@@ -134,19 +176,32 @@ fun PremiumMessenger(
         if(!wide && page=="chat") BackHandler { page="chats" }
         if(page=="settings") BackHandler { page=if(wide)"chat" else "chats" }
         LaunchedEffect(page,wide) { actions.chatVisibility(page=="chat" || (wide && page!="settings")) }
+        // A soft blurred ambient layer lives BEHIND translucent glass cards;
+        // blurring the cards themselves would also blur text and controls.
+        Box(Modifier.size(220.dp).offset(x=(-68).dp,y=95.dp).blur(75.dp)
+            .background(Color(0xFF55B6ED).copy(alpha=if(dark).10f else .15f),CircleShape))
+        Box(Modifier.size(190.dp).align(Alignment.BottomEnd).offset(x=55.dp,y=(-80).dp)
+            .blur(76.dp).background(Color(0xFF6B7DFA).copy(alpha=if(dark).12f else .10f),CircleShape))
         Row(Modifier.fillMaxSize()) {
             if(wide) {
                 NavigationPane(
                     modifier=Modifier.widthIn(min=250.dp,max=314.dp).fillMaxHeight().navigationBarsPadding(),dark=dark,
                     items=items,connected=connected,status=status,selected=page,
+                    contactName=contactName,avatarBytes=avatarBytes,
                     openChat={page="chat"},openSettings={page="settings"},onConnect=actions.connect,
                     query=query,queryChange={query=it}
                 )
                 VerticalDivider(color=textColor.copy(alpha=.08f))
             }
             Column(Modifier.weight(1f).fillMaxHeight()) {
+                AnimatedContent(targetState=page,modifier=Modifier.weight(1f).fillMaxWidth(),label="page navigation", transitionSpec={
+                    (fadeIn(animationSpec=androidx.compose.animation.core.tween(240)) +
+                        slideInHorizontally(animationSpec=androidx.compose.animation.core.tween(260)) { it/7 })
+                        .togetherWith(fadeOut(animationSpec=androidx.compose.animation.core.tween(170)) +
+                        slideOutHorizontally(animationSpec=androidx.compose.animation.core.tween(210)) { -it/8 })
+                }) { destination ->
                 when {
-                    page=="settings" -> SettingsPane(
+                    destination=="settings" -> SettingsPane(
                         dark=dark,fastPhotos=fastPhotos,notifications=notifications,
                         privatePreview=privatePreview,backgroundEnabled=backgroundEnabled,
                         accessibleVoiceTap=accessibleVoiceTap,
@@ -154,17 +209,19 @@ fun PremiumMessenger(
                         onBack={page=if(wide)"chat" else "chats"}, actions=actions,
                         onShowDiagnostics={showDiagnostics=true},onClear={confirmErase=true}
                     )
-                    page=="chats" && !wide -> NavigationPane(
+                    destination=="chats" && !wide -> NavigationPane(
                         modifier=Modifier.fillMaxSize(),dark=dark,items=items,connected=connected,
-                        status=status,selected=page,openChat={page="chat"},
-                        openSettings={page="settings"},onConnect=actions.connect,
+                        status=status,selected=page,contactName=contactName,avatarBytes=avatarBytes,
+                        openChat={page="chat"},openSettings={page="settings"},onConnect=actions.connect,
                         query=query,queryChange={query=it}
                     )
                     else -> {
+                        Column(Modifier.fillMaxSize()) {
                         ChatTopBar(
                             dark=dark,connected=connected,status=status,
+                            contactName=contactName,avatarBytes=avatarBytes,
                             showBack=!wide,compact=micro,onBack={page="chats"},
-                            onInfo={page="settings"},onSearch={showSearch=!showSearch}
+                            onInfo={showChatInfo=true},onSearch={showSearch=!showSearch}
                         )
                         AnimatedVisibility(showSearch) {
                             OutlinedTextField(
@@ -189,6 +246,7 @@ fun PremiumMessenger(
                                 playingId=playingId,connected=connected,appVisible=appVisible,
                                 openPhoto={enlargedPhoto=it},playVoice=actions.playVoice,
                                 onVisible=actions.markVisible,onRetry=actions.retry,
+                                onLongPress={chosenMessage=it},
                                 modifier=Modifier.fillMaxWidth().weight(1f))
                             GlassComposer(
                                 draft=draft,onDraft={draft=it.take(500)},connected=connected,
@@ -199,11 +257,66 @@ fun PremiumMessenger(
                                 onRelease=actions.micRelease,onCancel=actions.micCancel
                             )
                         }
+                        }
                     }
+                }
                 }
             }
         }
     }
+    chosenMessage?.let { message ->
+        AlertDialog(onDismissRequest={chosenMessage=null},
+            title={Text("Message options")},
+            text={Column(verticalArrangement=Arrangement.spacedBy(3.dp)) {
+                if(message.kind==OgmCodec.TEXT && !message.deleted) {
+                    TextButton(onClick={actions.copyMessage(message);chosenMessage=null}) {
+                        Icon(Icons.Default.ContentCopy,null);Spacer(Modifier.width(8.dp));Text("Copy text")
+                    }
+                }
+                if(message.outgoing && message.kind==OgmCodec.TEXT && !message.deleted && connected &&
+                    message.status in listOf("delivered","read","played")) {
+                    TextButton(onClick={editDraft=message.text;editTarget=message;chosenMessage=null}) {
+                        Icon(Icons.Default.Edit,null);Spacer(Modifier.width(8.dp));Text("Edit message")
+                    }
+                }
+                TextButton(onClick={actions.deleteForMe(message);chosenMessage=null}) {
+                    Icon(Icons.Default.DeleteOutline,null);Spacer(Modifier.width(8.dp));Text("Delete for me")
+                }
+                if(message.outgoing && !message.deleted && connected &&
+                    message.status in listOf("delivered","read","played")) {
+                    TextButton(onClick={confirmRemoteDelete=message;chosenMessage=null}) {
+                        Icon(Icons.Default.DeleteForever,null);Spacer(Modifier.width(8.dp));Text("Delete for everyone")
+                    }
+                }
+            }},confirmButton={TextButton(onClick={chosenMessage=null}) {Text("Close")}})
+    }
+    editTarget?.let { target -> AlertDialog(onDismissRequest={editTarget=null},
+        title={Text("Edit message")},text={OutlinedTextField(editDraft,{editDraft=it.take(500)},
+            singleLine=false,maxLines=5,label={Text("Message text")})},
+        confirmButton={TextButton(enabled=editDraft.isNotBlank(),onClick={
+            actions.editMessage(target,editDraft.trim());editTarget=null
+        }){Text("Save edit")}},dismissButton={TextButton(onClick={editTarget=null}){Text("Cancel")}})
+    }
+    confirmRemoteDelete?.let { target -> AlertDialog(onDismissRequest={confirmRemoteDelete=null},
+        title={Text("Delete for everyone?")},
+        text={Text("The recipient's updated OffGrid client will remove this message when it receives the encrypted delete command. Devices that were offline or use older versions may still retain it.")},
+        confirmButton={TextButton(onClick={actions.deleteForEveryone(target);confirmRemoteDelete=null}){Text("Delete")}},
+        dismissButton={TextButton(onClick={confirmRemoteDelete=null}){Text("Cancel")}})
+    }
+    if(showChatInfo) AlertDialog(onDismissRequest={showChatInfo=false},
+        title={Text("Contact details")},text={Column(verticalArrangement=Arrangement.spacedBy(12.dp)) {
+            Row(verticalAlignment=Alignment.CenterVertically){NodeAvatar(64.dp,dark,avatarBytes);Spacer(Modifier.width(12.dp));Text(contactName,style=MaterialTheme.typography.titleLarge)}
+            Text("Private, device-to-device conversation",color=MaterialTheme.colorScheme.onSurfaceVariant)
+            TextButton(onClick={showChatInfo=false;actions.chooseAvatar()}){Text("Change contact photo")}
+            if(avatarBytes!=null)TextButton(onClick={showChatInfo=false;actions.clearAvatar()}){
+                Text("Remove contact photo")
+            }
+            TextButton(onClick={renameDraft=contactName;renameDialog=true;showChatInfo=false}){Text("Rename contact")}
+        }},confirmButton={TextButton(onClick={showChatInfo=false}){Text("Done")}})
+    if(renameDialog) AlertDialog(onDismissRequest={renameDialog=false},title={Text("Contact name")},
+        text={OutlinedTextField(renameDraft,{renameDraft=it.take(36)},singleLine=true)},
+        confirmButton={TextButton(onClick={actions.renameContact(renameDraft.trim().ifEmpty {"Nearby node"});renameDialog=false}){Text("Save")}},
+        dismissButton={TextButton(onClick={renameDialog=false}){Text("Cancel")}})
     enlargedPhoto?.let { FullPhoto(item=it,onClose={enlargedPhoto=null}) }
     if(showDiagnostics) AlertDialog(
         onDismissRequest={showDiagnostics=false},title={Text("BLE diagnostics")},
@@ -224,39 +337,43 @@ private fun rememberSaveableString(initial:String): MutableState<String> =
     androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf(initial) }
 
 @Composable
-private fun ChatTopBar(dark:Boolean,connected:Boolean,status:String,showBack:Boolean,compact:Boolean,onBack:()->Unit,onInfo:()->Unit,onSearch:()->Unit) {
+private fun ChatTopBar(dark:Boolean,connected:Boolean,status:String,contactName:String,avatarBytes:ByteArray?,showBack:Boolean,compact:Boolean,onBack:()->Unit,onInfo:()->Unit,onSearch:()->Unit) {
     GlassCard(Modifier.fillMaxWidth(),dark=dark,radius=0.dp) {
         Row(Modifier.fillMaxWidth().heightIn(min=64.dp).padding(horizontal=if(showBack)8.dp else 16.dp,vertical=7.dp),
             verticalAlignment=Alignment.CenterVertically) {
             if(showBack) IconButton(onClick=onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack,"Back to chats") }
-            NodeAvatar(44.dp,dark)
+            NodeAvatar(44.dp,dark,avatarBytes)
             Spacer(Modifier.width(11.dp))
             Column(Modifier.weight(1f)) {
-                Text("Nearby node",fontWeight=FontWeight.Bold,style=MaterialTheme.typography.titleMedium,maxLines=1)
+                Text(contactName,fontWeight=FontWeight.Bold,style=MaterialTheme.typography.titleMedium,maxLines=1)
                 Text(if(connected)"Encrypted · nearby" else status,
                     style=MaterialTheme.typography.labelSmall,
                     color=if(connected)Color(0xFF49BEA6) else MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines=1,overflow=TextOverflow.Ellipsis)
             }
             if(!compact) IconButton(onClick=onSearch){Icon(Icons.Default.Search,"Search messages")}
-            IconButton(onClick=onInfo){Icon(Icons.Default.MoreVert,"Conversation options")}
+            IconButton(onClick=onInfo){Icon(Icons.Default.MoreVert,"Conversation details")}
         }
     }
 }
 
 @Composable
-private fun NodeAvatar(size:Dp,dark:Boolean) {
+private fun NodeAvatar(size:Dp,dark:Boolean,avatarBytes:ByteArray?=null) {
+    val picture=remember(avatarBytes) { avatarBytes?.let { raw ->
+        runCatching { BitmapFactory.decodeByteArray(raw,0,raw.size)?.asImageBitmap() }.getOrNull()
+    } }
     Box(Modifier.size(size).clip(CircleShape).background(Brush.linearGradient(
-        listOf(if(dark) Color(0xFF0C536E) else Color(0xFF2D8BBF), Color(0xFF155DAD)))),
+        listOf(if(dark) Color(0xFF184C70) else Color(0xFF2D83B4), Color(0xFF174C8A)))),
         contentAlignment=Alignment.Center) {
-        Icon(Icons.Default.Bluetooth,contentDescription=null,tint=Color.White,modifier=Modifier.size(size*.51f))
+        if(picture!=null) Image(picture,"Contact photo",Modifier.fillMaxSize(),contentScale=ContentScale.Crop)
+        else Icon(Icons.Default.Person,contentDescription="Contact",tint=Color.White,modifier=Modifier.size(size*.56f))
     }
 }
 
 @Composable
 private fun NavigationPane(
     modifier:Modifier,dark:Boolean,items:List<ChatItem>,connected:Boolean,status:String,
-    selected:String,openChat:()->Unit,openSettings:()->Unit,onConnect:()->Unit,
+    selected:String,contactName:String,avatarBytes:ByteArray?,openChat:()->Unit,openSettings:()->Unit,onConnect:()->Unit,
     query:String,queryChange:(String)->Unit
 ) {
     GlassCard(modifier,dark=dark,radius=0.dp) {
@@ -271,14 +388,14 @@ private fun NavigationPane(
             singleLine=true,leadingIcon={Icon(Icons.Default.Search,null)},
             placeholder={Text("Search chats")},shape=RoundedCornerShape(24.dp))
         Spacer(Modifier.height(14.dp))
-        if("nearby node".contains(query,ignoreCase=true) || items.any{it.text.contains(query,ignoreCase=true)}) {
+        if(contactName.contains(query,ignoreCase=true) || items.any{it.text.contains(query,ignoreCase=true)}) {
             val latest=items.lastOrNull()
             Row(Modifier.fillMaxWidth().clickable(onClick=openChat).padding(16.dp),verticalAlignment=Alignment.CenterVertically) {
-                NodeAvatar(55.dp,dark)
+                NodeAvatar(55.dp,dark,avatarBytes)
                 Spacer(Modifier.width(13.dp))
                 Column(Modifier.weight(1f)) {
                     Row(verticalAlignment=Alignment.CenterVertically) {
-                        Text("Nearby node",fontWeight=FontWeight.SemiBold,modifier=Modifier.weight(1f))
+                        Text(contactName,fontWeight=FontWeight.SemiBold,modifier=Modifier.weight(1f))
                         latest?.let {Text(timeOf(it.timestamp),style=MaterialTheme.typography.labelSmall,color=MaterialTheme.colorScheme.onSurfaceVariant)}
                     }
                     Spacer(Modifier.height(4.dp))
@@ -294,7 +411,7 @@ private fun NavigationPane(
         }
         Spacer(Modifier.weight(1f))
         Row(Modifier.fillMaxWidth().padding(16.dp),verticalAlignment=Alignment.CenterVertically) {
-            Icon(Icons.Default.LockOutline,null,modifier=Modifier.size(16.dp),tint=MaterialTheme.colorScheme.primary)
+            Icon(Icons.Default.Lock,null,modifier=Modifier.size(16.dp),tint=MaterialTheme.colorScheme.primary)
             Spacer(Modifier.width(6.dp))
             Text("Offline · End-to-end encrypted",style=MaterialTheme.typography.labelSmall,
                 color=MaterialTheme.colorScheme.onSurfaceVariant)
@@ -306,7 +423,7 @@ private fun NavigationPane(
 private fun ChatTimeline(
     items:List<ChatItem>,filter:String,dark:Boolean,playingId:String?,connected:Boolean,appVisible:Boolean,
     openPhoto:(ChatItem)->Unit,playVoice:(ChatItem)->Unit,onVisible:(Set<String>)->Unit,
-    onRetry:(ChatItem)->Unit,modifier:Modifier
+    onRetry:(ChatItem)->Unit,onLongPress:(ChatItem)->Unit,modifier:Modifier
 ) {
     val visibleItems=remember(items,filter) { if(filter.isBlank())items else items.filter {
         it.text.contains(filter,ignoreCase=true) || (it.kind==OgmCodec.IMAGE && "photo".contains(filter,true)) ||
@@ -329,7 +446,7 @@ private fun ChatTimeline(
             Box(Modifier.fillMaxWidth().padding(bottom=18.dp),contentAlignment=Alignment.Center) {
                 GlassCard(dark=dark,radius=17.dp) {
                     Row(Modifier.padding(horizontal=14.dp,vertical=9.dp),verticalAlignment=Alignment.CenterVertically) {
-                        Icon(Icons.Default.LockOutline,null,modifier=Modifier.size(14.dp),tint=MaterialTheme.colorScheme.secondary)
+                        Icon(Icons.Default.Lock,null,modifier=Modifier.size(14.dp),tint=MaterialTheme.colorScheme.secondary)
                         Spacer(Modifier.width(8.dp))
                         Text("Encrypted locally · No servers",style=MaterialTheme.typography.labelSmall)
                     }
@@ -348,14 +465,17 @@ private fun ChatTimeline(
             }
         }
         items(visibleItems,key={it.id}) { message ->
-            ChatBubble(message,dark,playingId==message.id,openPhoto,playVoice,onRetry)
+            Box(Modifier.animateItem()) {
+                ChatBubble(message,dark,playingId==message.id,openPhoto,playVoice,onRetry,onLongPress)
+            }
         }
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun ChatBubble(message:ChatItem,dark:Boolean,playing:Boolean,openPhoto:(ChatItem)->Unit,
-                       playVoice:(ChatItem)->Unit,onRetry:(ChatItem)->Unit) {
+                       playVoice:(ChatItem)->Unit,onRetry:(ChatItem)->Unit,onLongPress:(ChatItem)->Unit) {
     val incoming=if(dark) Color(0xFF1B2942) else Color(0xFFFFFFFF)
     val outgoing=if(dark) Color(0xFF173D62) else Color(0xFFDDEEFF)
     val shape=RoundedCornerShape(topStart=19.dp,topEnd=19.dp,
@@ -366,16 +486,24 @@ private fun ChatBubble(message:ChatItem,dark:Boolean,playing:Boolean,openPhoto:(
             val bound = (maxWidth*.84f).coerceAtMost(350.dp)
             Column(Modifier.align(if(message.outgoing)Alignment.CenterEnd else Alignment.CenterStart)
                 .widthIn(max=bound).clip(shape)
+                .combinedClickable(onClick={},onLongClick={onLongPress(message)})
                 .background(Brush.linearGradient(if(message.outgoing)
                     listOf(outgoing,outgoing.copy(alpha=.88f)) else listOf(incoming,incoming.copy(alpha=.94f))))
                 .border(1.dp,if(dark)Color.White.copy(alpha=.09f) else Color(0xFFCCDFEF),shape)
                 .padding(10.dp)) {
-                when(message.kind) {
-                    OgmCodec.IMAGE -> ResponsivePhoto(message,bound,openPhoto)
-                    OgmCodec.VOICE -> VoiceBubble(message,playing,playVoice)
-                    else -> Text(message.text,style=MaterialTheme.typography.bodyLarge,color=MaterialTheme.colorScheme.onSurface)
+                when {
+                    message.deleted -> Text(message.text,style=MaterialTheme.typography.bodyMedium,
+                        color=MaterialTheme.colorScheme.onSurfaceVariant,fontStyle=FontStyle.Italic)
+                    message.kind==OgmCodec.IMAGE -> ResponsivePhoto(message,bound,openPhoto,onLongPress)
+                    message.kind==OgmCodec.VOICE -> VoiceBubble(message,playing,playVoice)
+                    else -> Column {
+                        Text(message.text,style=MaterialTheme.typography.bodyLarge,
+                            color=MaterialTheme.colorScheme.onSurface)
+                        if(message.edited)Text("edited",style=MaterialTheme.typography.labelSmall,
+                            color=MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
                 }
-                if(message.outgoing && message.progress in 1..99 && message.kind!=OgmCodec.TEXT) {
+                if(message.outgoing && !message.deleted && message.progress in 1..99 && message.kind!=OgmCodec.TEXT) {
                     Spacer(Modifier.height(6.dp))
                     LinearProgressIndicator(progress={message.progress/100f},modifier=Modifier.fillMaxWidth().height(3.dp))
                     Text("${message.progress}% · ${"%.1f".format(Locale.US,message.speedKiBs)} KiB/s",
@@ -397,7 +525,9 @@ private fun ChatBubble(message:ChatItem,dark:Boolean,playing:Boolean,openPhoto:(
 }
 
 @Composable
-private fun ResponsivePhoto(message:ChatItem,maxBubble:Dp,onOpen:(ChatItem)->Unit) {
+@OptIn(ExperimentalFoundationApi::class)
+private fun ResponsivePhoto(message:ChatItem,maxBubble:Dp,onOpen:(ChatItem)->Unit,
+                            onLongPress:(ChatItem)->Unit) {
     val bitmap=remember(message.id,message.bytes) {
         message.bytes?.let { bytes -> runCatching {
             BitmapFactory.decodeByteArray(bytes,0,bytes.size)?.asImageBitmap()
@@ -410,7 +540,8 @@ private fun ResponsivePhoto(message:ChatItem,maxBubble:Dp,onOpen:(ChatItem)->Uni
     val height=(width/ratio).coerceAtMost(maxH)
     Box(Modifier.width(width).height(height).clip(RoundedCornerShape(13.dp))
         .background(MaterialTheme.colorScheme.surfaceVariant)
-        .clickable(enabled=bitmap!=null){onOpen(message)},contentAlignment=Alignment.Center) {
+        .combinedClickable(enabled=bitmap!=null,onClick={onOpen(message)},onLongClick={onLongPress(message)}),
+        contentAlignment=Alignment.Center) {
         if(bitmap!=null) Image(bitmap,"Open encrypted photo",Modifier.fillMaxSize(),contentScale=ContentScale.Fit)
         else Icon(Icons.Default.BrokenImage,"Photo unavailable")
     }
@@ -464,21 +595,40 @@ private fun ReceiptIcon(message:ChatItem) {
 private fun GlassComposer(draft:String,onDraft:(String)->Unit,connected:Boolean,recording:Boolean,small:Boolean,dark:Boolean,
     tapMode:Boolean,onSend:()->Unit,onPhoto:()->Unit,onPress:()->Unit,onRelease:()->Unit,onCancel:()->Unit) {
     var seconds by remember { mutableIntStateOf(0) }
+    var slide by remember { mutableFloatStateOf(0f) }
+    var trashFlash by remember { mutableStateOf(false) }
+    val haptics=LocalHapticFeedback.current
     LaunchedEffect(recording) {
         seconds=0
+        if(!recording)slide=0f
         while(recording) {delay(1000L);seconds++}
     }
-    val micScale by animateFloatAsState(if(recording)1.07f else 1f,label="voice pulse")
-    GlassCard(Modifier.fillMaxWidth(),dark=dark,radius=if(small)18.dp else 22.dp) {
-        AnimatedVisibility(recording,enter=fadeIn()+slideInVertically { it/3 },exit=fadeOut()) {
-            Row(Modifier.fillMaxWidth().padding(horizontal=16.dp,vertical=4.dp),verticalAlignment=Alignment.CenterVertically) {
-                Icon(Icons.Default.FiberManualRecord,null,tint=Color(0xFFFA6174),modifier=Modifier.size(15.dp))
-                Spacer(Modifier.width(9.dp))
-                Text("Recording 0:${seconds.toString().padStart(2,'0')} · slide left to cancel",
-                    style=MaterialTheme.typography.labelMedium,modifier=Modifier.weight(1f))
+    LaunchedEffect(trashFlash) {if(trashFlash){delay(650);trashFlash=false}}
+    val micScale by animateFloatAsState(if(recording)1.15f else 1f,label="voice pulse")
+    val canceled=slide < -78f || trashFlash
+    val trashScale by animateFloatAsState(if(trashFlash)1.45f else if(canceled)1.17f else 1f,
+        animationSpec=androidx.compose.animation.core.spring(),label="trash bounce")
+    GlassCard(Modifier.fillMaxWidth(),dark=dark,radius=if(small)18.dp else 23.dp) {
+        AnimatedVisibility(recording||trashFlash,enter=fadeIn()+slideInVertically { it/2 },exit=fadeOut()) {
+            Row(Modifier.fillMaxWidth().heightIn(min=45.dp).padding(horizontal=16.dp,vertical=5.dp),
+                verticalAlignment=Alignment.CenterVertically) {
+                AnimatedContent(targetState=canceled,label="voice cancel feedback") { isCancel ->
+                    if(isCancel) Icon(Icons.Default.Delete,"Discard recording",tint=MaterialTheme.colorScheme.error,
+                        modifier=Modifier.size(26.dp).scale(trashScale))
+                    else Icon(Icons.Default.FiberManualRecord,null,tint=Color(0xFFE84E63),
+                        modifier=Modifier.size(19.dp))
+                }
+                Spacer(Modifier.width(10.dp))
+                Text(when {trashFlash -> "Recording discarded";canceled -> "Release to cancel";
+                        else -> "0:${seconds.toString().padStart(2,'0')}  ·  Slide left to cancel" },
+                    style=MaterialTheme.typography.labelMedium,
+                    color=if(canceled)MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurface,
+                    modifier=Modifier.weight(1f))
+                if(recording && !canceled)Icon(Icons.Default.KeyboardDoubleArrowLeft,null,
+                    modifier=Modifier.size(24.dp),tint=MaterialTheme.colorScheme.onSurfaceVariant)
             }
         }
-        Row(Modifier.fillMaxWidth().padding(horizontal=9.dp,vertical=9.dp),
+        Row(Modifier.fillMaxWidth().padding(horizontal=10.dp,vertical=8.dp),
             verticalAlignment=Alignment.Bottom,horizontalArrangement=Arrangement.spacedBy(5.dp)) {
             IconButton(onClick=onPhoto,enabled=connected&&!recording,modifier=Modifier.size(43.dp)) {
                 Icon(Icons.Default.AddPhotoAlternate,"Attach photo",tint=MaterialTheme.colorScheme.primary)
@@ -487,8 +637,13 @@ private fun GlassComposer(draft:String,onDraft:(String)->Unit,connected:Boolean,
                 enabled=connected&&!recording,maxLines=5,
                 placeholder={Text(if(connected)"Message" else "Connect to send",style=MaterialTheme.typography.bodyMedium)},
                 shape=RoundedCornerShape(23.dp),colors=TextFieldDefaults.colors(
-                    focusedContainerColor=MaterialTheme.colorScheme.surface.copy(alpha=.72f),
-                    unfocusedContainerColor=MaterialTheme.colorScheme.surface.copy(alpha=.72f),
+                    focusedTextColor=MaterialTheme.colorScheme.onSurface,
+                    unfocusedTextColor=MaterialTheme.colorScheme.onSurface,
+                    focusedPlaceholderColor=MaterialTheme.colorScheme.onSurfaceVariant,
+                    unfocusedPlaceholderColor=MaterialTheme.colorScheme.onSurfaceVariant,
+                    cursorColor=MaterialTheme.colorScheme.primary,
+                    focusedContainerColor=MaterialTheme.colorScheme.surface.copy(alpha=.82f),
+                    unfocusedContainerColor=MaterialTheme.colorScheme.surface.copy(alpha=.82f),
                     focusedIndicatorColor=Color.Transparent,unfocusedIndicatorColor=Color.Transparent),
                 keyboardOptions=KeyboardOptions(imeAction=ImeAction.Send),
                 keyboardActions=KeyboardActions(onSend={onSend()}))
@@ -508,24 +663,30 @@ private fun GlassComposer(draft:String,onDraft:(String)->Unit,connected:Boolean,
                 val release by rememberUpdatedState(onRelease)
                 val cancel by rememberUpdatedState(onCancel)
                 Box(Modifier.size(50.dp).scale(micScale).clip(CircleShape)
-                    .background(MaterialTheme.colorScheme.primary)
-                    .semantics { contentDescription="Hold to record voice; release to send, swipe left to cancel" }
-                    .pointerInput(connected) {
+                    .background(if(canceled)MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary)
+                    .semantics {contentDescription="Hold to record. Slide left to delete. Release to send."}
+                    .pointerInput(connected,cancelPx) {
                         awaitEachGesture {
                             val down=awaitFirstDown(requireUnconsumed=false)
-                            if(!connected) return@awaitEachGesture
-                            press()
-                            var shouldCancel=false
-                            var released=false
-                            while(!released) {
+                            if(!connected)return@awaitEachGesture
+                            press();haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                            var cancelled=false
+                            var finished=false
+                            while(!finished) {
                                 val change=awaitPointerEvent().changes.firstOrNull {it.id==down.id} ?: break
-                                if(change.position.x-down.position.x < -cancelPx){shouldCancel=true;break}
-                                if(!change.pressed)released=true
+                                slide=(change.position.x-down.position.x)/density.density
+                                if(change.position.x-down.position.x < -cancelPx) {
+                                    if(!cancelled)haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                                    cancelled=true
+                                }
+                                if(!change.pressed)finished=true
                             }
-                            if(shouldCancel)cancel() else release()
+                            if(cancelled){cancel();trashFlash=true}else release()
+                            slide=0f
                         }
                     },contentAlignment=Alignment.Center) {
-                    Icon(Icons.Default.Mic,"Hold to record",tint=MaterialTheme.colorScheme.onPrimary)
+                    Icon(if(canceled)Icons.Default.Delete else Icons.Default.Mic,
+                        "Hold to record",tint=MaterialTheme.colorScheme.onPrimary)
                 }
             }
         }
@@ -577,7 +738,7 @@ private fun SettingsPane(
                 TextButton(onClick=onShowDiagnostics){Text("View BLE diagnostics")}
                 TextButton(onClick=onClear){Text("Delete encrypted chat history")}
             } } }
-            item { Text("OffGrid Messenger 2.4 · Offline · AES-256-GCM · Binary BLE",
+            item { Text("OffGrid Messenger 2.4.1 · Offline · AES-256-GCM · Binary BLE",
                 style=MaterialTheme.typography.labelSmall,color=MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier=Modifier.padding(8.dp)) }
         }

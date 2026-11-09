@@ -19,7 +19,7 @@ object HistoryCodec {
         }.asReversed()
         val buffer=ByteArrayOutputStream()
         DataOutputStream(buffer).use { out ->
-            out.writeInt(1);out.writeInt(safe.size)
+            out.writeInt(2);out.writeInt(safe.size)
             safe.forEach { item ->
                 out.writeUTF(item.id.take(120));out.writeUTF(item.text.take(4000))
                 out.writeBoolean(item.outgoing);out.writeLong(item.timestamp)
@@ -27,12 +27,13 @@ object HistoryCodec {
                 out.writeInt(item.width);out.writeInt(item.height);out.writeInt(item.durationMs)
                 val payload=item.bytes?.takeIf {it.size<=131_072}
                 out.writeInt(payload?.size ?: 0);payload?.let(out::write)
+                out.writeBoolean(item.edited);out.writeBoolean(item.deleted)
             }
         }
         return buffer.toByteArray()
     }
     fun decode(bytes:ByteArray):List<ChatItem> = DataInputStream(ByteArrayInputStream(bytes)).use { input ->
-        require(input.readInt()==1) {"Unsupported history version"}
+        val version=input.readInt();require(version==1||version==2) {"Unsupported history version"}
         val count=input.readInt();require(count in 0..MAX_MESSAGES) {"History entry count exceeds limit"}
         List(count) {
             val id=input.readUTF();val text=input.readUTF()
@@ -41,7 +42,9 @@ object HistoryCodec {
             val width=input.readInt();val height=input.readInt();val duration=input.readInt()
             val len=input.readInt();require(len in 0..131_072) {"Invalid stored payload length"}
             val payload=if(len==0)null else ByteArray(len).also(input::readFully)
-            ChatItem(id,text,outgoing,time,status,kind,payload,mime,width,height,duration)
+            ChatItem(id,text,outgoing,time,status,kind,payload,mime,width,height,duration,
+                edited=if(version>=2)input.readBoolean() else false,
+                deleted=if(version>=2)input.readBoolean() else false)
         }
     }
 }

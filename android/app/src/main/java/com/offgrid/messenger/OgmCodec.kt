@@ -11,7 +11,7 @@ import javax.crypto.spec.SecretKeySpec
 /** OGM4 envelope and 160-byte OGC4 fragment format, compatible with web/protocol.js. */
 object OgmCodec {
  private val random=SecureRandom()
- const val TEXT=1;const val IMAGE=2;const val DELIVERED=3;const val READ=4;const val VOICE=7;const val PLAYED=8
+ const val TEXT=1;const val IMAGE=2;const val DELIVERED=3;const val READ=4;const val VOICE=7;const val PLAYED=8;const val EDIT=9;const val DELETE=10
  data class Frame(val id:String,val index:Int,val count:Int,val total:Int,val bytes:ByteArray,val bulk:Boolean=false)
  data class Envelope(val kind:Int,val id:String,val text:ByteArray,val timestamp:Long,val width:Int=0,val height:Int=0)
  fun hex(bytes:ByteArray)=bytes.joinToString(""){"%02X".format(it.toInt() and 255)}
@@ -70,7 +70,7 @@ object OgmCodec {
   val kind=b.get().toInt() and 255;val id=ByteArray(8);b.get(id)
   val ts=(b.int.toLong() and 0xffffffffL)*1000;val width=b.short.toInt() and 65535;val height=b.short.toInt() and 65535;val size=b.int
   require(size==plain.size-24)
-  require(kind in 1..8)
+  require(kind in 1..10)
   return Envelope(kind,hex(id),plain.copyOfRange(24,plain.size),ts,width,height)
  }
 }
