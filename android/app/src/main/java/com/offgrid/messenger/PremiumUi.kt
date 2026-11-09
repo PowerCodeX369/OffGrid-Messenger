@@ -60,12 +60,11 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
-import dev.chrisbanes.haze.HazeInput
 import dev.chrisbanes.haze.HazeState
 import dev.chrisbanes.haze.hazeSource
+import dev.chrisbanes.haze.hazeEffect
+import dev.chrisbanes.haze.HazeInputScale
 import dev.chrisbanes.haze.rememberHazeState
-import dev.chrisbanes.haze.blur.HazeBlurStyle
-import dev.chrisbanes.haze.blur.hazeBlur
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.delay
@@ -79,8 +78,8 @@ private val VividBlue = Color(0xFF4386FF)
 private val Midnight = Color(0xFF080E20)
 private val Ink = Color(0xFF162437)
 
-// Actual captured-source blur, not a gradient pretending to blur the backdrop.
-// Haze sources contain only the decorative scene (never the decrypted chat text).
+// Source-backed Haze 1.x: the *scrolling chat*, not wallpaper, supplies the pixels
+// under the fixed glass navigation and composer. The dialog overlay separately samples the UI.
 private val LocalOffGridHaze = compositionLocalOf<HazeState?> { null }
 
 
@@ -111,33 +110,37 @@ fun OffGridPremiumTheme(dark: Boolean, content: @Composable () -> Unit) {
     ),content=content)
 }
 
-/** 2.4.2 frosted card. Haze samples the scene drawn behind the card.
- * Content remains crisp and high-contrast; alpha scrims protect legibility.
- * If blur is unsupported by the device, the opaque-tinted fallback remains readable.
+/** Optional real backdrop glass. Only enable on surfaces that overlap a Haze source.
+ * Bubbles/settings panels remain ordinary Material surfaces so scroll does not trigger
+ * recursive, expensive blur effects; labels and touch targets stay perfectly sharp.
  */
 @Composable
 private fun GlassCard(
     modifier:Modifier=Modifier, dark:Boolean, radius:Dp=22.dp,
+    frost:Boolean=false,
     content: @Composable ColumnScope.() -> Unit
 ) {
     val shape=RoundedCornerShape(radius)
     val haze=LocalOffGridHaze.current
-    val frostStyle=remember(dark) { HazeBlurStyle {
-        blurRadius(22.dp)
-        noiseFactor(0.055f)
-    } }
-    val highlight=if(dark)Color(0xFFB9D7FF).copy(alpha=.15f) else Color.White.copy(alpha=.72f)
-    val upper=if(dark) Color(0xFF203349).copy(alpha=.61f) else Color.White.copy(alpha=.76f)
-    val lower=if(dark) Color(0xFF142236).copy(alpha=.65f) else Color(0xFFEAF3FF).copy(alpha=.72f)
-    val panel=modifier
-        .shadow(if(radius==0.dp) 0.dp else 2.dp,shape)
-        .clip(shape)
-        .then(if(haze!=null) Modifier.hazeBlur(
-            input=HazeInput.Sources(haze), style=frostStyle
-        ) else Modifier)
-        .background(Brush.verticalGradient(listOf(upper,lower)))
-        .border(1.dp,highlight,shape)
-    Column(panel,content=content)
+    val upper=if(dark) Color(0xFF17283D).copy(alpha=if(frost).40f else .93f)
+        else Color.White.copy(alpha=if(frost).34f else .94f)
+    val lower=if(dark) Color(0xFF112039).copy(alpha=if(frost).43f else .94f)
+        else Color(0xFFE9F3FF).copy(alpha=if(frost).38f else .96f)
+    val shapeBorder=if(dark)Color(0xFFD5E9FF).copy(alpha=.22f)
+        else Color.White.copy(alpha=.78f)
+    val actualBackdrop=if(frost && haze!=null) Modifier.hazeEffect(state=haze) {
+        blurRadius=24.dp
+        noiseFactor=.045f
+        inputScale=HazeInputScale.Auto
+    } else Modifier
+    Column(
+        modifier.shadow(if(radius==0.dp)0.dp else 3.dp,shape)
+            .clip(shape)
+            .then(actualBackdrop)
+            .background(Brush.verticalGradient(listOf(upper,lower)))
+            .border(1.dp,shapeBorder,shape),
+        content=content
+    )
 }
 
 private fun timeOf(millis:Long)=SimpleDateFormat("h:mm a",Locale.getDefault()).format(Date(millis))
@@ -195,6 +198,9 @@ fun PremiumMessenger(
         animationSpec=androidx.compose.animation.core.tween(360),label="theme background end")
     val bg=listOf(bgStart,bgMiddle,bgEnd)
     val hazeState=rememberHazeState()
+    val modalBackdrop=rememberHazeState()
+    val modalVisible=chosenMessage!=null || editTarget!=null || confirmRemoteDelete!=null ||
+        showChatInfo || renameDialog || showDiagnostics || confirmErase
     BoxWithConstraints(Modifier.fillMaxSize()
         .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Top+WindowInsetsSides.Horizontal))
         .background(Brush.linearGradient(bg))) {
@@ -203,19 +209,9 @@ fun PremiumMessenger(
         if(!wide && page=="chat") BackHandler { page="chats" }
         if(page=="settings") BackHandler { page=if(wide)"chat" else "chats" }
         LaunchedEffect(page,wide) { actions.chatVisibility(page=="chat" || (wide && page!="settings")) }
-        // Real sampled blur uses this restrained background as its source.
-        // Radial fades have transparent edges: no visible boxes or sharp blur bounds.
-        Box(Modifier.matchParentSize().hazeSource(hazeState)
-            .background(Brush.linearGradient(bg))) {
-            Box(Modifier.align(Alignment.TopStart).size(310.dp)
-                .offset(x=(-115).dp,y=25.dp)
-                .background(Brush.radialGradient(listOf(
-                    Color(0xFF3DAED5).copy(alpha=if(dark).17f else .14f), Color.Transparent))))
-            Box(Modifier.align(Alignment.BottomEnd).size(270.dp)
-                .offset(x=90.dp,y=(-95).dp)
-                .background(Brush.radialGradient(listOf(
-                    Color(0xFF607FE4).copy(alpha=if(dark).12f else .10f),Color.Transparent))))
-        }
+        // The modal overlay samples the whole displayed UI; the *glass bars* sample
+        // the LazyColumn separately so messages and photos blur while scrolling.
+        Box(Modifier.matchParentSize().then(if(modalVisible) Modifier.hazeSource(modalBackdrop) else Modifier)) {
         CompositionLocalProvider(LocalOffGridHaze provides hazeState) {
         Row(Modifier.fillMaxSize()) {
             if(wide) {
@@ -249,57 +245,79 @@ fun PremiumMessenger(
                         openChat={page="chat"},openSettings={page="settings"},onConnect=actions.connect
                         )
                     else -> {
-                        Column(Modifier.fillMaxSize()) {
-                        ChatTopBar(
-                            dark=dark,connected=connected,status=status,
-                            contactName=contactName,avatarBytes=avatarBytes,
-                            showBack=!wide,compact=micro,onBack={page="chats"},
-                            onInfo={showChatInfo=true},onSearch={showSearch=!showSearch}
-                        )
-                        AnimatedVisibility(showSearch) {
-                            OutlinedTextField(
-                                query,{query=it},modifier=Modifier.fillMaxWidth().padding(horizontal=16.dp,vertical=6.dp),
-                                singleLine=true,leadingIcon={Icon(Icons.Default.Search,null)},
-                                trailingIcon={IconButton(onClick={query="";showSearch=false}){Icon(Icons.Default.Close,"Close search")}},
-                                placeholder={Text("Search this conversation")},shape=RoundedCornerShape(24.dp)
-                            )
-                        }
-                        // Keyboard insets apply here, BELOW the fixed top app bar.
-                        // Only the LazyColumn receives scrolling; the toolbar never translates.
-                        Column(Modifier.weight(1f).fillMaxWidth().imePadding().navigationBarsPadding()) {
-                            AnimatedVisibility(!connected,enter=fadeIn(),exit=fadeOut()) {
-                                Row(Modifier.fillMaxWidth().padding(horizontal=14.dp,vertical=5.dp),
-                                    verticalAlignment=Alignment.CenterVertically) {
-                                    Text("Offline · connect your node",style=MaterialTheme.typography.labelMedium,
-                                        color=MaterialTheme.colorScheme.onSurfaceVariant,modifier=Modifier.weight(1f))
-                                    TextButton(onClick=actions.connect){Text("Connect")}
-                                }
-                            }
+                        // Draw timeline across the entire available chat viewport. The
+                        // toolbar and composer are overlays, NOT vertical siblings.
+                        // This is essential: the actual messages must render under the
+                        // translucent bars or there is nothing real to blur.
+                        Box(Modifier.fillMaxSize().imePadding().navigationBarsPadding()) {
                             ChatTimeline(items=items,filter=if(showSearch)query else "",dark=dark,
                                 playingId=playingId,connected=connected,appVisible=appVisible,
                                 openPhoto={enlargedPhoto=it},playVoice=actions.playVoice,
                                 onVisible=actions.markVisible,onRetry=actions.retry,
                                 onLongPress={chosenMessage=it},
-                                modifier=Modifier.fillMaxWidth().weight(1f))
-                            GlassComposer(
-                                draft=draft,onDraft={draft=it.take(500)},connected=connected,
-                                recording=recording,small=micro,dark=dark,
-                                tapMode=accessibleVoiceTap,
-                                onSend={if(draft.isNotBlank()){actions.sendText(draft);draft=""}},
-                                onPhoto=actions.photo,onPress=actions.micPress,
-                                onRelease=actions.micRelease,onCancel=actions.micCancel
-                            )
-                        }
+                                topSpace=if(showSearch)150.dp else 94.dp,
+                                bottomSpace=if(recording)170.dp else 112.dp,
+                                modifier=Modifier.fillMaxSize().hazeSource(hazeState))
+                            Column(Modifier.fillMaxWidth().align(Alignment.TopCenter)) {
+                                ChatTopBar(
+                                    dark=dark,connected=connected,status=status,
+                                    contactName=contactName,avatarBytes=avatarBytes,
+                                    showBack=!wide,compact=micro,onBack={page="chats"},
+                                    onInfo={showChatInfo=true},onSearch={showSearch=!showSearch}
+                                )
+                                AnimatedVisibility(showSearch) {
+                                    GlassCard(Modifier.fillMaxWidth(),dark=dark,radius=0.dp,frost=true) {
+                                        OutlinedTextField(query,{query=it},
+                                            modifier=Modifier.fillMaxWidth().padding(horizontal=16.dp,vertical=6.dp),
+                                            singleLine=true,leadingIcon={Icon(Icons.Default.Search,null)},
+                                            trailingIcon={IconButton(onClick={query="";showSearch=false}) {Icon(Icons.Default.Close,"Close search")}},
+                                            placeholder={Text("Search this conversation")},shape=RoundedCornerShape(24.dp))
+                                    }
+                                }
+                            }
+                            Column(Modifier.align(Alignment.BottomCenter).fillMaxWidth()) {
+                                AnimatedVisibility(!connected,enter=fadeIn(),exit=fadeOut()) {
+                                    GlassCard(Modifier.fillMaxWidth(),dark=dark,radius=0.dp,frost=true) {
+                                        Row(Modifier.fillMaxWidth().padding(horizontal=14.dp,vertical=5.dp),
+                                            verticalAlignment=Alignment.CenterVertically) {
+                                            Text("Offline · connect your node",style=MaterialTheme.typography.labelMedium,
+                                                color=MaterialTheme.colorScheme.onSurfaceVariant,modifier=Modifier.weight(1f))
+                                            TextButton(onClick=actions.connect){Text("Connect")}
+                                        }
+                                    }
+                                }
+                                GlassComposer(
+                                    draft=draft,onDraft={draft=it.take(500)},connected=connected,
+                                    recording=recording,small=micro,dark=dark,
+                                    tapMode=accessibleVoiceTap,
+                                    onSend={if(draft.isNotBlank()){actions.sendText(draft);draft=""}},
+                                    onPhoto=actions.photo,onPress=actions.micPress,
+                                    onRelease=actions.micRelease,onCancel=actions.micCancel
+                                )
+                            }
                         }
                     }
                 }
                 }
             }
-        }
+        } // End Row
+        } // End CompositionLocalProvider
+        } // End sampled UI (modal backdrop source)
+        if(modalVisible) {
+            // Same-root frost, deliberately above UI and below the AlertDialog.
+            // The alert's own text remains sharp in Android's dialog window.
+            Box(Modifier.matchParentSize().hazeEffect(state=modalBackdrop) {
+                blurRadius=28.dp
+                noiseFactor=.025f
+                inputScale=HazeInputScale.Auto
+            }.background(if(dark)Color(0x4D061324) else Color(0x33F2F7FD)))
         }
     }
     chosenMessage?.let { message ->
-        AlertDialog(onDismissRequest={chosenMessage=null},
+        AlertDialog(
+        containerColor=MaterialTheme.colorScheme.surface.copy(alpha=if(dark).76f else .88f),
+        tonalElevation=2.dp,shape=RoundedCornerShape(26.dp),
+        onDismissRequest={chosenMessage=null},
             title={Text("Message options")},
             text={Column(verticalArrangement=Arrangement.spacedBy(3.dp)) {
                 if(message.kind==OgmCodec.TEXT && !message.deleted) {
@@ -324,20 +342,29 @@ fun PremiumMessenger(
                 }
             }},confirmButton={TextButton(onClick={chosenMessage=null}) {Text("Close")}})
     }
-    editTarget?.let { target -> AlertDialog(onDismissRequest={editTarget=null},
+    editTarget?.let { target -> AlertDialog(
+        containerColor=MaterialTheme.colorScheme.surface.copy(alpha=if(dark).76f else .88f),
+        tonalElevation=2.dp,shape=RoundedCornerShape(26.dp),
+        onDismissRequest={editTarget=null},
         title={Text("Edit message")},text={OutlinedTextField(editDraft,{editDraft=it.take(500)},
             singleLine=false,maxLines=5,label={Text("Message text")})},
         confirmButton={TextButton(enabled=editDraft.isNotBlank(),onClick={
             actions.editMessage(target,editDraft.trim());editTarget=null
         }){Text("Save edit")}},dismissButton={TextButton(onClick={editTarget=null}){Text("Cancel")}})
     }
-    confirmRemoteDelete?.let { target -> AlertDialog(onDismissRequest={confirmRemoteDelete=null},
+    confirmRemoteDelete?.let { target -> AlertDialog(
+        containerColor=MaterialTheme.colorScheme.surface.copy(alpha=if(dark).76f else .88f),
+        tonalElevation=2.dp,shape=RoundedCornerShape(26.dp),
+        onDismissRequest={confirmRemoteDelete=null},
         title={Text("Delete for everyone?")},
         text={Text("The recipient's updated OffGrid client will remove this message when it receives the encrypted delete command. Devices that were offline or use older versions may still retain it.")},
         confirmButton={TextButton(onClick={actions.deleteForEveryone(target);confirmRemoteDelete=null}){Text("Delete")}},
         dismissButton={TextButton(onClick={confirmRemoteDelete=null}){Text("Cancel")}})
     }
-    if(showChatInfo) AlertDialog(onDismissRequest={showChatInfo=false},
+    if(showChatInfo) AlertDialog(
+        containerColor=MaterialTheme.colorScheme.surface.copy(alpha=if(dark).76f else .88f),
+        tonalElevation=2.dp,shape=RoundedCornerShape(26.dp),
+        onDismissRequest={showChatInfo=false},
         title={Text("Contact details")},text={Column(verticalArrangement=Arrangement.spacedBy(12.dp)) {
             Row(verticalAlignment=Alignment.CenterVertically){NodeAvatar(64.dp,dark,avatarBytes);Spacer(Modifier.width(12.dp));Text(contactName,style=MaterialTheme.typography.titleLarge)}
             Text("Private, device-to-device conversation",color=MaterialTheme.colorScheme.onSurfaceVariant)
@@ -347,18 +374,26 @@ fun PremiumMessenger(
             }
             TextButton(onClick={renameDraft=contactName;renameDialog=true;showChatInfo=false}){Text("Rename contact")}
         }},confirmButton={TextButton(onClick={showChatInfo=false}){Text("Done")}})
-    if(renameDialog) AlertDialog(onDismissRequest={renameDialog=false},title={Text("Contact name")},
+    if(renameDialog) AlertDialog(
+        containerColor=MaterialTheme.colorScheme.surface.copy(alpha=if(dark).76f else .88f),
+        tonalElevation=2.dp,shape=RoundedCornerShape(26.dp),
+        onDismissRequest={renameDialog=false},title={Text("Contact name")},
         text={OutlinedTextField(renameDraft,{renameDraft=it.take(36)},singleLine=true)},
         confirmButton={TextButton(onClick={actions.renameContact(renameDraft.trim().ifEmpty {"Nearby node"});renameDialog=false}){Text("Save")}},
         dismissButton={TextButton(onClick={renameDialog=false}){Text("Cancel")}})
     enlargedPhoto?.let { FullPhoto(item=it,onClose={enlargedPhoto=null}) }
     if(showDiagnostics) AlertDialog(
+        containerColor=MaterialTheme.colorScheme.surface.copy(alpha=if(dark).76f else .88f),
+        tonalElevation=2.dp,shape=RoundedCornerShape(26.dp),
         onDismissRequest={showDiagnostics=false},title={Text("BLE diagnostics")},
         text={Column(Modifier.heightIn(max=420.dp)) {
             diagnostics.takeLast(18).forEach { Text(it,style=MaterialTheme.typography.labelSmall) }
         }},confirmButton={TextButton(onClick={showDiagnostics=false}){Text("Close")}}
     )
-    if(confirmErase) AlertDialog(onDismissRequest={confirmErase=false},
+    if(confirmErase) AlertDialog(
+        containerColor=MaterialTheme.colorScheme.surface.copy(alpha=if(dark).76f else .88f),
+        tonalElevation=2.dp,shape=RoundedCornerShape(26.dp),
+        onDismissRequest={confirmErase=false},
         title={Text("Clear encrypted history?")},
         text={Text("This permanently deletes saved messages and media from this phone. Your ESP32 pairing key is preserved.")},
         confirmButton={TextButton(onClick={actions.clearHistory();confirmErase=false}){Text("Delete history")}},
@@ -372,7 +407,7 @@ private fun rememberSaveableString(initial:String): MutableState<String> =
 
 @Composable
 private fun ChatTopBar(dark:Boolean,connected:Boolean,status:String,contactName:String,avatarBytes:ByteArray?,showBack:Boolean,compact:Boolean,onBack:()->Unit,onInfo:()->Unit,onSearch:()->Unit) {
-    GlassCard(Modifier.fillMaxWidth(),dark=dark,radius=0.dp) {
+    GlassCard(Modifier.fillMaxWidth(),dark=dark,radius=0.dp,frost=true) {
         Row(Modifier.fillMaxWidth().heightIn(min=64.dp).padding(horizontal=if(showBack)8.dp else 16.dp,vertical=7.dp),
             verticalAlignment=Alignment.CenterVertically) {
             if(showBack) IconButton(onClick=onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack,"Back to chats") }
@@ -452,7 +487,8 @@ private fun NavigationPane(
 private fun ChatTimeline(
     items:List<ChatItem>,filter:String,dark:Boolean,playingId:String?,connected:Boolean,appVisible:Boolean,
     openPhoto:(ChatItem)->Unit,playVoice:(ChatItem)->Unit,onVisible:(Set<String>)->Unit,
-    onRetry:(ChatItem)->Unit,onLongPress:(ChatItem)->Unit,modifier:Modifier
+    onRetry:(ChatItem)->Unit,onLongPress:(ChatItem)->Unit,modifier:Modifier,
+    topSpace:Dp=94.dp,bottomSpace:Dp=112.dp
 ) {
     val visibleItems=remember(items,filter) { if(filter.isBlank())items else items.filter {
         it.text.contains(filter,ignoreCase=true) || (it.kind==OgmCodec.IMAGE && "photo".contains(filter,true)) ||
@@ -480,7 +516,7 @@ private fun ChatTimeline(
             if(connected && appVisible) onVisible(indices.mapNotNull { visibleItems.getOrNull(it-1)?.takeIf { entry -> !entry.outgoing && !entry.deleted }?.id }.toSet())
         }
     }
-    LazyColumn(modifier,state=lazy,contentPadding=PaddingValues(horizontal=12.dp,vertical=16.dp),
+    LazyColumn(modifier,state=lazy,contentPadding=PaddingValues(start=12.dp,end=12.dp,top=topSpace,bottom=bottomSpace),
         verticalArrangement=Arrangement.spacedBy(10.dp)) {
         item {
             Box(Modifier.fillMaxWidth().padding(bottom=18.dp),contentAlignment=Alignment.Center) {
@@ -662,7 +698,7 @@ private fun GlassComposer(draft:String,onDraft:(String)->Unit,connected:Boolean,
     val canceled=(!locked && cancelArmed) || trashFlash
     val trashScale by animateFloatAsState(if(trashFlash)1.45f else if(canceled)1.17f else 1f,
         animationSpec=androidx.compose.animation.core.spring(),label="trash bounce")
-    GlassCard(Modifier.fillMaxWidth(),dark=dark,radius=if(small)18.dp else 23.dp) {
+    GlassCard(Modifier.fillMaxWidth(),dark=dark,radius=if(small)18.dp else 23.dp,frost=true) {
         AnimatedVisibility(recording||trashFlash,enter=fadeIn()+slideInVertically { it/2 },exit=fadeOut()) {
             Row(Modifier.fillMaxWidth().heightIn(min=45.dp).padding(horizontal=16.dp,vertical=5.dp),
                 verticalAlignment=Alignment.CenterVertically) {
@@ -786,12 +822,11 @@ private fun SettingsPane(
     connected:Boolean,nodeAddress:String?,diagnostics:List<String>,onBack:()->Unit,actions:PremiumActions,
     onShowDiagnostics:()->Unit,onClear:()->Unit
 ) {
-    Column(Modifier.fillMaxSize().navigationBarsPadding()) {
-        Row(Modifier.fillMaxWidth().padding(12.dp),verticalAlignment=Alignment.CenterVertically) {
-            IconButton(onClick=onBack){Icon(Icons.AutoMirrored.Filled.ArrowBack,"Back")}
-            Text("Settings",style=MaterialTheme.typography.headlineSmall,fontWeight=FontWeight.Bold)
-        }
-        LazyColumn(Modifier.fillMaxSize(),contentPadding=PaddingValues(horizontal=18.dp,vertical=12.dp),
+    // Settings scrolls *under* its pinned glass heading, like the conversation.
+    val background=LocalOffGridHaze.current
+    Box(Modifier.fillMaxSize().navigationBarsPadding()) {
+        LazyColumn(Modifier.fillMaxSize().then(if(background!=null) Modifier.hazeSource(background) else Modifier),
+            contentPadding=PaddingValues(start=18.dp,end=18.dp,top=94.dp,bottom=18.dp),
             verticalArrangement=Arrangement.spacedBy(15.dp)) {
             item { GlassCard(dark=dark) {
                 Column(Modifier.padding(18.dp)) {
@@ -825,9 +860,16 @@ private fun SettingsPane(
                 TextButton(onClick=onShowDiagnostics){Text("View BLE diagnostics")}
                 TextButton(onClick=onClear){Text("Delete encrypted chat history")}
             } } }
-            item { Text("OffGrid Messenger 2.4.2 · Offline · AES-256-GCM · Binary BLE",
+            item { Text("OffGrid Messenger 2.4.3 · Offline · AES-256-GCM · Binary BLE",
                 style=MaterialTheme.typography.labelSmall,color=MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier=Modifier.padding(8.dp)) }
+        }
+        GlassCard(Modifier.fillMaxWidth().align(Alignment.TopCenter),dark=dark,radius=0.dp,frost=true) {
+            Row(Modifier.fillMaxWidth().heightIn(min=62.dp).padding(horizontal=12.dp,vertical=7.dp),
+                verticalAlignment=Alignment.CenterVertically) {
+                IconButton(onClick=onBack){Icon(Icons.AutoMirrored.Filled.ArrowBack,"Back")}
+                Text("Settings",style=MaterialTheme.typography.headlineSmall,fontWeight=FontWeight.Bold)
+            }
         }
     }
 }
