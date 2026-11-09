@@ -1,4 +1,33 @@
-# OffGrid Messenger — Phase 1.4
+# Phase 1.4.1 — UI and adaptive-transfer fixes
+
+This is a maintenance update to Phase 1.4. **The ESP32-C3 protocol-2 firmware is unchanged, so you do not need to reflash working boards.** Both browser tabs must use the same updated frontend.
+
+## Fixes
+
+- The app now fills **100% of the available window width**; no centered 1600px cap.
+- Sidebar width and message layout adapt to half-screen desktop widths; <=720px shows mobile chat-list/chat screens.
+- Photo previews are bounded by actual chat width; header/controls no longer compete for fixed widths.
+- Light theme now has consistent readable header/composer/button colors.
+- Default photo target **64 KiB** instead of 96 KiB: WebP/JPEG quality ~0.91 down to 0.76 and adaptive resolution; in range-first/weak mode target 48 KiB, in strong/speed-first up to 72 KiB. **Lossy modes can reduce image detail**; lossless PNG remains separate with the original 96 KiB cap.
+- New settings: **Auto**, **Range first**, **Speed first**. Delivery acknowledgments and retries inform in-flight fragment count, starting conservatively and scaling up to at most 3 when healthy. Weak links reduce concurrency automatically.
+- Photo transfer still requires **complete authenticated reconstruction** before double ticks appear.
+- The firmware **radio PHY speed, RF power and channel are unchanged**. This is *application throughput adaptation*, not real RSSI/distance-based PHY rate adaptation. It cannot guarantee or extend maximum range. ESP32-C3's small antenna and obstacles remain limiting.
+
+## Start
+
+Extract and run from the project root:
+
+```bash
+python3 -m http.server 8765 --directory web
+```
+
+Open **two tabs** at `http://localhost:8765/?v=1.4.1`, hard-refresh both (Ctrl+Shift+R). Connect each board as before. The app uses the **same IndexedDB database and encryption keys as 1.4**, as long as the origin (`localhost:8765`) is unchanged.
+
+The original README details and testing notes follow.
+
+---
+
+# OffGrid Messenger — Phase 1.4.1 — maintenance upgrade
 
 **Encrypted, offline browser messenger for two ESP32-C3 Super Mini boards.**
 
@@ -32,7 +61,7 @@ python3 -m http.server 8765 --directory web
 Open two tabs in Chrome/Chromium:
 
 ```text
-http://localhost:8765/?v=1.4.0
+http://localhost:8765/?v=1.4.1
 ```
 
 If you still see the old interface: Ctrl+Shift+R in **both tabs**. Connect each tab to its own ESP32 USB port using **Connect ESP32**. Each tab should display its correct Wi-Fi MAC and `Connected`.

@@ -4,11 +4,11 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#101b21">
-  <title>OffGrid Messenger — Phase 1.4</title>
+  <title>OffGrid Messenger — Phase 1.4.1</title>
   <link rel="icon" href="logo.svg" type="image/svg+xml">
-  <link rel="stylesheet" href="styles.css?v=1.4.0">
-  <script src="protocol.js?v=1.4.0" defer></script>
-  <script src="app.js?v=1.4.0" defer></script>
+  <link rel="stylesheet" href="styles.css?v=1.4.1">
+  <script src="protocol.js?v=1.4.1" defer></script>
+  <script src="app.js?v=1.4.1" defer></script>
 </head>
 <body>
 <div class="app" id="app">
@@ -33,6 +33,7 @@
         <button class="quiet-button" id="disconnectButton" disabled>Disconnect</button>
       </div>
       <div class="node-info"><span id="nodeAddress">Node: —</span><span id="nodeChannel">Channel 6</span></div>
+      <div class="link-health" title="Link profile uses acknowledgment latency and retries, not physical distance"><span class="link-health-dot"></span><span id="linkModeLabel">Auto · learning link quality</span></div>
       <button class="security-line" id="securityButton" type="button"><span id="securityIcon">♢</span><span id="securityLabel">Connect to configure encryption</span><span class="security-chevron">›</span></button>
     </div>
     <div class="chats-heading"><h2>Chats</h2><span class="tiny-badge">1</span></div>
@@ -41,8 +42,8 @@
       <span class="contact-body"><span class="contact-top"><strong id="contactSidebarName">Nearby node</strong><span class="contact-time" id="lastChatTime"></span></span><span class="contact-preview" id="lastChatPreview">Your off-grid conversation</span></span>
     </button>
     <div class="phase-banner">
-      <span>Phase 1.4</span>
-      <strong>AES-256-GCM · encrypted images · real receipts</strong>
+      <span>Phase 1.4.1</span>
+      <strong>Encrypted chat · responsive UI · adaptive transfers</strong>
       <small>No cloud. No server. No internet.</small>
     </div>
     <div class="side-foot"><span class="tiny-offline">◆</span> Peer-to-peer radio • USB Serial + ESP-NOW <small>Encrypted messages · local browser key storage</small></div>
