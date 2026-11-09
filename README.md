@@ -49,6 +49,16 @@ Read [the complete 47-release history](docs/HISTORY.md), or inspect an annotated
 
 [Branch policy](docs/BRANCHING.md) · [Reconstruction methodology](docs/RECONSTRUCTION.md)
 
+## Developer and contributor guides
+
+- [Development and installation](docs/DEVELOPMENT.md) — verified configuration facts, setup and limitations.
+- [Architecture and compatibility](docs/ARCHITECTURE.md) — BLE/ESP-NOW/USB component boundaries.
+- [Testing matrix](docs/TESTING.md) — safe checks and hardware verification requirements.
+- [Contributing](CONTRIBUTING.md) · [Code of conduct](CODE_OF_CONDUCT.md) · [Security policy](SECURITY.md) · [Changelog](CHANGELOG.md).
+- [GitHub bug reports and feature requests](.github/ISSUE_TEMPLATE/) · [pull-request checklist](.github/PULL_REQUEST_TEMPLATE.md).
+
+**Validation status:** the repository includes source and history but its Android snapshot lacks a Gradle wrapper, and full Android/ESP-IDF builds plus physical-device tests have not been run as part of this documentation update. No release version newer than `v2.5.6` is implied. The owner has not yet selected an open-source license, verified Git commit identity or vulnerability-reporting address; these must be confirmed before public contributor onboarding.
+
 ## Getting started
 
 **Firmware:** install the ESP-IDF toolchain matching the archived project and configure the target supported board; check `firmware/README.md` and target-specific instructions, then `idf.py build`, `idf.py -p PORT flash monitor`. **Do not erase NVS casually**—existing pairing and peer state may be lost.

@@ -1,0 +1,32 @@
+name: Bug report
+description: Report a reproducible issue without posting keys or personal data
+title: "bug: "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: "Do NOT post security vulnerabilities, conversation keys, NVS dumps or private device data here. See SECURITY.md."
+  - type: textarea
+    id: issue
+    attributes:
+      label: What happened?
+      description: Include expected and actual behavior.
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version/tag and component
+      placeholder: v2.5.6 / Android, firmware, or web
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Reproduction steps
+    validations:
+      required: true
+  - type: textarea
+    id: tests
+    attributes:
+      label: Tests, environment and sanitized logs

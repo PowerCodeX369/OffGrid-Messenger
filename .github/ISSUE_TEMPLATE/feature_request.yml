@@ -1,0 +1,19 @@
+name: Feature request
+description: Suggest an improvement or new feature
+title: "feat: "
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem and proposed behavior
+    validations:
+      required: true
+  - type: textarea
+    id: compatibility
+    attributes:
+      label: Protocol compatibility, NVS, key and hardware impact
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
