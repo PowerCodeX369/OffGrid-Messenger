@@ -3,7 +3,7 @@
    Keys are stored on each ESP32 and imported only into browser RAM over physical USB. No external servers. */
 const P=globalThis.OGP,$=id=>document.getElementById(id);
 const MAX_CHARS=500,MAX_PHOTO=96*1024,STORE='OffGridMessengerV14';
-const APP_VERSION='1.4.5.1-stable';
+const APP_VERSION='1.4.6-safe-adaptive';
 const stateRank={sending:0,queued:0,sent:1,failed:1,delivered:2,read:3};
 const encoder=new TextEncoder();
 let port=null,reader=null,writer=null,readPromise=null,closing=false,verified=false,serialBuffer='',writeChain=Promise.resolve(),handshakeTimer=null;
@@ -40,11 +40,13 @@ let transferQueue=[],activeTransfer=null,runningTransfers=false;
 const radioByHex=new Map(),radioByWire=new Map();
 const linkStats={samples:0,avgMs:0,cleanStreak:0,retries:0,mode:'starting',window:1,lastKBs:0};
 let linkPreference='auto';
+const photoFlow=new globalThis.OffGridAdaptive.PhotoFlowController();
+let adaptivePhotos=true;
 let queuedReceipts=new Set(),pendingReads=new Set(),theme='dark';
 let imageMode='hq';
 let radioTelemetry={peer:'NONE',rssi:null,phy:1,mode:'AUTO',delivered:0,retries:0,failures:0,txok:0,txfail:0,rx:0,hello:0,available:false};
 let selectedPhotoId=null,viewerZoomed=false,viewerTouchX=null,viewerPreviousFocus=null;
-try{theme=localStorage.getItem('offgrid_theme')==='light'?'light':'dark';imageMode=localStorage.getItem('offgrid_image_mode')==='lossless'?'lossless':'hq';linkPreference=['auto','range','speed'].includes(localStorage.getItem('offgrid_link_preference'))?localStorage.getItem('offgrid_link_preference'):'auto';}catch{}
+try{theme=localStorage.getItem('offgrid_theme')==='light'?'light':'dark';imageMode=localStorage.getItem('offgrid_image_mode')==='lossless'?'lossless':'hq';linkPreference=['auto','range','speed'].includes(localStorage.getItem('offgrid_link_preference'))?localStorage.getItem('offgrid_link_preference'):'auto';adaptivePhotos=localStorage.getItem('offgrid_adaptive_photos')!=='off';}catch{}
 document.body.classList.toggle('light',theme==='light');
 const macKey=()=>localMac||'unknown';
 const nameKey=()=>`offgrid_phase14_name_${macKey()}`;
@@ -70,28 +72,36 @@ const dbPut=(store,value)=>txRequest(store,'readwrite',st=>st.put(value));
 const dbDelete=(store,key)=>txRequest(store,'readwrite',st=>st.delete(key));
 const listStored=()=>txRequest('messages','readonly',st=>st.index('owner').getAll(IDBKeyRange.only(macKey())));
 async function wipeStored(){const rows=await listStored();await new Promise((resolve,reject)=>{const tx=db.transaction('messages','readwrite'),st=tx.objectStore('messages');for(const row of rows)st.delete(row.pk);tx.oncomplete=resolve;tx.onerror=()=>reject(tx.error);});}
-function chosenWindow(){
- // Recovery build: exactly one frame at a time until real devices prove stable.
- return 1;
+function chosenWindow(job=activeTransfer){
+ // A deliberate boundary: text and control receipts never use speculative pipelining.
+ // Only photo jobs can raise concurrency, starting at 1 and learning from real ACKs.
+ const kind=job?.kind==='image'&&!job?.control?'image':'text';
+ return photoFlow.window({kind,rssi:radioTelemetry.rssi,enabled:adaptivePhotos,
+   profile:linkPreference,txFailures:0});
 }
 function photoBudget(){
  if(imageMode==='lossless')return MAX_PHOTO;
- if(linkStats.mode==='weak'||linkPreference==='range')return 32*1024;
- if(linkPreference==='speed'||linkStats.mode==='strong')return 60*1024;
+ // Image preparation happens before transmission; mid-transfer signal changes
+ // alter the in-flight window, never mutate already-encrypted image bytes.
+ if(linkPreference==='range')return 32*1024;
+ if(linkPreference==='auto'&&radioTelemetry.rssi!==null&&radioTelemetry.rssi< -78)return 32*1024;
+ if(linkStats.mode==='weak')return 32*1024;
+ if(linkPreference==='speed'||(linkStats.mode==='strong'&&radioTelemetry.rssi!==null&&radioTelemetry.rssi>=-65))return 60*1024;
  return 48*1024;
 }
 function updateLinkBadge(){
  const node=$('linkModeLabel');if(!node)return;
- const speed=chosenWindow(),budget=Math.round(photoBudget()/1024);
+ const speed=chosenWindow({kind:'image',control:false}),budget=Math.round(photoBudget()/1024);
  const name=linkPreference==='auto'?'Auto compression':linkPreference==='range'?'Smaller photos':'Higher-quality photos';
  let quality='learning';
  if(linkStats.samples>3)quality=linkStats.mode==='strong'?'strong':linkStats.mode==='weak'?'weak':'steady';
  const phy=radioTelemetry.available?'stable radio · 1 Mbps PHY':'stable radio starting';
  const signal=radioTelemetry.available&&radioTelemetry.rssi!==null?`${radioTelemetry.rssi} dBm`:'signal —';
- node.textContent=`${name} · ${phy} · ${signal} · ${speed} in flight · ~${budget} KB photos${linkStats.lastKBs?` · last ${linkStats.lastKBs.toFixed(1)} KB/s`:``}`;
+ node.textContent=`${name} · ${phy} · ${signal} · photo window ${speed} · ~${budget} KB${photoFlow.samples?` · ACK ${Math.round(photoFlow.emaMs)} ms`:``}${linkStats.lastKBs?` · ${linkStats.lastKBs.toFixed(1)} KB/s`:``}`;
  node.title=`ESP-NOW peer: ${radioTelemetry.peer}. TX successful: ${radioTelemetry.txok}, TX failures: ${radioTelemetry.txfail}, received: ${radioTelemetry.rx}, discovery beacons received: ${radioTelemetry.hello}. Reported PHY rate is not actual file throughput.`;
 }
-function recordLinkResult(rtt,attempts){
+function recordLinkResult(rtt,attempts,isPhoto=false){
+ if(isPhoto)photoFlow.success(rtt,attempts);
  linkStats.samples++;
  linkStats.avgMs=linkStats.samples===1?rtt:linkStats.avgMs*0.78+rtt*0.22;
  if(attempts>1||rtt>1800){linkStats.cleanStreak=0;linkStats.retries++;linkStats.mode='weak';}
@@ -102,7 +112,7 @@ function recordLinkResult(rtt,attempts){
  }
  linkStats.window=chosenWindow();updateLinkBadge();
 }
-function recordLinkFailure(){linkStats.cleanStreak=0;linkStats.mode='weak';linkStats.window=1;linkStats.retries++;updateLinkBadge();}
+function recordLinkFailure(){photoFlow.penalty('radio or browser ACK failure');linkStats.cleanStreak=0;linkStats.mode='weak';linkStats.window=1;linkStats.retries++;updateLinkBadge();}
 function pendingRadio(){return radioByHex.size>0;}
 function clearSlot(slot){
  if(!slot)return;clearTimeout(slot.timer);
@@ -348,7 +358,7 @@ async function transferFragments(chunks,job){
  const transferStart=performance.now();
  let next=0,completed=0,fatal=null;const inflight=new Map();
  while((completed<chunks.length)&&!fatal){
-  while(next<chunks.length&&inflight.size<chosenWindow()){
+  while(next<chunks.length&&inflight.size<chosenWindow(job)){
    const i=next++;
    const op=oneFragment(chunks[i]).then(result=>({i,...result})).catch(error=>({i,error}));
    inflight.set(i,op);
@@ -356,7 +366,7 @@ async function transferFragments(chunks,job){
   if(!inflight.size)break;
   const result=await Promise.race(inflight.values());inflight.delete(result.i);
   if(result.error){recordLinkFailure();fatal=result.error;break;}
-  completed++;recordLinkResult(result.ms,result.attempts);
+  completed++;recordLinkResult(result.ms,result.attempts,job.kind==='image'&&!job.control);
   if(job.record){
     const elapsed=Math.max(0.001,(performance.now()-transferStart)/1000);
     job.record.speedKbps=((completed/chunks.length)*(job.record.kind==='image'?job.record.bytes.length:P.textBytes(job.record.text).length))/1024/elapsed;
@@ -412,6 +422,9 @@ function parseLine(raw){const s=raw.trim();if(!s)return;
   const parts=s.split('|'),fields={};for(const bit of parts.slice(2)){const j=bit.indexOf('=');if(j>0)fields[bit.slice(0,j)]=bit.slice(j+1);}
   const phy=Number(fields.PHY),rssi=Number(fields.RSSI);
   if([1,6,12].includes(phy)){
+   const newTxFail=Number(fields.TXFAIL)||0;
+   if(newTxFail>radioTelemetry.txfail && photoFlow.samples)photoFlow.penalty('firmware reports radio TX failure');
+   // Use current telemetry only; cumulative TX failures are not a permanent ban.
    radioTelemetry={peer:parts[1],phy,rssi:Number.isFinite(rssi)&&rssi>-120&&rssi<0?rssi:null,
      mode:fields.MODE||'AUTO',delivered:Number(fields.OK)||0,retries:Number(fields.RETRY)||0,
      failures:Number(fields.FAIL)||0,txok:Number(fields.TXOK)||0,txfail:Number(fields.TXFAIL)||0,rx:Number(fields.RX)||0,hello:Number(fields.HELLO)||0,available:true};
@@ -552,12 +565,17 @@ async function migrateLegacy(){const oldKey='offgrid_phase13_history_'+macKey().
 function showRename(){showDialog('Contact name',body=>{body.append(el('p','','This is a local nickname for the remote node.'));const field=document.createElement('input');field.value=activeContact;field.maxLength=36;body.append(field);const save=el('button','primary-button','Save contact name');save.onclick=()=>{setName(field.value.trim());persistName();closeDialog();};body.append(el('div','modal-actions')).append(save);setTimeout(()=>{field.focus();field.select();},40);});}
 async function clearHistory(){if(!verified||!secretKey)return;if(runningTransfers||pendingRadio()||transferQueue.length){toast('Finish active transfers before clearing history.');return;}if(!confirm('Delete encrypted chat history for this ESP32 from this browser? This cannot be undone.'))return;
  await wipeStored();records=[];recordMap.clear();revokePhotos();renderHistory();toast('Local chat history cleared.');closeDialog();}
-function showInfo(){showDialog('Chat information',body=>{[['Contact',activeContact],['Your ESP32',localMac||'Disconnected'],['Protocol','ESP-NOW firmware protocol 2 / encrypted app protocol OGM4'],['Security',secretKey?'AES-256-GCM, 256-bit random shared key':'Not paired'],['Photo target',`${Math.round(photoBudget()/1024)} KB optimized, 96 KB absolute`],['Radio PHY',radioTelemetry.available?`${radioTelemetry.phy} Mbps TX, RSSI ${radioTelemetry.rssi===null?'unknown':radioTelemetry.rssi+' dBm'}`:'Waiting for telemetry'],['Link profile',`${linkPreference}; stable 1 Mbps radio and 1 fragment in flight`],['Key storage','ESP32 NVS, browser RAM only'],['History','AES-GCM encrypted IndexedDB']].forEach(([a,b])=>{const line=el('div','info-line');line.append(el('span','',a),el('strong','',b));body.append(line);});body.append(el('p','','Grey single tick = transmitted; grey double tick = peer decrypted and confirmed; blue double tick = peer app reported it was viewed. Browser history is stored encrypted at rest.'));});}
-function showSettings(){showDialog('Settings',body=>{body.append(el('p','','Phase 1.4.5.1 USB FIX: restored reliable broadcast radio, ESP32 NVS pairing keys, encrypted chat and photo gallery.'));
+function showInfo(){showDialog('Chat information',body=>{[['Contact',activeContact],['Your ESP32',localMac||'Disconnected'],['Protocol','ESP-NOW firmware protocol 2 / encrypted app protocol OGM4'],['Security',secretKey?'AES-256-GCM, 256-bit random shared key':'Not paired'],['Photo target',`${Math.round(photoBudget()/1024)} KB optimized, 96 KB absolute`],['Radio PHY',radioTelemetry.available?`${radioTelemetry.phy} Mbps TX, RSSI ${radioTelemetry.rssi===null?'unknown':radioTelemetry.rssi+' dBm'}`:'Waiting for telemetry'],['Link profile',`${linkPreference}; stable 1 Mbps PHY; photo window ${chosenWindow({kind:'image',control:false})}; auto ${adaptivePhotos?'on':'off'}`],['Key storage','ESP32 NVS, browser RAM only'],['History','AES-GCM encrypted IndexedDB']].forEach(([a,b])=>{const line=el('div','info-line');line.append(el('span','',a),el('strong','',b));body.append(line);});body.append(el('p','','Grey single tick = transmitted; grey double tick = peer decrypted and confirmed; blue double tick = peer app reported it was viewed. Browser history is stored encrypted at rest.'));});}
+function showSettings(){showDialog('Settings',body=>{body.append(el('p','','Phase 1.4.6: original 1.4.5.2 firmware unchanged. Optional safe adaptive PHOTO throughput with instant rollback to one in-flight packet.'));
  const linkLabel=el('label','','Transfer profile');body.append(linkLabel);const linkSelect=document.createElement('select');linkSelect.className='setting-select';
  [['auto','Auto · balanced photo compression, stable packet flow'],['range','Range first · more compressed photos, ~32 KB'],['speed','Quality first · less compression, ~60 KB']].forEach(([v,t])=>{const opt=document.createElement('option');opt.value=v;opt.textContent=t;linkSelect.append(opt);});
  linkSelect.value=linkPreference;linkSelect.onchange=()=>{linkPreference=linkSelect.value;try{localStorage.setItem('offgrid_link_preference',linkPreference);}catch{}if(verified)void writeLine('RATE '+linkPreference.toUpperCase()).catch(()=>{});updateLinkBadge();};body.append(linkSelect);
- body.append(el('p','','Link quality is estimated from receiver acknowledgments and retries, not measured distance. Stable firmware intentionally uses broadcast at 1 Mbps for reliable short text and ACKs. Dynamic PHY selection is disabled until hardware throughput is validated. Image size and packet concurrency also adapt. Actual range depends on interference and antenna orientation.')); 
+ const flowLabel=el('label','','Photo transfer throughput');body.append(flowLabel);const flowSelect=document.createElement('select');flowSelect.className='setting-select';
+ [['on','Automatic · 1–3 in-flight fragments based on RSSI and ACK latency'],['off','Stable · always 1 in-flight fragment (instant rollback)']].forEach(([v,t])=>{const opt=document.createElement('option');opt.value=v;opt.textContent=t;flowSelect.append(opt);});
+ flowSelect.value=adaptivePhotos?'on':'off';flowSelect.onchange=()=>{adaptivePhotos=flowSelect.value==='on';try{localStorage.setItem('offgrid_adaptive_photos',adaptivePhotos?'on':'off');}catch{}updateLinkBadge();};body.append(flowSelect);
+ body.append(el('p','','Adaptive mode only changes encrypted PHOTO-fragment concurrency; texts, acknowledgments, and radio PHY remain on the original stable transport. It starts at one, increases only after many clean acknowledgments and strong RSSI, and falls back on delays or loss. Disable it here instantly if throughput worsens.'));
+
+ body.append(el('p','','Link quality comes from real browser acknowledgments and ESP32 RSSI, not distance. Radio PHY stays at 1 Mbps broadcast for reliability. Only photo concurrency and compression adapt; text/receipts retain their stable one-fragment behavior.')); 
  const modeLabel=el('label','','Image optimization');body.append(modeLabel);const select=document.createElement('select');select.className='setting-select';
  [['hq','Optimized WebP/JPEG (adaptive 32–60 KB target, may resize)'],['lossless','Lossless PNG + metadata stripping (reject if >96 KB)']].forEach(([v,t])=>{const opt=document.createElement('option');opt.value=v;opt.textContent=t;select.append(opt);});select.value=imageMode;select.onchange=()=>{imageMode=select.value;try{localStorage.setItem('offgrid_image_mode',imageMode);}catch{}updateLinkBadge();};body.append(select);
  body.append(el('p','','Metadata stripping does not make photos tiny. High-quality mode can reduce dimensions and introduce slight loss; lossless PNG keeps the canvas pixels exact but may not fit through this radio link.'));

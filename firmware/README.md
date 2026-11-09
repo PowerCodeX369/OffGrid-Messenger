@@ -1,58 +1,47 @@
-# OffGrid Messenger — Phase 1.4.5.2 (Watchdog Fix)
+# OffGrid Messenger — Phase 1.4.6 Safe Adaptive Photo Transfer
 
-## What caused the failure
+## Frozen baseline
 
-The diagnostic log reports the Task Watchdog timing out because CPU0's idle task is starved while `dispatch` runs. `pdMS_TO_TICKS(5)` rounds **down to zero** when `CONFIG_FREERTOS_HZ=100` (one tick = 10 ms). The event-loop queue therefore did not actually block while idle. This starved other work.
+**Phase 1.4.5.2_WatchdogFix is the authoritative stable baseline.** All ESP-IDF files, `main/main.c`, `sdkconfig.defaults`, `web/protocol.js`, and `web/styles.css` are byte-for-byte unchanged. Flashing the boards is **not** required for this update. Keep the old ZIP as a rollback image.
 
-## Changes (firmware ONLY)
+## What changed
 
-- `xQueueReceive(..., pdMS_TO_TICKS(5) + 1)` ensures a positive queue wait at any typical FreeRTOS tick rate.
-- `vTaskDelay(1)` at the end of the dispatcher loop guarantees that the idle task can run even under heavy traffic.
-- A boot-version label updated to identify the build.
+Only the browser photo transfer scheduler and its settings/label have changed:
 
-**Unchanged:** ESP-NOW broadcast frame format, channel 6, 1 Mbps conservative PHY, 160-byte browser fragment size, delivery/read receipts, NVS key commands, AES-256-GCM browser encryption, web UI, photo gallery, and stored chat formats. No change to the browser assets is needed.
+- Photo compression now also respects weak RSSI before encoding (lossless PNG mode is unchanged). Text messages, delivery/read controls, NVS pairing keys, AES-256-GCM, authenticated transfer protocol, photo gallery, and local history unchanged.
+- **Safe Auto** starts at exactly **one photo frame in flight**. If RSSI is known and >= -73 dBm and at least 9 clean ACKs have occurred with averaged latency <= 900 ms, it can increase to **two** frames. With stronger RSSI (>= -58 dBm), 28 clean ACKs, and average latency <= 500 ms, it can go to **three** frames.
+- Any failed fragment, retry, slow ACK > 1900 ms, or rising firmware TX failure counter stops new parallel sends and reduces the window to one, with a conservative cooldown. Already-in-flight fragments are allowed to finish. Poor/unknown RSSI also limits it to one.
+- **Text and control receipts always use the original one-fragment path**, regardless of settings.
+- Settings -> Photo transfer throughput -> **Stable** immediately stops launching new parallel fragments (already-in-flight ones finish). It is a browser-only rollback; no reflashing required.
+- The ESP-NOW **radio PHY is unchanged at the proven stable 1 Mbps**. This build adapts *effective photo data throughput*, not the radio PHY. Changing PHY on a broadcast link requires a separately validated peer-aware transport and should not be mixed with the stable-release branch.
 
-## Flash
-
-Flash this project onto **both ESP32-C3 boards** with VS Code ESP-IDF. Select `esp32c3` as target, then Build and Flash. Use standard Flash, **not Erase Flash**, to retain stored pairing keys in NVS.
-
-Optional CLI from ESP-IDF terminal:
-
-```bash
-idf.py build
-idf.py -p /dev/ttyACM0 flash
-```
-
-If using an existing `sdkconfig`, ensure USB Serial/JTAG is selected as the ESP console.
-
-## Browser
-
-Use the **same approved 1.4.5.1 web UI** packaged in `web/`; its code is unchanged. Close old tabs, start the server in this project's root:
+## Run
 
 ```bash
 python3 -m http.server 8765 --directory web
 ```
 
-Open `http://localhost:8765/?v=1.4.5.2`, hard refresh and connect both boards.
+Open `http://localhost:8765/?v=1.4.6`, hard refresh, connect both existing flashed ESP32-C3 nodes, and ensure both are paired with the same node-stored key.
 
-## Essential acceptance test
+## Test sequence
 
-1. Connect each ESP32 via separate USB ports to separate tabs.
-2. Open Settings → Radio diagnostics or an ESP-IDF monitor. Verify `READY|...|PROTO=2|CAP=180|STABLE=1|NVSKEY=1`.
-3. Leave the boards idle for **more than 30 seconds**; there should be **no more** `task_wdt` or `IDLE (CPU 0)` warnings.
-4. Send `Hello` in both directions, checking delivery and read receipts.
-5. Send 10 short texts, then a small photo. Larger transfers should only be tested once the fundamentals pass.
+1. Confirm `READY`, idle without watchdog warnings, and quick text delivery in **both** directions.
+2. Send 10 texts to confirm text behavior unchanged.
+3. Transfer a 5 KB and then a 30–50 KB photo at close range. Observe `photo window 1`, then `2`, eventually `3` only if signal and ACKs are consistently excellent. Compare observed KB/s and times against Stable mode.
+4. Move the boards farther apart (or add obstacles) and watch photo window reduce to one if RSSI weakens or ACKs fail.
+5. Disconnect/reconnect, test text and read receipts again. Use Settings -> Stable immediately if photo transfers regress. The frozen firmware baseline remains intact.
 
-**Troubleshooting:** If watchdog warnings remain, preserve the full new `task_wdt` log; a different task could be starving CPU0. Do not disable the task watchdog. Don't share any `KEYDATA|...` lines: they contain the pairing key.
+**Caveats:** RSSI is measured from received packets and is not a direct distance measurement; the displayed 1 Mbps is a PHY setting, not application throughput. Browser transfer data is encrypted; radio is still the original reliable broadcast design. Encryption keys are fetched from each ESP32 over the physical USB connection. Stored NVS data is not automatically resistant to flash extraction; do not treat this hardware as tamper-proof.
 
-## Tests
+## Source checks
 
 ```bash
+node --check web/adaptive.js
 node --check web/app.js
+node tests/test-adaptive.cjs
 node tests/test-protocol.cjs
-python3 tests/test-handshake.py
-python3 tests/test-stable-contract.py
 python3 tests/test-watchdog-fix.py
+python3 tests/test-stable-contract.py
 ```
 
-Source-level tests are not ESP-IDF compilation or physical radio tests. ESP-IDF is not installed in this environment.
+Hardware performance must be measured using the real two-board setup. No ESP-IDF toolchain or boards are available in this environment.
