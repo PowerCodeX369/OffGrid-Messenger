@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>OffGrid Messenger | Phase 1</title>
+  <title>OffGrid Messenger | Phase 1.1</title>
   <style>
     :root { color-scheme: dark; --bg:#0b1220; --panel:#121e30; --stroke:#294056; --text:#e8f2f6; --dim:#96afbd; --teal:#21c6af; }
     * {box-sizing:border-box} body {margin:0;min-height:100vh;background:radial-gradient(circle at 25% 0%,#173648,#0b1220 50%);color:var(--text);font:15px system-ui,Arial,sans-serif;display:grid;place-items:center;padding:20px}
@@ -17,7 +17,7 @@
     #messages{flex:1;overflow:auto;padding:22px;display:flex;flex-direction:column;gap:10px}
     .bubble{max-width:82%;border-radius:13px;padding:11px 14px;white-space:pre-wrap;overflow-wrap:anywhere;line-height:1.5;background:#203449;align-self:flex-start}
     .bubble.mine{align-self:flex-end;background:#125c53}.bubble.system{align-self:center;background:#192637;color:var(--dim);font-size:12px;max-width:95%;padding:8px 12px}
-    .meta{color:#abc2c8;opacity:.8;font-size:10px;margin-top:5px}
+    .meta{color:#abc2c8;opacity:.8;font-size:10px;margin-top:5px;display:flex;gap:9px;justify-content:flex-end}.msg-state{font-weight:700}
     form{display:flex;gap:10px;border-top:1px solid var(--stroke);padding:14px} input{min-width:0;flex:1;color:var(--text);background:#0c1726;border:1px solid var(--stroke);border-radius:10px;padding:12px;font:inherit;outline:none}input:focus{border-color:var(--teal)}
     .foot{font-size:11px;color:var(--dim);padding:0 16px 12px} .toolbar {display:flex;gap:8px;align-items:center;flex-wrap:wrap}
     @media(max-width:600px){header{flex-wrap:wrap}.app{height:92vh}button{padding:10px 12px}}
@@ -26,13 +26,14 @@
 <body>
   <main class="app">
     <header>
-      <div><h1>◉ OffGrid Messenger</h1><div class="sub">Phase 1 • ESP32-C3 • USB ↔ ESP-NOW • No internet</div></div>
+      <div><h1>◉ OffGrid Messenger</h1><div class="sub">Phase 1.1 • Reliable ESP-NOW • ESP32-C3 • USB ↔ ESP-NOW • No internet</div></div>
       <div class="toolbar"><button id="connect">Connect USB</button><button class="secondary" id="disconnect" disabled>Disconnect</button></div>
     </header>
     <div class="status"><span id="dot" class="dot"></span><span id="status">Not connected — connect an ESP32-C3 over USB</span></div>
+    <div class="status">Your board: <strong id="device">—</strong> · Delivery confirms receipt by the remote browser, not just the remote radio.</div>
     <section id="messages" aria-live="polite"><div class="bubble system">Connect your board, then send a test message. The other board will receive it over ESP-NOW.</div></section>
     <form id="sendForm"><input id="message" autocomplete="off" placeholder="Type a message (max 180 UTF-8 bytes)" maxlength="180" disabled><button id="send" disabled>Send ➤</button></form>
-    <div class="foot">TEST BUILD — Messages are broadcast without encryption. No internet, server or account required.</div>
+    <div class="foot">TEST BUILD — No encryption yet. ✓ = sent to radio; ✓✓ = remote browser confirmed. No internet or server required.</div>
   </main>
   <script src="./app.js"></script>
 </body>
