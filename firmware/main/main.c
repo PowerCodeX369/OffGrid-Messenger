@@ -371,10 +371,10 @@ static void send_hello(void) {
 static void radio_bench_finish(void) {
     int64_t elapsed=now_ms()-radio_bench.start_ms;
     if(elapsed<1)elapsed=1;
-    printf("RBENCH_DONE|%" PRIu32 "|%" PRIu32 "|%" PRIu32 "|%" PRIu32 "|%" PRIu32 "|%" PRIu32 "|%" PRIu32 "|%u|%ld\n",
+    printf("RBENCH_DONE|%" PRIu32 "|%" PRIu32 "|%" PRIu32 "|%" PRIu32 "|%" PRIu32 "|%" PRIu32 "|%" PRIu32 "|%" PRIu32 "|%u|%ld\n",
         radio_bench.token,radio_bench.count,radio_bench.ok,radio_bench.lost,
         radio_bench.retries,radio_bench.ok*BENCH_PAYLOAD_BYTES,
-        (uint32_t)elapsed,radio_bench.ok?radio_bench.sum_rtt_ms/radio_bench.ok:0,
+        (uint32_t)elapsed,(uint32_t)(radio_bench.ok ? radio_bench.sum_rtt_ms / radio_bench.ok : 0),
         (unsigned)(peer_known?phy_mbps:1),(long)remote_rssi);
     radio_bench.active=false;radio_bench.awaiting=false;
 }
