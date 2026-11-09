@@ -19,7 +19,7 @@ The primary topology is **two nodes**, not a routed multi-hop mesh. OffGrid mess
 | `firmware/` | ESP32-C3 BLE, USB transport, ESP-NOW radio and application packet handling | Build/flash requires ESP-IDF and real boards |
 | `android/` | Android BLE transport, local history, media, Compose UI | Requires Android SDK/Gradle and a real handset for BLE verification |
 | `web/` | Chromium Web Serial UI and protocol | Requires compatible browser, secure context and USB device |
-| `firmware/web/` | Firmware-snapshot copy of the browser assets | Keep changes synchronized intentionally |
+| `firmware/web/` (historical tags only) | Former duplicate browser snapshot | Removed from current `main`; consult Git tags for original snapshots |
 
 ## Safety-sensitive compatibility boundaries
 

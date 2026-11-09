@@ -1,5 +1,5 @@
 const assert=require('node:assert/strict');
-const P=require('../web/protocol.js');
+const P=require('../../web/protocol.js');
 (async()=>{
  const key=await P.importKey(P.randomBytes(32)),target=P.newId();
  for(const [kind,body] of [

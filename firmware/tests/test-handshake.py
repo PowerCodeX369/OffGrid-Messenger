@@ -2,7 +2,7 @@ from pathlib import Path
 import re
 root=Path(__file__).resolve().parent.parent
 c=(root/'main/main.c').read_text()
-js=(root/'web/app.js').read_text()
+js=(root.parent/'web/app.js').read_text()
 assert '#define READY_BEACON_MS' in c
 assert 'show_ready("BEACON")' in c
 assert 'show_ready("STATUS")' in c

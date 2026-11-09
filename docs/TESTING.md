@@ -15,7 +15,7 @@ These checks validate the repository structure, release references, and selected
 |---|---|---|
 | Android | `bash android/tests/run_phase24_tests.sh` and `bash android/tests/run_phase25_tests.sh` | Host contract tests; check script prerequisites first |
 | Firmware | `bash firmware/tests/run_phase23_tests.sh` and `bash firmware/tests/run_stability_tests.sh` | Host/model/protocol tests; inspect scripts and prerequisites |
-| Browser | `node firmware/tests/test-protocol.cjs` | JS protocol test; see test file for assumptions |
+| Browser | `node firmware/tests/test-protocol.cjs` | Canonical root `web/` JS protocol test; see test file for assumptions |
 | Firmware build | `cd firmware && idf.py build` | Requires ESP-IDF/NimBLE setup, does not flash |
 | Android build | Android Studio build | SDK 36 and compatible Gradle setup required; wrapper absent |
 | Hardware | Paired ESP32 nodes + Android/BLE + browser | Test manually and record devices, firmware versions, RF settings and outcomes |
@@ -32,3 +32,7 @@ The GitHub workflow runs safe metadata tests and selected existing host tests on
 - Save sanitized logs; explicitly mark any skipped scenario.
 
 Do not publish device secrets, pairing materials or private MAC addresses in test reports.
+
+## Browser single-source regression
+
+`python3 scripts/repository_check.py` rejects a second `firmware/web/` copy and stale v1.6.1 HTML asset references. Browser code should be edited only under `web/`; cross-client tests from other components must reference it directly. This protects against the v2.5.6 reconstruction error described in [REPOSITORY_REPAIR.md](REPOSITORY_REPAIR.md).

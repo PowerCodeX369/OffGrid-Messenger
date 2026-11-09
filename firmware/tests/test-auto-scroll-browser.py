@@ -8,7 +8,7 @@ from playwright.sync_api import sync_playwright
 import subprocess
 import time
 ROOT=Path(__file__).resolve().parents[1]
-server=subprocess.Popen(['python3','-m','http.server','8878','--bind','127.0.0.1','--directory',str(ROOT/'web')],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+server=subprocess.Popen(['python3','-m','http.server','8878','--bind','127.0.0.1','--directory',str(ROOT.parent/'web')],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
 try:
     time.sleep(0.5)
     with sync_playwright() as p:
@@ -18,14 +18,14 @@ try:
         page.on('pageerror',lambda e: errors.append(str(e)))
         # This environment blocks loopback page navigation. Render the same local app
         # as inline HTML/CSS/JS instead; no network access or hardware required.
-        html=(ROOT/'web/index.html').read_text()
+        html=(ROOT.parent/'web/index.html').read_text()
         html=re.sub(r'<script[^>]+src=[^>]+></script>', '', html)
         html=re.sub(r'<link[^>]+rel="stylesheet"[^>]*>', '', html)
-        css=(ROOT/'web/styles.css').read_text()
+        css=(ROOT.parent/'web/styles.css').read_text()
         html=html.replace('</head>','<style>'+css+'</style></head>')
         page.set_content(html,wait_until='domcontentloaded',timeout=30000)
         for asset in ['protocol.js','adaptive.js','app.js']:
-            page.add_script_tag(content=(ROOT/'web'/asset).read_text())
+            page.add_script_tag(content=(ROOT.parent/'web'/asset).read_text())
         page.wait_for_timeout(300)
         page.evaluate('''() => {
           for(let i=0;i<48;i++)makeBubble({id:'scroll-'+i,kind:'text',dir:'in',ts:Date.now(),text:'Message '+i+' — testing scroll behavior and message length.'},true);

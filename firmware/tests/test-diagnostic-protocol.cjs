@@ -1,7 +1,7 @@
 const assert=require('node:assert/strict');
 const {webcrypto}=require('node:crypto');
 globalThis.crypto=webcrypto;
-const P=require('../web/protocol.js');
+const P=require('../../web/protocol.js');
 (async()=>{
  assert.equal(P.types.probe,5);
  assert.equal(P.types.probeAck,6);

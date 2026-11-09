@@ -1,7 +1,7 @@
 'use strict';
 /* Run from project root: node tests/test-protocol.cjs */
 const assert=require('node:assert/strict');
-const P=require('../web/protocol.js');
+const P=require('../../web/protocol.js');
 (async function run(){
  const key=await P.importKey(P.randomBytes(32));
  for(const [name,type,data] of [

@@ -87,7 +87,7 @@ cc -std=c11 -Wall -Wextra -Werror tests/test-lr-policy.c -o /tmp/offgrid-lr-test
 python3 tests/test-long-range-contract.py
 node tests/test-protocol.cjs
 node tests/test-selective-ack.cjs
-node --check web/app.js
+node --check ../web/app.js
 ```
 
 **Note:** Host-stub C syntax tests are not equivalent to compiling against ESP-IDF. Build the project in VS Code before flashing. If the full build fails, share the build error rather than flashing partial firmware.

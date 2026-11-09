@@ -7,7 +7,7 @@ root=Path(__file__).resolve().parents[3]
 src=root/'android/app/src/main/java/com/offgrid/messenger'
 ui=(src/'PremiumUi.kt').read_text();main=(src/'MainActivity.kt').read_text()
 notifications=(src/'OffGridNotifications.kt').read_text();history=(src/'EncryptedHistory.kt').read_text()
-web_path=root/'firmware/web/app.js';protocol_path=root/'firmware/web/protocol.js'
+web_path=root/'web/app.js';protocol_path=root/'web/protocol.js'
 web=web_path.read_text() if web_path.exists() else None
 protocol=protocol_path.read_text() if protocol_path.exists() else None
 assert 'versionCode=241' in (root/'android/app/build.gradle.kts').read_text()

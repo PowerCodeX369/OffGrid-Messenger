@@ -1,6 +1,6 @@
 const assert=require('node:assert/strict');
 const fs=require('node:fs');
-const C=require('../web/adaptive.js');
+const C=require('../../web/adaptive.js');
 function a(c,kind='image',rssi=-30,profile='auto',enabled=true){return c.window({kind,rssi,profile,enabled});}
 const ctl=new C.PhotoFlowController();
 assert.equal(a(ctl),1,'start safe');
@@ -20,7 +20,7 @@ assert.equal(a(ctl),1,'hysteresis: not immediately promoted');
 for(let i=0;i<20;i++)ctl.success(200,1);
 assert.ok(a(ctl)>=2,'eventually recover');
 ctl.success(2700,1);assert.equal(a(ctl),1,'slow ack demotes');
-const app=fs.readFileSync(require('node:path').join(__dirname,'../web/app.js'),'utf8');
+const app=fs.readFileSync(require('node:path').join(__dirname,'../../web/app.js'),'utf8');
 assert(app.includes("chosenWindow(job)"),'scheduler must consult adaptive window');
 assert(app.includes("['image','voice'].includes(job.kind)&&!job.control"),'only media ACKs train the controller; text remains isolated');
 assert(app.includes("kind:rssi")===false); // smoke test actual invocation is explicit

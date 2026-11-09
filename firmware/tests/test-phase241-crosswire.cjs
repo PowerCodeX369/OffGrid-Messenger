@@ -1,5 +1,5 @@
 const assert=require('node:assert/strict');const cp=require('node:child_process');
-const P=require('../web/protocol.js');
+const P=require('../../web/protocol.js');
 (async()=>{
  const jar=process.env.CROSSWIRE_JAR;assert(jar,'CROSSWIRE_JAR required');
  const key=Uint8Array.from({length:32},(_,i)=>i);

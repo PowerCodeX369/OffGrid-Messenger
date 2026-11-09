@@ -375,3 +375,14 @@ body.light .notification-button.notifications-active .notification-dot{box-shado
 .composer:focus-within{animation:subtleComposerFocus .24s cubic-bezier(.2,.76,.2,1);}
 @keyframes subtleComposerFocus{from{filter:brightness(.985);transform:translateY(1px)}to{filter:brightness(1);transform:translateY(0)}}
 @media(prefers-reduced-motion:reduce){.composer:focus-within{animation:none!important}}
+
+/* Phase 2.4.1: consistent message actions and contact avatar on both clients. */
+.avatar.has-contact-avatar {background-position:center!important;background-size:cover!important;color:transparent!important;}
+.message-actions{display:flex;flex-direction:column;gap:8px;margin:12px 0;}
+.message-actions button{text-align:left;padding:12px 16px;min-height:43px;}
+.message-deleted{font-style:italic;color:var(--muted,#91a5b2);opacity:.9;}
+.message-edited{display:block;font-size:10px;opacity:.65;text-align:right;margin-top:3px;}
+.message-sync-error{display:block;font-size:11px;color:#fa9d7e;}
+.message-row .message-bubble{touch-action:pan-y;}
+.message-row .message-bubble:focus-within{outline:2px solid var(--accent,#57a8e8);outline-offset:2px;}
+@media(prefers-reduced-motion:reduce){.message-row,.message-bubble{animation:none!important;transition:none!important;}}

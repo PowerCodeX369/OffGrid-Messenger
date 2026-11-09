@@ -2,7 +2,7 @@
 import asyncio,re
 from pathlib import Path
 from playwright.async_api import async_playwright
-base=Path(__file__).resolve().parents[1]/'web'
+base=Path(__file__).resolve().parents[2]/'web'
 async def main():
     async with async_playwright() as p:
         browser=await p.chromium.launch(headless=True,executable_path='/usr/bin/chromium',args=['--no-sandbox'])
@@ -20,7 +20,7 @@ async def main():
         await page.get_by_role('button',name='Speed diagnostics').click()
         assert await page.get_by_text('Connection speed diagnostics').is_visible()
         assert 'not detected' in await page.locator('.diagnostic-results').inner_text()
-        await page.screenshot(path='/mnt/data/offgrid_diagnostics_preview.png')
+        # Avoid writing browser previews into the source tree or fixed system paths.
         if errors:raise RuntimeError(errors)
         print('PASS full-width browser UI, diagnostics dialog, expected pre-firmware warning; no JS errors')
         await browser.close()

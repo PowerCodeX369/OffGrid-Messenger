@@ -38,7 +38,7 @@ Use the standalone files under `web/` in a Chromium browser supporting Web Seria
 python3 -m http.server 8000 --directory web
 ```
 
-Open `http://localhost:8000`, select your serial device in the browser and follow the firmware's provisioning steps. Do not expose the local server to an untrusted network. `firmware/web/` is a second copy: make synchronization changes explicit.
+Open `http://localhost:8000`, select your serial device in the browser and follow the firmware's provisioning steps. Do not expose the local server to an untrusted network. `web/` is the sole maintained browser source. ESP-IDF firmware does not bundle this directory; browser access is through USB Web Serial.
 
 ## Test without hardware
 

@@ -1,6 +1,6 @@
 # OffGrid Messenger
 
-**Latest reconstructed version: `v2.5.6`**  
+**Latest reconstructed release: `v2.5.6` · Main branch includes a post-release repository layout correction**
 **Status:** Advanced two-node offline messenger prototype; source-tested portions, not independently security-audited or production-certified.  
 **Hardware:** ESP32-C3 Super Mini (two radios), Android phone over BLE, optional desktop/browser over USB Serial/JTAG.  
 **Connectivity:** BLE + ESP-NOW (including genuine Espressif LR PHY). **No internet required for messaging.**
@@ -25,7 +25,7 @@ Android phone -- BLE -- ESP32-C3 ))) ESP-NOW / LR ((( ESP32-C3 -- USB -- browser
 | `docs/HISTORY.md` | Chronological release timeline and navigable version index |
 | `SOURCE_MANIFEST.json` | Source ZIP names, archive SHA-256 values, diff statistics and inheritance notes |
 
-**Source duplication note:** Depending on historical snapshot, `firmware/web/` may contain an original copy of the web interface used with the firmware project. `web/` is the standalone browser source. Update both intentionally when necessary and test cross-client behavior.
+**Single source of truth:** `web/` is the only maintained browser application. The older `firmware/web/` duplicate has been removed from the current `main` tree; original historical snapshots remain accessible via release tags. ESP-IDF firmware does not embed these browser files; the browser talks over USB Web Serial. Cross-component host tests reference `web/` directly.
 
 ## Project story
 
@@ -52,6 +52,8 @@ Read [the complete 47-release history](docs/HISTORY.md), or inspect an annotated
 ## Developer and contributor guides
 
 - [Development and installation](docs/DEVELOPMENT.md) — verified configuration facts, setup and limitations.
+- [Post-release reconstruction repair](docs/REPOSITORY_REPAIR.md) — why the canonical web source was corrected after the v2.5.6 tag.
+- [Web client instructions](web/README.md) — locally hosted browser interface and tests.
 - [Architecture and compatibility](docs/ARCHITECTURE.md) — BLE/ESP-NOW/USB component boundaries.
 - [Testing matrix](docs/TESTING.md) — safe checks and hardware verification requirements.
 - [Contributing](CONTRIBUTING.md) · [Code of conduct](CODE_OF_CONDUCT.md) · [Security policy](SECURITY.md) · [Changelog](CHANGELOG.md).
@@ -65,7 +67,7 @@ Read [the complete 47-release history](docs/HISTORY.md), or inspect an annotated
 
 **Android:** open `android/` in Android Studio, Gradle sync and build the APK. Connect to the BLE node and provision the shared 32-byte conversation key as required by the app/device setup flow. Compatible board firmware is required for manual radio control.
 
-**Web:** open the Web Serial browser client in a compatible Chromium-family browser under an appropriate secure context, connect the ESP32 USB serial interface, and use the same conversation key.
+**Web:** from the repository root run `python3 -m http.server 8000 --bind 127.0.0.1 --directory web`, then open `http://localhost:8000` in a compatible Chromium-family browser and select the ESP32 USB serial interface. The root `web/` is the canonical v2.4.1 browser snapshot carried into v2.5.6; its assets no longer live in the firmware folder. Use the same conversation key.
 
 These are starting points; follow component-specific README and validation files for exact historical build requirements. No complete cross-platform build was performed during Git reconstruction.
 

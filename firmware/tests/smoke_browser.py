@@ -4,7 +4,7 @@ import subprocess, time
 from pathlib import Path
 from playwright.sync_api import sync_playwright
 root=Path(__file__).resolve().parents[1]
-server=subprocess.Popen(['python3','-m','http.server','8877','--bind','127.0.0.1','--directory',str(root/'web')], stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+server=subprocess.Popen(['python3','-m','http.server','8877','--bind','127.0.0.1','--directory',str(root.parent/'web')], stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
 try:
  time.sleep(.35)
  with sync_playwright() as p:

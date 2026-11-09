@@ -377,7 +377,41 @@ function refreshStatus(){
  $('composerStatus').textContent=ready?'Enter to send · 🎤 tap microphone for voice note':verified?'Pair the same key on both browsers to begin':'Connect an ESP32 using the sidebar';
  updateByteCount();updateLinkBadge();
 }
-function setName(name){activeContact=(name||'Nearby node').slice(0,36);$('contactSidebarName').textContent=activeContact;$('chatName').textContent=activeContact;const initial=Array.from(activeContact)[0]?.toUpperCase()||'N';$('contactAvatar').textContent=initial;$('headerAvatar').textContent=initial;}
+function setName(name){activeContact=(name||'Nearby node').slice(0,36);$('contactSidebarName').textContent=activeContact;$('chatName').textContent=activeContact;const initial=Array.from(activeContact)[0]?.toUpperCase()||'N';$('contactAvatar').textContent=initial;$('headerAvatar').textContent=initial;updateContactAvatar();}
+const avatarDbKey=()=>`avatar/${macKey()}`;
+async function updateContactAvatar(){
+ let data='';
+ if(secretKey&&db&&localMac){
+  try{
+   const row=await dbGet('keys',avatarDbKey());
+   if(row?.seal)data=P.textFrom(await P.openAtRest(secretKey,row.seal,'contact-avatar',macKey()));
+  }catch(e){console.warn('Contact photo cannot be decrypted:',e.message);}
+ }
+ for(const id of ['contactAvatar','headerAvatar']){
+  const node=$(id);if(!node)continue;
+  node.style.backgroundImage=/^data:image\/jpeg;base64,[A-Za-z0-9+/=]+$/.test(data)?`url("${data}")`:'';
+  node.classList.toggle('has-contact-avatar',!!node.style.backgroundImage);
+ }
+}
+function chooseContactAvatar(){
+ const picker=document.createElement('input');picker.type='file';picker.accept='image/*';
+ picker.onchange=async()=>{const file=picker.files?.[0];if(!file)return;
+  if(file.size>12*1024*1024){toast('Choose a photo smaller than 12 MB');return;}
+  try{
+   const bitmap=await createImageBitmap(file);const canvas=document.createElement('canvas');canvas.width=160;canvas.height=160;
+   const ctx=canvas.getContext('2d');if(!ctx)throw Error('Canvas unavailable');
+   const crop=Math.min(bitmap.width,bitmap.height);
+   ctx.drawImage(bitmap,(bitmap.width-crop)/2,(bitmap.height-crop)/2,crop,crop,0,0,160,160);
+   bitmap.close?.();const url=canvas.toDataURL('image/jpeg',.74);
+   if(url.length>48_000)throw Error('Contact picture is too large');
+   if(!secretKey||!verified||!db)throw Error('Connect and pair your node first');
+   const sealed=await P.sealAtRest(secretKey,P.textBytes(url),'contact-avatar',macKey());
+   await dbPut('keys',{mac:avatarDbKey(),seal:sealed});
+   void updateContactAvatar();toast('Encrypted contact photo saved on this browser');
+  }catch(e){toast('Could not save avatar: '+e.message);}
+ };
+ picker.click();
+}
 function persistName(){try{localStorage.setItem(nameKey(),activeContact);}catch{}}
 function updateSidebar(){const r=records[records.length-1];$('lastChatPreview').textContent=r?(r.dir==='out'?'You: ':'')+(r.kind==='image'?'📷 Photo':r.kind==='voice'?'🎤 Voice message':r.text||'Message'):'Your encrypted off-grid conversation';$('lastChatTime').textContent=r?fmtTime(r.ts):'';$('introCard').style.display=records.length?'none':'';}
 function createReceipt(status){const wrap=document.createElement('span');wrap.className='receipt-icon '+(status||'sending');wrap.dataset.role='tick';wrap.setAttribute('aria-label',status||'Sending');
@@ -433,7 +467,9 @@ setupChatAutoScroll();
 function makeBubble(record,animate=true){
  const row=document.createElement('div');row.className='message-row '+(record.dir==='out'?'out':'in')+(animate?' is-new':'');row.dataset.mid=record.id;row.dataset.status=record.status||'';
  const bubble=document.createElement('div');bubble.className='message-bubble';
- if(record.kind==='image'){
+ if(record.deleted){
+   bubble.append(el('div','message-deleted','⊘  This message was deleted'));
+ }else if(record.kind==='image'){
    const img=document.createElement('img');img.className='chat-photo';img.alt='Shared photograph';img.loading=animate?'eager':'lazy';img.addEventListener('load',()=>scrollToNewest());
    const mime=record.mime||'image/webp',url=URL.createObjectURL(new Blob([record.bytes],{type:mime}));photoUrls.set(record.id,url);img.src=url;
    img.tabIndex=0;img.setAttribute('role','button');img.setAttribute('aria-label','Open photograph in gallery');
@@ -459,9 +495,23 @@ function makeBubble(record,animate=true){
    const duration=el('span','voice-clip-info',`${Math.round((record.durationMs||0)/1000)}s`);
    container.append(duration);bubble.append(container);
  }else{const content=document.createElement('div');content.className='message-text';content.textContent=record.text;bubble.append(content);}
+ if(record.edited&&!record.deleted)bubble.append(el('span','message-edited','edited'));
+ if(record.mutationFailed)bubble.append(el('span','message-sync-error','Update not synced'));
  const meta=document.createElement('div');meta.className='message-meta';const time=document.createElement('span');time.textContent=fmtTime(record.ts);meta.append(time);
  if(record.dir==='out'){const progress=document.createElement('span');progress.className='transfer-progress';progress.dataset.role='progress';progress.textContent=record.status==='sending'&&record.progress?record.progress+'%':'';meta.append(progress,createReceipt(record.status||'sending'));}
  bubble.append(meta);row.append(bubble);$('messages').append(row);updateBubble(record);
+ // Context menu and long-press support, without hijacking photo taps or audio play.
+ row.addEventListener('contextmenu',e=>{e.preventDefault();showMessageActions(record.id);});
+ let timer=null,startX=0,startY=0;
+ row.addEventListener('touchstart',e=>{
+  if(e.touches.length!==1)return;startX=e.touches[0].clientX;startY=e.touches[0].clientY;
+  clearTimeout(timer);timer=setTimeout(()=>{timer=null;showMessageActions(record.id);},560);
+ },{passive:true});
+ row.addEventListener('touchmove',e=>{if(timer&&e.touches[0]&&
+  (Math.abs(e.touches[0].clientX-startX)>16||Math.abs(e.touches[0].clientY-startY)>16)){
+   clearTimeout(timer);timer=null;
+ }},{passive:true});
+ for(const event of ['touchend','touchcancel'])row.addEventListener(event,()=>{clearTimeout(timer);timer=null;});
  if(animate)scrollToNewest(true);return row;
 }
 function updateBubble(r){const row=Array.from($('messages').children).find(el=>el.dataset.mid===r.id);if(!row)return;
@@ -527,10 +577,10 @@ function togglePhotoZoom(){
  if($('photoViewer').classList.contains('hidden'))return;
  viewerZoomed=!viewerZoomed;$('viewerCanvas').classList.toggle('zoomed',viewerZoomed);
 }
-function serializeRecord(r){return {id:r.id,kind:r.kind,dir:r.dir,ts:r.ts,text:r.text||'',mime:r.mime||'',width:r.width||0,height:r.height||0,durationMs:r.durationMs||0,bytes:r.bytes?P.base64url(r.bytes):'',readSent:!!r.readSent,deliveredAckSent:!!r.deliveredAckSent,played:!!r.played,playedSent:!!r.playedSent,seenLocally:!!r.seenLocally,peerMac:r.peerMac||null};}
+function serializeRecord(r){return {edited:!!r.edited,deleted:!!r.deleted,mutationFailed:!!r.mutationFailed,id:r.id,kind:r.kind,dir:r.dir,ts:r.ts,text:r.text||'',mime:r.mime||'',width:r.width||0,height:r.height||0,durationMs:r.durationMs||0,bytes:r.bytes?P.base64url(r.bytes):'',readSent:!!r.readSent,deliveredAckSent:!!r.deliveredAckSent,played:!!r.played,playedSent:!!r.playedSent,seenLocally:!!r.seenLocally,peerMac:r.peerMac||null};}
 async function storeRecord(r){if(!secretKey||!localMac)return;const payload=P.textBytes(JSON.stringify(serializeRecord(r)));const sealed=await P.sealAtRest(secretKey,payload,macKey(),r.id);await dbPut('messages',{pk:macKey()+'/'+r.id,owner:macKey(),id:r.id,ts:r.ts,dir:r.dir,status:r.status,seal:sealed});}
 async function storeStatus(r){if(!secretKey||!localMac)return;const old=await dbGet('messages',macKey()+'/'+r.id);if(old){old.status=r.status;await dbPut('messages',old);}else await storeRecord(r);}
-async function hydrateHistory(){records=[];recordMap.clear();const rows=await listStored();for(const row of rows){try{const bytes=await P.openAtRest(secretKey,row.seal,macKey(),row.id);const d=JSON.parse(P.textFrom(bytes));d.bytes=d.bytes?P.fromBase64urlRaw(d.bytes):null;d.status=row.status||'sent';d.seenLocally=typeof d.seenLocally==='boolean'?d.seenLocally:!!d.readSent;if(d.status==='sending'||d.status==='queued')d.status='failed';d.progress=0;records.push(d);recordMap.set(d.id,d);}catch(e){console.warn('Cannot decrypt stored record',row.id,e.message);}}
+async function hydrateHistory(){records=[];recordMap.clear();const rows=await listStored();for(const row of rows){try{const bytes=await P.openAtRest(secretKey,row.seal,macKey(),row.id);const d=JSON.parse(P.textFrom(bytes));d.bytes=d.bytes?P.fromBase64urlRaw(d.bytes):null;d.status=row.status||'sent';d.edited=!!d.edited;d.deleted=!!d.deleted;d.mutationFailed=!!d.mutationFailed;d.seenLocally=typeof d.seenLocally==='boolean'?d.seenLocally:!!d.readSent;if(d.status==='sending'||d.status==='queued')d.status='failed';d.progress=0;records.push(d);recordMap.set(d.id,d);}catch(e){console.warn('Cannot decrypt stored record',row.id,e.message);}}
  records.sort((a,b)=>a.ts-b.ts);renderHistory();}
 /* Stored image data is base64url; unlike pairing keys, image byte length is arbitrary. */
 P.fromBase64urlRaw=function(s){const fixed=s.replace(/-/g,'+').replace(/_/g,'/');const bin=atob(fixed+'='.repeat((4-fixed.length%4)%4));return Uint8Array.from(bin,c=>c.charCodeAt(0));};
@@ -681,6 +731,25 @@ async function handleEnvelope(env,mac){
   }
   return;
  }
+ if(env.kind===P.types.edit||env.kind===P.types.delete){
+  if(env.body.length<8)return;
+  const id=P.hex(env.body.subarray(0,8)),r=recordMap.get(id);
+  if(!r||r.dir!=='in'||r.deleted||r.peerMac!==mac)return;
+  if(env.kind===P.types.delete){
+   if(env.body.length!==8)return;
+   const audio=Array.from($('messages').children).find(x=>x.dataset.mid===id)?.querySelector('audio');
+   if(audio){audio.pause();audio.removeAttribute('src');audio.load();}
+   if(photoUrls.has(id)){URL.revokeObjectURL(photoUrls.get(id));photoUrls.delete(id);}
+   if(voiceUrls.has(id)){URL.revokeObjectURL(voiceUrls.get(id));voiceUrls.delete(id);}
+   r.deleted=true;r.text='This message was deleted';r.bytes=null;r.edited=false;
+  }else{
+   if(r.kind!=='text'||env.body.length>2112||env.body.length<9)return;
+   const replacement=P.textFrom(env.body.subarray(8));
+   if(!replacement.trim()||countChars(replacement)>MAX_CHARS)return;
+   r.text=replacement;r.edited=true;
+  }
+  await storeRecord(r);refreshMessageBubble(r);updateSidebar();return;
+ }
  if(env.kind===P.types.delivered||env.kind===P.types.read){if(env.body.length!==8)return;const original=P.hex(env.body),r=recordMap.get(original);if(r&&r.dir==='out')await setState(r,env.kind===P.types.read?'read':'delivered');return;}
  if(env.kind===P.types.played){
   if(env.body.length!==8)return;
@@ -723,7 +792,11 @@ function makeJob(r){return {kind:r.kind,control:false,record:r,created:Date.now(
 async function sealJob(job){
  const transferId=P.newId(),id=job.control?P.newId():(job.kind==='probe'?job.probeId:job.record.id);
  let kind,body,width=0,height=0;
- if(job.control){kind=P.types[job.kind];body=P.unhex(job.targetId);}
+ if(job.control){
+   kind=P.types[job.kind];body=job.kind==='edit'?
+     P.concat(P.unhex(job.targetId),P.textBytes(job.newText)):
+     P.unhex(job.targetId);
+  }
  else if(job.kind==='probe'){kind=P.types.probe;body=P.randomBytes(job.size);}
  else if(job.record.kind==='text'){kind=P.types.text;body=P.textBytes(job.record.text);}
  else if(job.record.kind==='voice'){
@@ -806,7 +879,14 @@ async function runTransfers(){
       }
     }else if(job.record){await setState(job.record,'sent');}
    }catch(e){
-    if(job.control){if(job.kind==='read')pendingReads.delete(job.targetId);console.warn('Receipt send failed',job.kind,e.message);}
+    if(job.control){
+      if(job.kind==='read')pendingReads.delete(job.targetId);
+      if(['edit','delete'].includes(job.kind)){
+       const r=recordMap.get(job.targetId);if(r){r.mutationFailed=true;refreshMessageBubble(r);await storeRecord(r);}
+       toast(`Message ${job.kind} failed to sync. Reconnect and try again.`);
+      }
+      console.warn('Control send failed',job.kind,e.message);
+     }
     else if(job.record){await setState(job.record,'failed',e.message);toast('Transfer failed. Click its bubble to retry.');}
     else if(job.kind==='probe'&&speedDiagnostics.full?.job===job){speedDiagnostics.full.reject(e);}
    }finally{if(job.control)queuedReceipts.delete(job.kind+':'+job.targetId);activeTransfer=null;}
@@ -865,6 +945,7 @@ async function onReady(mac){clearSelectiveAcks();firmwareMismatchNotified=false;
    const raw=await getNodeKey();
    if(raw){
      await adoptNodeKey(raw);
+     void updateContactAvatar();
      for(const r of records){
       if(r.dir!=='in')continue;
       if(!r.deliveredAckSent)enqueueReceipt('delivered',r.id);
@@ -1010,6 +1091,51 @@ async function toggleVoiceRecording(){
  }
 }
 
+function refreshMessageBubble(r){
+ const old=Array.from($('messages').children).find(x=>x.dataset.mid===r.id);
+ if(!old)return;
+ makeBubble(r,false);
+ const fresh=$('messages').lastElementChild;
+ old.replaceWith(fresh);
+}
+function queueMutation(kind,r,newText=''){
+ if(!verified||!secretKey){toast('Connect your ESP32 before editing or deleting for everyone.');return false;}
+ transferQueue.unshift({kind,control:true,targetId:r.id,newText,created:Date.now()});
+ runTransfers();return true;
+}
+async function deleteLocalRecord(r){
+ recordMap.delete(r.id);records=records.filter(x=>x.id!==r.id);
+ await dbDelete('messages',macKey()+'/'+r.id);
+ renderHistory();toast('Deleted from this browser only');closeDialog();
+}
+function showMessageActions(id){
+ const r=recordMap.get(id);if(!r)return;
+ showDialog('Message actions',body=>{
+  const actions=el('div','message-actions');
+  const add=(label,handler)=>{const button=el('button','quiet-button',label);
+   button.type='button';button.onclick=handler;actions.append(button);};
+  if(r.kind==='text'&&!r.deleted)add('Copy text',()=>{navigator.clipboard?.writeText(r.text).then(()=>toast('Copied')).catch(()=>toast('Clipboard unavailable'));closeDialog();});
+  if(r.dir==='out'&&r.kind==='text'&&!r.deleted&&verified&&['delivered','read'].includes(r.status))add('Edit message',()=>{
+   showDialog('Edit message',container=>{
+    const field=document.createElement('textarea');field.value=r.text;field.maxLength=2000;field.rows=4;container.append(field);
+    const save=el('button','primary-button','Save edit');save.onclick=async()=>{
+     const replacement=field.value.trim();if(!replacement||countChars(replacement)>MAX_CHARS){toast('Enter 1–500 characters');return;}
+     if(!queueMutation('edit',r,replacement))return;
+     r.text=replacement;r.edited=true;r.mutationFailed=false;await storeRecord(r);refreshMessageBubble(r);updateSidebar();closeDialog();
+    };container.append(save);field.focus();
+   });
+  });
+  add('Delete for me',()=>{if(confirm('Delete only from this browser?'))void deleteLocalRecord(r).catch(e=>toast(e.message));});
+  if(r.dir==='out'&&!r.deleted&&verified&&['delivered','read'].includes(r.status))add('Delete for everyone',async()=>{
+   if(!confirm('Delete this message on updated OffGrid clients too? An offline or older client may keep its existing copy.'))return;
+   if(!queueMutation('delete',r))return;
+   r.deleted=true;r.bytes=null;r.text='You deleted this message';r.edited=false;r.mutationFailed=false;
+   await storeRecord(r);refreshMessageBubble(r);updateSidebar();closeDialog();
+  });
+  body.append(el('p','', 'Long press a bubble on mobile, or right-click it on desktop. Edits and deletions use encrypted OGM4 controls.'));
+  body.append(actions);
+ });
+}
 function retryMessage(id){const r=recordMap.get(id);if(!r||r.dir!=='out'||r.status!=='failed'||!verified||!secretKey)return;r.status='sending';r.progress=0;r.error='';updateBubble(r);void storeStatus(r);transferQueue.push(makeJob(r));runTransfers();}
 function showDialog(title,render){$('modalTitle').textContent=title;const content=$('modalBody');content.replaceChildren();render(content);$('modalBackdrop').classList.remove('hidden');}
 function closeDialog(){$('modalBackdrop').classList.add('hidden');}
@@ -1064,7 +1190,7 @@ function showRename(){showDialog('Contact name',body=>{body.append(el('p','','Th
 async function clearHistory(){if(!verified||!secretKey)return;if(runningTransfers||pendingRadio()||transferQueue.length){toast('Finish active transfers before clearing history.');return;}if(!confirm('Delete encrypted chat history for this ESP32 from this browser? This cannot be undone.'))return;
  await wipeStored();records=[];recordMap.clear();revokePhotos();renderHistory();toast('Local chat history cleared.');closeDialog();}
 function showInfo(){showDialog('Chat information',body=>{[['Contact',activeContact],['Your ESP32',localMac||'Disconnected'],['Protocol','ESP-NOW firmware protocol 2 / encrypted app protocol OGM4'],['Security',secretKey?'AES-256-GCM, 256-bit random shared key':'Not paired'],['Photo target',`${Math.round(photoBudget()/1024)} KB optimized, 96 KB absolute`],['Voice notes','Up to 2 minutes and 384 KiB, encrypted and stored locally; blue microphone means played'],['Radio PHY',radioTelemetry.available?`${radioTelemetry.phy} Mbps TX, RSSI ${radioTelemetry.rssi===null?'unknown':radioTelemetry.rssi+' dBm'}`:'Waiting for telemetry'],['Link profile',`${linkPreference}; adaptive PHY; media window ${chosenWindow({kind:'image',control:false})}; auto ${adaptivePhotos?'on':'off'}`],['Radio liveness',`${radioTelemetry.pingOk||0} confirmed peer probes · ${radioTelemetry.pingLost||0} missed · clean streak ${radioTelemetry.healthGood||0}`],['Key storage','ESP32 NVS, browser RAM only'],['History','AES-GCM encrypted IndexedDB']].forEach(([a,b])=>{const line=el('div','info-line');line.append(el('span','',a),el('strong','',b));body.append(line);});body.append(el('p','','Grey single tick = transmitted; grey double tick = peer decrypted and confirmed; blue double tick = peer app reported it was viewed. Browser history is stored encrypted at rest.'));});}
-function showSettings(){showDialog('Settings',body=>{body.append(el('p','','Phase 1.6: premium glass UI on top of the confirmed-probe-based adaptive LR and AES-256-GCM voice notes. Espressif LR 500/250 kbps with existing 1/6/12 Mbps adaptive modes. 1.4.11 remains the frozen stable baseline. Test text before photos and voice.'));
+function showSettings(){showDialog('Settings',body=>{body.append(el('p','','Phase 2.4.1: encrypted message edit/delete controls with the original confirmed-probe-based adaptive LR and AES-256-GCM voice notes. Espressif LR 500/250 kbps with existing 1/6/12 Mbps adaptive modes. 1.4.11 remains the frozen stable baseline. Test text before photos and voice.'));
  const notifLabel=el('label','','Desktop notifications');body.append(notifLabel);
  const notifBox=el('div','notification-settings');
  const notifToggle=el('button','quiet-button notification-setting-button','');
@@ -1102,7 +1228,11 @@ function showSettings(){showDialog('Settings',body=>{body.append(el('p','','Phas
  const modeLabel=el('label','','Image optimization');body.append(modeLabel);const select=document.createElement('select');select.className='setting-select';
  [['hq','Optimized WebP/JPEG (adaptive 32–60 KB target, may resize)'],['lossless','Lossless PNG + metadata stripping (reject if >96 KB)']].forEach(([v,t])=>{const opt=document.createElement('option');opt.value=v;opt.textContent=t;select.append(opt);});select.value=imageMode;select.onchange=()=>{imageMode=select.value;try{localStorage.setItem('offgrid_image_mode',imageMode);}catch{}updateLinkBadge();};body.append(select);
  body.append(el('p','','Metadata stripping does not make photos tiny. High-quality mode can reduce dimensions and introduce slight loss; lossless PNG keeps the canvas pixels exact but may not fit through this radio link.'));
- const buttons=el('div','settings-actions'),rename=el('button','quiet-button','Rename contact'),key=el('button','quiet-button','Node pairing key'),diagnostics=el('button','quiet-button','USB diagnostics'),speedTest=el('button','primary-button','Speed diagnostics'),clear=el('button','soft-button','Clear history');rename.onclick=showRename;key.onclick=showPairing;diagnostics.onclick=diagnoseUsb;speedTest.onclick=showSpeedDiagnostics;clear.onclick=()=>void clearHistory();buttons.append(speedTest,rename,key,diagnostics,clear);body.append(buttons);
+ const buttons=el('div','settings-actions'),rename=el('button','quiet-button','Rename contact'),key=el('button','quiet-button','Node pairing key'),diagnostics=el('button','quiet-button','USB diagnostics'),speedTest=el('button','primary-button','Speed diagnostics'),clear=el('button','soft-button','Clear history');rename.onclick=showRename;key.onclick=showPairing;diagnostics.onclick=diagnoseUsb;speedTest.onclick=showSpeedDiagnostics;clear.onclick=()=>void clearHistory();const photo=el('button','quiet-button','Contact photo');photo.onclick=chooseContactAvatar;
+ const removeAvatar=el('button','quiet-button','Remove contact photo');removeAvatar.onclick=async()=>{
+   await dbDelete('keys',avatarDbKey());await updateContactAvatar();toast('Contact photo removed');
+ };
+ buttons.append(speedTest,rename,photo,removeAvatar,key,diagnostics,clear);body.append(buttons);
  });}
 $('viewerClose').onclick=closePhotoViewer;
 $('viewerPrevious').onclick=()=>navigatePhoto(-1);
@@ -1135,4 +1265,4 @@ document.addEventListener('visibilitychange',()=>{sendReadReceipts();updateNotif
 window.addEventListener('beforeunload',()=>{stopVoiceRecording(true);revokePhotos();});
 setInterval(pruneIncoming,45000);
 (async()=>{try{db=await openDb();}catch(e){toast('IndexedDB unavailable. Encrypted storage cannot work: '+e.message);}refreshStatus();updateUnreadBadge();updateNotificationButton();})();
-console.info('OffGrid Phase 1.6.1 — native desktop alerts, local unread badges, calmer UI, and preserved encrypted text/photo/voice protocols.');
+console.info('OffGrid Phase 2.4.1 web chat controls · based on 1.6.1 — native desktop alerts, local unread badges, calmer UI, and preserved encrypted text/photo/voice protocols.');
