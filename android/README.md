@@ -1,8 +1,13 @@
-# OffGrid Android Phase 2.3 — Binary Media Upload
+# OffGrid Messenger Android 2.4
 
-Open this `android` directory in Android Studio, build and run as an **in-place upgrade**.
-Keep your saved pairing key. **Firmware update on the phone-side ESP32 is required to activate binary upload.**
-If that ESP32 still runs Phase 2.2/2.0.9 firmware, this Android version keeps using ASCII MSGHEX automatically; functionality remains compatible.
-Look in Logcat `tag:OffGridBLE` for `Binary BLE capability confirmed; active=true` after connection.
-Short text, delivery/read/played receipts, incoming photos/voice and Wi-Fi/ESP-NOW are preserved.
-See `PHASE_2_3_BINARY_BLE.md` and the complete project's `README_PHASE_2_3.md`.
+Import this folder directly into Android Studio. Run over the existing Phase 2.3 app without
+uninstalling it. Your saved 43-character pairing key stays in Android Keystore.
+
+**Do not flash firmware.** Phase 2.3 binary BLE/ESP-NOW firmware works unchanged.
+
+Features: premium Material 3-inspired responsive UI, glass/acrylic surfaces, native launcher icon,
+correct navigation/keyboard insets, encrypted device history, system MessagingStyle notifications,
+press-and-hold voice, photo preview, and opt-in connected-device foreground service.
+
+Tests: `bash tests/run_phase24_tests.sh` (host tests); Android Studio build and device tests pending.
+Full instructions and limitations in `PHASE_2_4_PREMIUM.md` and the complete-release README.

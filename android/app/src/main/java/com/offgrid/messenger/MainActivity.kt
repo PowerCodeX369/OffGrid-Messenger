@@ -21,6 +21,8 @@ import android.os.Looper
 import android.content.pm.PackageManager
 import android.util.Log
 import androidx.activity.ComponentActivity
+import androidx.activity.enableEdgeToEdge
+import androidx.core.content.ContextCompat
 import androidx.activity.compose.setContent
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.IntentSenderRequest
@@ -84,7 +86,17 @@ private data class Transfer(val frames:List<ByteArray>,val messageId:String,val 
 
 class MainActivity : ComponentActivity() {
     private lateinit var secure: SecureKeyStore
-    private var link: BleNodeClient? = null
+    private var link: BleSessionHolder? = null
+    private lateinit var history: EncryptedHistory
+    private lateinit var notifications: OffGridNotifications
+    private val historyWorker = Executors.newSingleThreadExecutor()
+    private var scheduledHistory: Runnable? = null
+    private var appResumed by mutableStateOf(false)
+    private var chatScreenVisible by mutableStateOf(true)
+    private var notificationsEnabled by mutableStateOf(true)
+    private var notificationPreview by mutableStateOf(false)
+    private var keepBleBackground by mutableStateOf(false)
+    private var accessibleVoiceTap by mutableStateOf(false)
     private val assembler = OgmAssembler { secure.readPairingKey() }
     private val items = mutableStateListOf<ChatItem>()
     private val pending = ArrayDeque<Transfer>()
@@ -138,13 +150,35 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        enableEdgeToEdge()
         secure = SecureKeyStore(this)
+        history = EncryptedHistory(this)
+        notifications = OffGridNotifications(this)
+        val preferences=getSharedPreferences("offgrid_premium_24",MODE_PRIVATE)
+        notificationsEnabled=preferences.getBoolean("notifications",true)
+        notificationPreview=preferences.getBoolean("previews",false)
+        keepBleBackground=preferences.getBoolean("ble_background",false)
+        accessibleVoiceTap=preferences.getBoolean("accessible_voice_tap",false)
+        historyWorker.execute {
+            runCatching { history.load() }.onSuccess { stored ->
+                mainHandler.post {
+                    if(!activityDestroyed) {
+                        val present=items.map { it.id }.toSet()
+                        val old=stored.filterNot {it.id in present}.map { if(it.outgoing && it.status=="sending")it.copy(status="failed") else it }
+                        items.addAll(0,old)
+                        playedReceipts.addAll(old.filter { !it.outgoing && it.status=="played" }.map{it.id})
+                        if(old.isNotEmpty())bleTrace("Restored ${old.size} encrypted messages from device")
+                    }
+                }
+            }.onFailure { mainHandler.post { if(!activityDestroyed)bleTrace("Encrypted history unavailable: ${it.javaClass.simpleName}") } }
+        }
         fastPhotos = getSharedPreferences("offgrid_media", MODE_PRIVATE).getBoolean("fast_photos", true)
         voiceRecorder = VoiceNoteRecorder(this)
         trustedAddress = secure.nodeAddress()
         pairingSaved = secure.readPairingKey()?.let { it.fill(0);true } ?: false
-        dark = (resources.configuration.uiMode and 0x30) == 0x20
-        link = BleNodeClient(this, {secure.readPairingKey()}, {s,ready ->
+        dark = preferences.getBoolean("dark",(resources.configuration.uiMode and 0x30) == 0x20)
+        link = BleSessionHolder
+        BleSessionHolder.attach(this, {s,ready ->
             state=s;connected=ready
             if(ready) startNext() else {
                 activeMedia?.cancelTransfer(); activeMedia=null
@@ -158,6 +192,7 @@ class MainActivity : ComponentActivity() {
             }
         }, ::consumeLine, ::bleTrace)
         setContent { OffGridScreen() }
+        if(keepBleBackground) mainHandler.post { toggleBackground(true) }
         if(trustedAddress!=null && pairingSaved) mainHandler.post { reconnectIfPermitted() }
     }
     override fun onDestroy() {
@@ -167,7 +202,82 @@ class MainActivity : ComponentActivity() {
         recordAutoStop?.let(mainHandler::removeCallbacks)
         mediaWorker.shutdownNow()
         activeMedia?.cancelTransfer();activeMedia=null;mediaAcks.clear()
-        link?.stop();cancelAckTimeout();super.onDestroy()
+        scheduledHistory?.let(mainHandler::removeCallbacks)
+        val finalSnapshot=items.toList()
+        historyWorker.execute { runCatching { history.save(finalSnapshot) } }
+        historyWorker.shutdown()
+        BleSessionHolder.detach()
+        if(!keepBleBackground && !isChangingConfigurations) link?.stop()
+        cancelAckTimeout();super.onDestroy()
+    }
+    override fun onResume() { super.onResume(); appResumed=true }
+    override fun onPause() { appResumed=false; super.onPause() }
+
+    private fun scheduleHistorySave() {
+        scheduledHistory?.let(mainHandler::removeCallbacks)
+        val save=Runnable {
+            if(!activityDestroyed) {
+                val snapshot=items.toList()
+                historyWorker.execute { runCatching { history.save(snapshot) }.onFailure {
+                    Log.e("OffGridHistory","Encrypted history write failed",it)
+                } }
+            }
+        }
+        scheduledHistory=save
+        mainHandler.postDelayed(save,250L)
+    }
+    private fun markVisible(ids:Set<String>) {
+        if(!appResumed || !connected || ids.isEmpty())return
+        var changed=false
+        ids.forEach { id ->
+            val index=items.indexOfFirst {it.id==id && !it.outgoing && it.status=="delivered"}
+            if(index>=0){
+                controlReceipt(OgmCodec.READ,id)
+                items[index]=items[index].copy(status="read")
+                changed=true
+            }
+        }
+        if(changed)scheduleHistorySave()
+    }
+    private fun toggleBackground(enable:Boolean) {
+        if(enable && !hasBluetoothPermission()){
+            state="Grant Nearby devices permission before enabling background connection";return
+        }
+        try {
+            if(enable) ContextCompat.startForegroundService(this,Intent(this,OffGridConnectionService::class.java))
+            else stopService(Intent(this,OffGridConnectionService::class.java))
+            keepBleBackground=enable
+            getSharedPreferences("offgrid_premium_24",MODE_PRIVATE).edit().putBoolean("ble_background",enable).apply()
+        } catch(ex:Exception){
+            state="Background service unavailable: ${ex.message}"
+            keepBleBackground=false
+        }
+    }
+    private fun retryFailed(item:ChatItem) {
+        if(!connected || !item.outgoing || item.status!="failed")return
+        val index=items.indexOfFirst {it.id==item.id}
+        if(index<0)return
+        items[index]=item.copy(status="sending",progress=0)
+        when(item.kind){
+            OgmCodec.TEXT -> pushEnvelope(item.kind,item.id,item.text.toByteArray(Charsets.UTF_8))
+            OgmCodec.IMAGE -> item.bytes?.let {
+                pushEnvelope(item.kind,item.id,MediaPayload.photoBody(item.mime,it,item.width,item.height),
+                    width=item.width,height=item.height)
+            }
+            OgmCodec.VOICE -> item.bytes?.let {
+                val dims=MediaPayload.durationParts(item.durationMs)
+                pushEnvelope(item.kind,item.id,MediaPayload.voiceBody(item.mime,it,item.durationMs),
+                    width=dims.first,height=dims.second)
+            }
+        }
+        scheduleHistorySave()
+    }
+    private fun cancelVoiceRecording() {
+        if(!recording)return
+        recordAutoStop?.let(mainHandler::removeCallbacks);recordAutoStop=null
+        runCatching { voiceRecorder.finish(cancel=true) }
+        recording=false
+        state="Voice recording cancelled"
     }
     private fun hasBluetoothPermission():Boolean = Build.VERSION.SDK_INT < 31 ||
         checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT)==PackageManager.PERMISSION_GRANTED
@@ -219,12 +329,14 @@ class MainActivity : ComponentActivity() {
             onFinished = { elapsedMs ->
                 bleTrace("MEDIA_TX_COMPLETE kind=${if(job.frames.size>1)"batch" else "single"} frames=${job.frames.size} duration_ms=$elapsedMs")
                 activeMedia=null;job.mediaWindow=null
+                updateReceipt(job.messageId,"sent")
                 pending.remove(job);isSending=false
                 startNext()
             },
             onFailed = { reason ->
                 bleTrace("MEDIA_TX_FAILED $reason")
                 activeMedia=null;job.mediaWindow=null
+                updateReceipt(job.messageId,"sent")
                 pending.remove(job);isSending=false
                 updateReceipt(job.messageId,"failed")
                 state="Media transfer failed: $reason"
@@ -286,6 +398,7 @@ class MainActivity : ComponentActivity() {
             waitForAck("queued")
         } else {
             pending.removeFirst()
+            if(!job.control)updateReceipt(job.messageId,"sent")
             isSending=false
             // Final radio ACK means all encrypted fragments reached remote browser MCU.
             // True delivered/read ticks come only from authenticated app receipts.
@@ -308,6 +421,7 @@ class MainActivity : ComponentActivity() {
         if(value.isEmpty()||value.length>500)return
         val id=OgmCodec.newId()
         items.add(ChatItem(id,value,true,System.currentTimeMillis(),"sending"))
+        scheduleHistorySave()
         pushEnvelope(OgmCodec.TEXT,id,value.toByteArray(Charsets.UTF_8))
     }
     private fun sendPhoto(uri:Uri) {
@@ -324,6 +438,7 @@ class MainActivity : ComponentActivity() {
                     val body=MediaPayload.photoBody(photo.mime,photo.bytes,photo.width,photo.height)
                     items.add(ChatItem(id,"Photo",true,System.currentTimeMillis(),"sending",
                         OgmCodec.IMAGE,photo.bytes,photo.mime,photo.width,photo.height))
+                    scheduleHistorySave()
                     pushEnvelope(OgmCodec.IMAGE,id,body,width=photo.width,height=photo.height)
                     state="Encrypted photo queued · ${photo.bytes.size/1024} KiB"
                 }.onFailure { state="Photo not sent: ${it.message}" }
@@ -334,7 +449,7 @@ class MainActivity : ComponentActivity() {
         if(!connected){state="Connect to record";return}
         try {
             voiceRecorder.start();recording=true
-            state="Recording voice · tap stop to encrypt and send (30s max)"
+            state="Recording voice · release to send (30s max)"
             val timeout=Runnable { if(recording) finishVoiceRecording() }
             recordAutoStop=timeout
             mainHandler.postDelayed(timeout,30_000L)
@@ -353,6 +468,7 @@ class MainActivity : ComponentActivity() {
                 val (w,h)=MediaPayload.durationParts(voice.durationMs)
                 items.add(ChatItem(id,"Voice note",true,System.currentTimeMillis(),"sending",
                     OgmCodec.VOICE,voice.bytes,voice.mime,durationMs=voice.durationMs))
+                scheduleHistorySave()
                 pushEnvelope(OgmCodec.VOICE,id,body,width=w,height=h)
                 state="Encrypted voice note queued · ${voice.bytes.size/1024} KiB"
             } catch(ex:Exception) { state="Voice not sent: ${ex.message}" }
@@ -379,7 +495,11 @@ class MainActivity : ComponentActivity() {
             player.setOnCompletionListener {
                 stopVoicePlayback()
                 // 'Played' is only sent after the listener finishes the audio.
-                if(!item.outgoing && playedReceipts.add(item.id))controlReceipt(OgmCodec.PLAYED,item.id)
+                if(!item.outgoing && playedReceipts.add(item.id)) {
+                    controlReceipt(OgmCodec.PLAYED,item.id)
+                    items.indexOfFirst{it.id==item.id}.takeIf{it>=0}?.let{idx ->items[idx]=items[idx].copy(status="played")}
+                    scheduleHistorySave()
+                }
             }
             player.setOnErrorListener { _,_,_ -> stopVoicePlayback();state="Audio decoder error";true }
             player.prepare();player.start();playingId=item.id
@@ -390,12 +510,12 @@ class MainActivity : ComponentActivity() {
         val id=OgmCodec.newId()
         pushEnvelope(kind,id,OgmCodec.unhex(targetId),control=true)
     }
-    private fun updateReceipt(targetId:String,status:String){
-        val index=items.indexOfFirst { it.id==targetId&&it.outgoing }
-        if(index>=0){
+    private fun updateReceipt(targetId:String,status:String) {
+        val index=items.indexOfFirst { it.id==targetId && it.outgoing }
+        if(index>=0) {
             val current=items[index]
-            if(current.status!="played" && (current.status!="read" || status=="played"))
-                items[index]=current.copy(status=status)
+            val next=ReceiptStates.advance(current.status,status)
+            if(current.status!=next){items[index]=current.copy(status=next);scheduleHistorySave()}
         }
     }
     private fun consumeLine(line:String) {
@@ -455,28 +575,34 @@ class MainActivity : ComponentActivity() {
                         OgmCodec.TEXT -> {
                             val body=env.text.toString(Charsets.UTF_8)
                             if(body.length in 1..500 && items.none{it.id==env.id}){
-                                items.add(ChatItem(env.id,body,false,env.timestamp,"read"))
+                                items.add(ChatItem(env.id,body,false,env.timestamp,"delivered"))
                                 controlReceipt(OgmCodec.DELIVERED,env.id)
-                                controlReceipt(OgmCodec.READ,env.id)
+                                scheduleHistorySave()
+                                if(notificationsEnabled && (!appResumed || !chatScreenVisible))
+                                    notifications.newMessage(items.last(),notificationPreview)
                             }
                         }
                         OgmCodec.IMAGE -> {
                             val photo=MediaPayload.unpackPhoto(env.text,env.width,env.height)
                             if(items.none{it.id==env.id}){
-                                items.add(ChatItem(env.id,"Photo",false,env.timestamp,"read",OgmCodec.IMAGE,
+                                items.add(ChatItem(env.id,"Photo",false,env.timestamp,"delivered",OgmCodec.IMAGE,
                                     photo.bytes,photo.mime,photo.width,photo.height))
                                 controlReceipt(OgmCodec.DELIVERED,env.id)
-                                controlReceipt(OgmCodec.READ,env.id)
+                                scheduleHistorySave()
+                                if(notificationsEnabled && (!appResumed || !chatScreenVisible))
+                                    notifications.newMessage(items.last(),notificationPreview)
                             }
                         }
                         OgmCodec.VOICE -> {
                             val ms=MediaPayload.durationFromParts(env.width,env.height)
                             val voice=MediaPayload.unpackVoice(env.text,ms)
                             if(items.none{it.id==env.id}){
-                                items.add(ChatItem(env.id,"Voice note",false,env.timestamp,"read",OgmCodec.VOICE,
+                                items.add(ChatItem(env.id,"Voice note",false,env.timestamp,"delivered",OgmCodec.VOICE,
                                     voice.bytes,voice.mime,durationMs=voice.durationMs))
                                 controlReceipt(OgmCodec.DELIVERED,env.id)
-                                controlReceipt(OgmCodec.READ,env.id)
+                                scheduleHistorySave()
+                                if(notificationsEnabled && (!appResumed || !chatScreenVisible))
+                                    notifications.newMessage(items.last(),notificationPreview)
                             }
                         }
                         OgmCodec.DELIVERED -> if(env.text.size==8) updateReceipt(OgmCodec.hex(env.text),"delivered")
@@ -565,230 +691,109 @@ class MainActivity : ComponentActivity() {
     }
 
     @Composable
-    private fun OffGridScreen(){
-        val colors=if(dark) darkColorScheme(primary=Color(0xFF82ACFF),background=Navy,surface=Color(0xFF15243A),onSurface=Color(0xFFF2F6FD))
-            else lightColorScheme(primary=Sapphire,background=Color(0xFFF7F9FE),surface=Color.White,onSurface=Color(0xFF192B42))
+    private fun OffGridScreen() {
         var keyInput by remember { mutableStateOf("") }
-        var draft by remember { mutableStateOf("") }
         var showKey by remember { mutableStateOf(!pairingSaved) }
         val systemPicker=rememberLauncherForActivityResult(ActivityResultContracts.StartIntentSenderForResult()) { result ->
-            if (result.resultCode == RESULT_OK) {
+            if(result.resultCode==RESULT_OK){
                 val address=addressFromPicker(result.data)
-                if (address != null) acceptBleSelection(address, "chooser result")
-                else if (!pickerHandled) {
-                    bleTrace("Chooser returned no device; keys=${result.data?.extras?.keySet()?.joinToString()}")
-                    state="Device selected but BLE address unavailable; select again"
-                }
-            } else if (!pickerHandled) {
-                bleTrace("Chooser cancelled / failed: code=${result.resultCode}")
-                state="Device selection cancelled"
-            }
+                if(address!=null)acceptBleSelection(address,"chooser result")
+                else if(!pickerHandled)state="Could not read selected BLE address; select again"
+            } else if(!pickerHandled)state="Device selection cancelled"
         }
         val bluetoothPermission=rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
-            if (!granted) state="Nearby devices permission denied"
-            else if (trustedAddress == null && pairingSaved) startSystemPairing(systemPicker::launch)
+            if(!granted)state="Nearby devices permission denied"
+            else if(trustedAddress==null && pairingSaved)startSystemPairing(systemPicker::launch)
             else reconnectIfPermitted()
+        }
+        val notificationsPermission=rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+            if(!granted)state="Notification permission denied; enable in Android Settings"
         }
         val photoPicker=rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri:Uri? ->
             if(uri!=null)sendPhoto(uri)
         }
         val micPermission=rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
-            if(granted)startVoiceRecording() else state="Microphone permission is required to record voice notes"
+            state=if(granted)"Microphone ready · hold mic button to record" else "Microphone permission required"
         }
-        MaterialTheme(colorScheme=colors,shapes=Shapes(extraLarge=RoundedCornerShape(26.dp),large=RoundedCornerShape(22.dp))){
-            Surface(modifier=Modifier.fillMaxSize(),color=colors.background){
-                BoxWithConstraints(Modifier.fillMaxSize()){
-                    val wide=maxWidth>=750.dp
-                    Row(Modifier.fillMaxSize()){
-                        if(wide) {
-                            Surface(Modifier.width(278.dp).fillMaxHeight(),color=colors.surface,shadowElevation=1.dp){
-                                Column(Modifier.padding(22.dp),verticalArrangement=Arrangement.spacedBy(18.dp)){
-                                    Text("OffGrid",style=MaterialTheme.typography.headlineMedium,fontWeight=FontWeight.Bold,color=colors.primary)
-                                    Text("MESSENGER",style=MaterialTheme.typography.labelMedium,color=colors.onSurface.copy(alpha=.56f))
-                                    HorizontalDivider()
-                                    Text("Nearby conversation",fontWeight=FontWeight.SemiBold)
-                                    Text(state,style=MaterialTheme.typography.bodySmall,color=colors.onSurface.copy(alpha=.66f))
-                                    Text("Completely offline. Encrypted end to end.",style=MaterialTheme.typography.bodySmall)
-                                }
-                            }
-                            VerticalDivider()
-                        }
-                        Column(Modifier.weight(1f).fillMaxHeight()){
-                            Surface(Modifier.fillMaxWidth(),color=colors.surface,tonalElevation=2.dp){
-                                Row(Modifier.fillMaxWidth().padding(horizontal=18.dp,vertical=12.dp),verticalAlignment=Alignment.CenterVertically){
-                                    Surface(shape=CircleShape,color=colors.primary.copy(alpha=.12f),modifier=Modifier.size(43.dp)){
-                                        Box(contentAlignment=Alignment.Center){Icon(Icons.Default.Bluetooth,null,tint=colors.primary)}
-                                    }
-                                    Spacer(Modifier.width(12.dp))
-                                    Column(Modifier.weight(1f)){
-                                        Text(if(wide) "Nearby node" else "OffGrid",fontWeight=FontWeight.SemiBold)
-                                        Text(state,style=MaterialTheme.typography.labelSmall,maxLines=1,overflow=TextOverflow.Ellipsis,
-                                            color=if(connected)Color(0xFF278875) else colors.onSurface.copy(alpha=.56f))
-                                    }
-                                    IconButton(onClick={dark=!dark}){Text(if(dark)"☀" else "☾",color=colors.primary)}
-                                    IconButton(onClick={details=!details}){Icon(Icons.Default.MoreVert,"More")}
-                                }
-                            }
-                            if(details){
-                                Surface(color=colors.surface,tonalElevation=4.dp){
-                                    Column(Modifier.fillMaxWidth().padding(14.dp),verticalArrangement=Arrangement.spacedBy(8.dp)){
-                                        Text("Saved device: ${trustedAddress?:"None"}",style=MaterialTheme.typography.bodySmall)
-                                        Text("AES-256-GCM · ESP-NOW Long Range · BLE bridge",style=MaterialTheme.typography.bodySmall)
-                                        Text("Phase 2.2: encrypted media pipeline · bounded radio window · grouped media ACKs",style=MaterialTheme.typography.bodySmall)
-                                        Row(verticalAlignment=Alignment.CenterVertically,modifier=Modifier.fillMaxWidth()) {
-                                            Column(Modifier.weight(1f)) {
-                                                Text("Fast photos",style=MaterialTheme.typography.bodyMedium)
-                                                Text("~28 KiB uploads (off = quality mode, ~48 KiB)",style=MaterialTheme.typography.labelSmall)
-                                            }
-                                            Switch(checked=fastPhotos,onCheckedChange={ value ->
-                                                fastPhotos=value
-                                                getSharedPreferences("offgrid_media",MODE_PRIVATE).edit().putBoolean("fast_photos",value).apply()
-                                            })
-                                        }
-                                        TextButton(onClick={showKey=true}){Text("Update pairing key")}
-                                        TextButton(onClick={link?.stop();state="Disconnected"}){Text("Disconnect")}
-                                        TextButton(onClick={startSystemPairing(systemPicker::launch)}){Text("Choose another ESP32")}
-                                        TextButton(onClick={
-                                            link?.stop()
-                                            secure.clearNodeAddress()
-                                            trustedAddress=null
-                                            state="Saved node cleared; pairing key retained"
-                                            bleTrace("Forgot BLE address only; AES key preserved")
-                                        }){Text("Forget BLE device (keep key)")}
-                                        HorizontalDivider()
-                                        Text("BLE diagnostics",style=MaterialTheme.typography.titleSmall)
-                                        bleDiagnostics.takeLast(10).forEach { entry ->
-                                            Text(entry,style=MaterialTheme.typography.labelSmall)
-                                        }
-                                    }
-                                }
-                            }
-                            if(!connected){
-                                Surface(Modifier.fillMaxWidth(),color=colors.primary.copy(alpha=.055f)){
-                                    Row(Modifier.padding(12.dp),verticalAlignment=Alignment.CenterVertically){
-                                        Text("Pair once, then connect automatically when you open the app.",style=MaterialTheme.typography.bodySmall,modifier=Modifier.weight(1f))
-                                        TextButton(onClick={
-                                            if(!hasBluetoothPermission()){
-                                                if(Build.VERSION.SDK_INT>=31) bluetoothPermission.launch(Manifest.permission.BLUETOOTH_CONNECT)
-                                            } else if(!pairingSaved)showKey=true
-                                            else if(trustedAddress==null) startSystemPairing(systemPicker::launch)
-                                            else reconnectIfPermitted()
-                                        }){Text(if(trustedAddress==null)"Pair" else "Connect")}
-                                    }
-                                }
-                            }
-                            val lazy=rememberLazyListState()
-                            LaunchedEffect(items.size){if(items.isNotEmpty())lazy.animateScrollToItem(items.lastIndex)}
-                            LazyColumn(Modifier.weight(1f).fillMaxWidth(),state=lazy,contentPadding=PaddingValues(horizontal=18.dp, vertical=20.dp),
-                                verticalArrangement=Arrangement.spacedBy(10.dp)){
-                                if(items.isEmpty())item {
-                                    Column(Modifier.fillMaxWidth().padding(vertical=64.dp),horizontalAlignment=Alignment.CenterHorizontally){
-                                        Icon(Icons.Default.Lock,null,tint=colors.primary.copy(alpha=.6f),modifier=Modifier.size(36.dp))
-                                        Spacer(Modifier.height(14.dp))
-                                        Text("A private space for your conversation",fontWeight=FontWeight.SemiBold)
-                                        Spacer(Modifier.height(6.dp))
-                                        Text("No internet · No cloud · Just your radios",style=MaterialTheme.typography.bodySmall,color=colors.onSurface.copy(alpha=.55f))
-                                    }
-                                }
-                                items(items,key={it.id}){item ->
-                                    Row(Modifier.fillMaxWidth(),horizontalArrangement=if(item.outgoing)Arrangement.End else Arrangement.Start){
-                                        val fill=if(item.outgoing)colors.primary.copy(alpha=.11f) else colors.surface
-                                        Surface(color=fill,shape=RoundedCornerShape(21.dp),shadowElevation=1.dp,
-                                            modifier=Modifier.widthIn(max=340.dp)){
-                                            Column(Modifier.padding(horizontal=14.dp, vertical=10.dp)){
-                                                when(item.kind) {
-                                                    OgmCodec.IMAGE -> {
-                                                        val bitmap=remember(item.id) {
-                                                            item.bytes?.let { data -> runCatching {
-                                                                BitmapFactory.decodeByteArray(data,0,data.size)?.asImageBitmap()
-                                                            }.getOrNull() }
-                                                        }
-                                                        if(bitmap!=null) {
-                                                            androidx.compose.foundation.Image(bitmap,contentDescription="Encrypted photo",contentScale=ContentScale.Fit,
-                                                                modifier=Modifier.fillMaxWidth().heightIn(max=260.dp))
-                                                        } else Text("Photo unavailable",style=MaterialTheme.typography.bodyMedium)
-                                                        Text("${item.width} × ${item.height} · encrypted photo",style=MaterialTheme.typography.labelSmall)
-                                                    }
-                                                    OgmCodec.VOICE -> {
-                                                        Row(verticalAlignment=Alignment.CenterVertically) {
-                                                            IconButton(onClick={toggleVoicePlayback(item)}) {
-                                                                Icon(if(playingId==item.id) Icons.Default.Stop else Icons.Default.PlayArrow,
-                                                                    if(playingId==item.id)"Stop voice" else "Play voice")
-                                                            }
-                                                            Text("Voice note · ${item.durationMs/1000}s",style=MaterialTheme.typography.bodyMedium)
-                                                        }
-                                                    }
-                                                    else -> Text(item.text,style=MaterialTheme.typography.bodyMedium)
-                                                }
-                                                if(item.outgoing && item.progress in 1..99 && item.kind!=OgmCodec.TEXT) {
-                                                    LinearProgressIndicator(progress={item.progress/100f},modifier=Modifier.fillMaxWidth())
-                                                    Text("Transferring ${item.progress}% · ${"%.1f".format(java.util.Locale.US,item.speedKiBs)} KiB/s",style=MaterialTheme.typography.labelSmall)
-                                                }
-                                                Spacer(Modifier.height(6.dp))
-                                                Row(Modifier.align(Alignment.End),verticalAlignment=Alignment.CenterVertically){
-                                                    Text(java.text.SimpleDateFormat("HH:mm",java.util.Locale.getDefault()).format(java.util.Date(item.timestamp)),
-                                                        style=MaterialTheme.typography.labelSmall,color=colors.onSurface.copy(alpha=.48f))
-                                                    if(item.outgoing){
-                                                        Spacer(Modifier.width(4.dp))
-                                                        Icon(if(item.status=="read"||item.status=="played")Icons.Default.CheckCircle else Icons.Default.Check,
-                                                            item.status,tint=if(item.status=="read"||item.status=="played")colors.primary else colors.onSurface.copy(alpha=.55f),
-                                                            modifier=Modifier.size(15.dp))
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                            Surface(color=colors.surface,tonalElevation=1.dp){
-                                Row(Modifier.fillMaxWidth().padding(horizontal=12.dp,vertical=10.dp),verticalAlignment=Alignment.Bottom,
-                                    horizontalArrangement=Arrangement.spacedBy(8.dp)){
-                                    OutlinedTextField(value=draft,onValueChange={if(it.length<=500)draft=it},modifier=Modifier.weight(1f),
-                                        placeholder={Text(if(connected)"Message" else "Connect to send",style=MaterialTheme.typography.bodyMedium)},
-                                        enabled=connected,shape=RoundedCornerShape(25.dp),maxLines=4,
-                                        keyboardOptions=KeyboardOptions(imeAction=ImeAction.Send),
-                                        keyboardActions=KeyboardActions(onSend={if(draft.isNotBlank()){sendText(draft);draft=""}}))
-                                    IconButton(onClick={photoPicker.launch("image/*")},enabled=connected && !recording) {
-                                        Icon(Icons.Default.Image,"Send a photo",tint=colors.primary)
-                                    }
-                                    FilledIconButton(onClick={
-                                        if(recording)finishVoiceRecording()
-                                        else if(draft.isNotBlank()){sendText(draft);draft=""}
-                                        else if(checkSelfPermission(Manifest.permission.RECORD_AUDIO)==PackageManager.PERMISSION_GRANTED)
-                                            startVoiceRecording()
-                                        else micPermission.launch(Manifest.permission.RECORD_AUDIO)
-                                    },enabled=connected,modifier=Modifier.size(53.dp),
-                                        colors=IconButtonDefaults.filledIconButtonColors(containerColor=colors.primary)){
-                                        if(recording) Icon(Icons.Default.Stop,"Finish and send voice",tint=Color.White)
-                                        else if(draft.isNotBlank())Icon(Icons.AutoMirrored.Filled.Send,"Send",tint=Color.White)
-                                        else Icon(Icons.Default.Mic,"Record voice",tint=Color.White)
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    if(showKey){
-                        AlertDialog(onDismissRequest={if(pairingSaved)showKey=false},
-                            title={Text("Secure node pairing")},
-                            text={Column(verticalArrangement=Arrangement.spacedBy(10.dp)){
-                                Text("Enter the same 43-character pairing key stored on both ESP32 nodes. The key is wrapped by Android Keystore.")
-                                OutlinedTextField(value=keyInput,onValueChange={keyInput=it.trim()},singleLine=true,
-                                    label={Text("OffGrid key")},visualTransformation=PasswordVisualTransformation())
-                                Text("Retrieve the key locally from your trusted web app; never share it with other people.",style=MaterialTheme.typography.bodySmall)
-                            }},
-                            confirmButton={TextButton(onClick={
-                                try {
-                                    val raw=OgmCodec.key(keyInput)
-                                    secure.savePairingKey(raw);raw.fill(0);pairingSaved=true;keyInput="";showKey=false
-                                    if(trustedAddress!=null)reconnectIfPermitted()
-                                    else if(hasBluetoothPermission())startSystemPairing(systemPicker::launch)
-                                    else if(Build.VERSION.SDK_INT>=31)bluetoothPermission.launch(Manifest.permission.BLUETOOTH_CONNECT)
-                                } catch (_:Exception){state="Pairing key must be exactly 43 base64url characters"}
-                            }){Text("Save & connect")}},
-                            dismissButton=if(pairingSaved) {{TextButton(onClick={showKey=false}){Text("Cancel")}}} else null
-                        )
-                    }
-                }
+        val prefs=getSharedPreferences("offgrid_premium_24",MODE_PRIVATE)
+        var notificationAsked by remember { mutableStateOf(false) }
+        LaunchedEffect(connected,notificationsEnabled) {
+            if(connected && notificationsEnabled && !notificationAsked && Build.VERSION.SDK_INT>=33 && !notifications.canNotify()) {
+                notificationAsked=true
+                notificationsPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
+            }
+        }
+        OffGridPremiumTheme(dark) {
+            PremiumMessenger(
+                items=items.toList(),connected=connected,status=state,nodeAddress=trustedAddress,
+                dark=dark,fastPhotos=fastPhotos,notifications=notificationsEnabled,
+                privatePreview=notificationPreview,backgroundEnabled=keepBleBackground,
+                recording=recording,playingId=playingId,appVisible=appResumed,
+                accessibleVoiceTap=accessibleVoiceTap,
+                diagnostics=bleDiagnostics.toList(),
+                actions=PremiumActions(
+                    sendText=::sendText,photo={photoPicker.launch("image/*")},
+                    micPress={
+                        if(checkSelfPermission(Manifest.permission.RECORD_AUDIO)==PackageManager.PERMISSION_GRANTED)
+                            startVoiceRecording()
+                        else micPermission.launch(Manifest.permission.RECORD_AUDIO)
+                    },
+                    micRelease={finishVoiceRecording()},micCancel={cancelVoiceRecording()},
+                    playVoice=::toggleVoicePlayback,markVisible=::markVisible,
+                    chatVisibility={chatScreenVisible=it},
+                    connect={
+                        if(!hasBluetoothPermission()) {
+                            if(Build.VERSION.SDK_INT>=31)bluetoothPermission.launch(Manifest.permission.BLUETOOTH_CONNECT)
+                        } else if(!pairingSaved)showKey=true
+                        else if(trustedAddress==null)startSystemPairing(systemPicker::launch)
+                        else reconnectIfPermitted()
+                    },
+                    disconnect={link?.stop();state="Disconnected"},
+                    chooseNode={startSystemPairing(systemPicker::launch)},
+                    forgetNode={
+                        link?.stop();secure.clearNodeAddress();trustedAddress=null
+                        state="BLE device forgotten; AES pairing key kept"
+                    },editKey={showKey=true},
+                    changeDark={dark=it;prefs.edit().putBoolean("dark",it).apply()},
+                    changeFastPhotos={
+                        fastPhotos=it;getSharedPreferences("offgrid_media",MODE_PRIVATE)
+                            .edit().putBoolean("fast_photos",it).apply()
+                    },
+                    changeNotifications={
+                        notificationsEnabled=it;prefs.edit().putBoolean("notifications",it).apply()
+                        if(it && Build.VERSION.SDK_INT>=33 && !notifications.canNotify())
+                            notificationsPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
+                    },
+                    changePrivatePreview={notificationPreview=it;prefs.edit().putBoolean("previews",it).apply()},
+                    changeBackground=::toggleBackground,
+                    changeAccessibleVoiceTap={
+                        accessibleVoiceTap=it;prefs.edit().putBoolean("accessible_voice_tap",it).apply()
+                    },
+                    clearHistory={
+                        items.clear();playedReceipts.clear();historyWorker.execute { history.clear() }
+                    },retry=::retryFailed
+                )
+            )
+            if(showKey) {
+                AlertDialog(onDismissRequest={if(pairingSaved)showKey=false},
+                    title={Text("Secure node pairing")},
+                    text={Column(verticalArrangement=Arrangement.spacedBy(10.dp)) {
+                        Text("Enter the existing 43-character Base64URL key shared by both ESP32s. This isn't a new BLE PIN.")
+                        OutlinedTextField(value=keyInput,onValueChange={keyInput=it.trim()},singleLine=true,
+                            label={Text("OffGrid encryption key")},visualTransformation=PasswordVisualTransformation())
+                        Text("Use the key shown in the trusted web interface. Do not share it.",
+                            style=MaterialTheme.typography.bodySmall)
+                    }},confirmButton={TextButton(onClick={
+                        try {
+                            val raw=OgmCodec.key(keyInput)
+                            secure.savePairingKey(raw);raw.fill(0);pairingSaved=true;keyInput="";showKey=false
+                            if(trustedAddress!=null)reconnectIfPermitted()
+                            else if(hasBluetoothPermission())startSystemPairing(systemPicker::launch)
+                            else if(Build.VERSION.SDK_INT>=31)bluetoothPermission.launch(Manifest.permission.BLUETOOTH_CONNECT)
+                        } catch(_:Exception){state="Pairing key must be exactly 43 Base64URL characters"}
+                    }){Text("Save & connect")}},
+                    dismissButton=if(pairingSaved) {{TextButton(onClick={showKey=false}){Text("Cancel")}}} else null
+                )
             }
         }
     }
