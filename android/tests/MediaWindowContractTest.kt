@@ -26,7 +26,7 @@ fun main(){
     var paused=0
     val progress=mutableListOf<Int>()
     val sender=MediaTransferWindow(frames,3,{t.ms},t::schedule,t::cancel,
-        {frame ->tx.add(frame[0].toInt() and 255)},
+        {frame ->tx.add(frame[0].toInt() and 255);null},
         {count,_ ->progress.add(count)}, {finished++}, {failed=it}, {paused++})
     sender.startOrResume()
     check(tx==listOf(0,1,2)) {"Must send exactly 3 frames, no more: $tx"}
@@ -76,7 +76,7 @@ fun main(){
     var transmissions=0
     var failure=""
     val bad=MediaTransferWindow(listOf(byteArrayOf(8)),1,{timeout.ms},timeout::schedule,timeout::cancel,
-        {transmissions++},{_,_->},{},{failure=it},{})
+        {transmissions++;null},{_,_->},{},{failure=it},{})
     bad.startOrResume()
     timeout.advance(23_000)
     check(transmissions==3 && failure.contains("3 attempts"))

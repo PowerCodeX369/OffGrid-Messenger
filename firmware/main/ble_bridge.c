@@ -18,6 +18,7 @@
 #include "services/gap/ble_svc_gap.h"
 #include "services/gatt/ble_svc_gatt.h"
 #include "ble_auth_psa.h"  /* PSA HMAC-SHA256, for Mbed TLS 4 in ESP-IDF 6.1. */
+#include "ble_binary.h"
 #define MAX_LINE 512
 static const ble_uuid128_t svc=BLE_UUID128_INIT(0x01,0x0b,0x03,0x26,0x80,0x4e,0x41,0xb6,0xba,0x48,0xd5,0x7b,0x04,0xd9,0x22,0x7b);
 static const ble_uuid128_t write_uuid=BLE_UUID128_INIT(0x02,0x0b,0x03,0x26,0x80,0x4e,0x41,0xb6,0xba,0x48,0xd5,0x7b,0x04,0xd9,0x22,0x7b);
@@ -77,17 +78,37 @@ static void complete_line(char *line){
   return;
  }
  if(!auth){push("AUTH_REQUIRED",false);return;}
+ if(!strcmp(line,"BINCAP")){
+  /* Negotiation is explicitly authenticated; old applications never ask.
+   * The Android client still checks ATT MTU before enabling binary. */
+  push("BINCAP|1|180",true);return;
+ }
  if(!allow(line)){push("ERROR|BLE_DENIED",false);return;}
- line_t item={0};strncpy(item.text,line,MAX_LINE-1);
+ offgrid_ble_command_t item={0};
+ item.kind=OFFGRID_BLE_COMMAND_TEXT;
+ strncpy(item.data.text,line,OFFGRID_BLE_LINE_MAX-1);
  if(xQueueSend(inbox,&item,0)!=pdTRUE)push("ERROR|BLE_BACKPRESSURE",false);
 }
 static int access_cb(uint16_t conn,uint16_t handle,struct ble_gatt_access_ctxt *ctx,void *arg){
  (void)handle;(void)arg;
  if(ctx->op!=BLE_GATT_ACCESS_OP_WRITE_CHR)return BLE_ATT_ERR_WRITE_NOT_PERMITTED;
  if(conn!=conn_handle)return BLE_ATT_ERR_INSUFFICIENT_AUTHEN;
- uint16_t n=OS_MBUF_PKTLEN(ctx->om);if(n<1||n>220)return BLE_ATT_ERR_INVALID_ATTR_VALUE_LEN;
- uint8_t data[220];uint16_t copied=0;
+ uint16_t n=OS_MBUF_PKTLEN(ctx->om);
+ if(n<1||n>OFFGRID_BIN_MAX_WRITE)return BLE_ATT_ERR_INVALID_ATTR_VALUE_LEN;
+ uint8_t data[OFFGRID_BIN_MAX_WRITE];uint16_t copied=0;
  if(ble_hs_mbuf_to_flat(ctx->om,data,sizeof(data),&copied)!=0)return BLE_ATT_ERR_UNLIKELY;
+ if (data[0]==OFFGRID_BIN_MAGIC0) {
+  /* Do not interpret unauthenticated bytes as radio packets. A binary write
+   * is always ONE complete ATT write, never a stream fragment. */
+  if(!auth) return BLE_ATT_ERR_INSUFFICIENT_AUTHEN;
+  if(partial_n!=0) return BLE_ATT_ERR_INVALID_ATTR_VALUE_LEN;
+  offgrid_ble_command_t item={0};item.kind=OFFGRID_BLE_COMMAND_BINARY;
+  if(!offgrid_bin_decode(data,copied,&item.token,item.data.frame,&item.length))
+   return BLE_ATT_ERR_INVALID_ATTR_VALUE_LEN;
+  if(xQueueSend(inbox,&item,0)!=pdTRUE)return BLE_ATT_ERR_INSUFFICIENT_RES;
+  return 0;
+ }
+ /* Original newline-delimited ASCII commands remain byte-for-byte compatible. */
  for(unsigned i=0;i<copied;i++){
   unsigned char ch=data[i];if(ch=='\r')continue;
   if(ch=='\n'){partial[partial_n]=0;if(partial_n)complete_line(partial);partial_n=0;}
@@ -170,10 +191,9 @@ static void sender(void *arg){
   }
  }
 }
-bool offgrid_ble_receive_line(char *out,size_t capacity){
- if(!inbox||!out||capacity<MAX_LINE)return false;
- line_t item;if(xQueueReceive(inbox,&item,0)!=pdTRUE)return false;
- memcpy(out,item.text,MAX_LINE);return true;
+bool offgrid_ble_receive_command(offgrid_ble_command_t *out){
+ if(!inbox||!out)return false;
+ return xQueueReceive(inbox,out,0)==pdTRUE;
 }
 void offgrid_ble_init(const uint8_t mac[6],const uint8_t key[32],bool present){
  snprintf(name,sizeof(name),"OffGrid-%02X%02X",mac[4],mac[5]);
@@ -184,7 +204,7 @@ void offgrid_ble_init(const uint8_t mac[6],const uint8_t key[32],bool present){
   ESP_LOGE("offgrid-ble","PSA crypto initialization failed: %ld",(long)psa_status);
   return;
  }
- inbox=xQueueCreate(16,sizeof(line_t));outbox=xQueueCreate(32,sizeof(line_t));
+ inbox=xQueueCreate(16,sizeof(offgrid_ble_command_t));outbox=xQueueCreate(32,sizeof(line_t));
  if(!inbox||!outbox){ESP_LOGE("offgrid-ble","No BLE queues");return;}
  if(nimble_port_init()!=ESP_OK){ESP_LOGE("offgrid-ble","NimBLE init failed");return;}
  ble_svc_gap_init();ble_svc_gatt_init();ble_svc_gap_device_name_set(name);

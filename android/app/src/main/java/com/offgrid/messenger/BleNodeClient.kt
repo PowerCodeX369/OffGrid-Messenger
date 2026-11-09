@@ -62,6 +62,8 @@ class BleNodeClient(
     private var idlePriorityTimeout: Runnable? = null
     private var chunkStartedAtMs = 0L
     private var lastChunkSize = 0
+    private var binarySupported = false
+    private var binaryToken = 0
     private fun trace(message: String) {
         Log.d("OffGridBLE", message)
         onDiagnostic(message)
@@ -97,6 +99,7 @@ class BleNodeClient(
         mtuPending = false
         highPriority = false
         negotiatedMtu = 23
+        binarySupported = false
         lastChunkSize = 0
         try { old?.disconnect() } catch (_: Exception) {}
         try { old?.close() } catch (_: Exception) {}
@@ -228,6 +231,23 @@ class BleNodeClient(
         main.postDelayed(idle, 20_000L)
     }
 
+    /** Returns a correlation ID only when binary was actually selected.
+     * Otherwise the unmodified MSGHEX/QUEUED protocol is used. Supported on
+     * new firmware after authenticated BINCAP negotiation at ATT MTU >= 188. */
+    fun sendFrame(frame: ByteArray): Int? {
+        if (!ready || frame.isEmpty() || frame.size > BleBinaryCodec.MAX_FRAME) return null
+        val payloadCapacity = negotiatedMtu - 3
+        if (binarySupported && frame.size + BleBinaryCodec.HEADER_SIZE <= payloadCapacity) {
+            binaryToken = if (binaryToken >= 65535) 1 else binaryToken + 1
+            val token = binaryToken
+            val packet = BleBinaryCodec.pack(frame, token)
+            queuePacket(packet, "BINARY", wholeWrite = true)
+            return token
+        }
+        send("MSGHEX ${OgmCodec.hex(frame)}")
+        return null
+    }
+
     /** ASCII command line; split into MTU-sized GATT writes. */
     fun send(command: String) {
         if (!ready || command.indexOf('\n') >= 0 || command.indexOf('\r') >= 0) return
@@ -235,15 +255,22 @@ class BleNodeClient(
         queueRaw("$command\n")
     }
     private fun queueRaw(line: String) {
+        val kind = line.substringBefore(' ').substringBefore('|').trim()
+        queuePacket(line.toByteArray(StandardCharsets.US_ASCII), kind, wholeWrite = false)
+    }
+    private fun queuePacket(bytes: ByteArray, kind: String, wholeWrite: Boolean) {
         main.post {
             if (gatt == null) return@post
-            val bytes = line.toByteArray(StandardCharsets.US_ASCII)
             val chunkSize = min(180, maxOf(20, negotiatedMtu - 3))
-            // Commands, not secrets or ciphertext, are logged for troubleshooting.
-            val commandType = line.substringBefore(' ').substringBefore('|').trim()
-            trace("TX $commandType: ${bytes.size} bytes / ${(bytes.size+chunkSize-1)/chunkSize} GATT writes (MTU=$negotiatedMtu)")
+            // Never split a binary command: it is exactly one ATT write.
+            if (wholeWrite && bytes.size > negotiatedMtu - 3) {
+                trace("Binary write exceeds negotiated ATT MTU; dropping (no packet sent)")
+                return@post
+            }
+            trace("TX $kind: ${bytes.size} bytes / ${if(wholeWrite) 1 else (bytes.size+chunkSize-1)/chunkSize} GATT writes (MTU=$negotiatedMtu)")
             preferFastConnection()
-            for (start in bytes.indices step chunkSize)
+            if (wholeWrite) writerQueue.addLast(bytes)
+            else for (start in bytes.indices step chunkSize)
                 writerQueue.addLast(bytes.copyOfRange(start, min(bytes.size, start + chunkSize)))
             writeNext()
         }
@@ -301,7 +328,17 @@ class BleNodeClient(
             authenticated = true; reconnectAttempt = 0
             trace("Authentication succeeded")
             onStatus("Connected · authenticated", true)
+            send("BINCAP") // Old firmware responds with BLE_DENIED; harmless fallback.
             send("STATUS")
+            return
+        }
+        if (line == "BINCAP|1|180") {
+            binarySupported = negotiatedMtu >= BleBinaryCodec.MIN_MTU
+            trace("Binary BLE capability confirmed; active=$binarySupported MTU=$negotiatedMtu")
+            return
+        }
+        if (line == "ERROR|BLE_DENIED" && !binarySupported) {
+            trace("Binary mode unavailable; continuing with legacy MSGHEX")
             return
         }
         if (line.startsWith("AUTH_ERR") || line == "AUTH_REQUIRED") {

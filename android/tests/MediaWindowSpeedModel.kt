@@ -25,6 +25,7 @@ fun main() {
       val idx=it[0].toInt() and 255
       clk.post(Runnable { sender.onQueued(OgmCodec.hex(bytes[idx]),"1",(100+idx).toString()) },4)
       clk.post(Runnable { sender.onDelivered("1",(100+idx).toString()) },120)
+      null
     },{_,_->},{success=true},{error(it)},{error("Unexpected pause")})
     sender.startOrResume();clk.until{success};return clk.tick-start
   }
