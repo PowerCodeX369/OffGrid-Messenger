@@ -2,8 +2,8 @@
 /* OffGrid Phase 1.4.5.1 USB FIX: proven broadcast radio + NVS keys, same encrypted app protocol.
    Keys are stored on each ESP32 and imported only into browser RAM over physical USB. No external servers. */
 const P=globalThis.OGP,$=id=>document.getElementById(id);
-const MAX_CHARS=500,MAX_PHOTO=96*1024,STORE='OffGridMessengerV14';
-const APP_VERSION='1.4.11.2-rf-test';
+const MAX_CHARS=500,MAX_PHOTO=96*1024,MAX_VOICE_MS=30000,STORE='OffGridMessengerV14';
+const APP_VERSION='1.5-reliable-lr-voice';
 const stateRank={sending:0,queued:0,sent:1,failed:1,delivered:2,read:3};
 const encoder=new TextEncoder();
 let port=null,reader=null,writer=null,readPromise=null,closing=false,verified=false,serialBuffer='',writeChain=Promise.resolve(),handshakeTimer=null;
@@ -35,7 +35,8 @@ function diagnoseUsb(){
  });
 }
 
-let db=null,records=[],recordMap=new Map(),photoUrls=new Map(),incoming=new Map(),recentTransfers=new Map();
+let db=null,records=[],recordMap=new Map(),photoUrls=new Map(),voiceUrls=new Map(),incoming=new Map(),recentTransfers=new Map();
+let currentVoiceRecording=null,voiceTimer=null;
 let transferQueue=[],activeTransfer=null,runningTransfers=false;
 /* Photo-only selective ACK. Groups are per sender MAC and ESP32 boot-session;
  * IDs remain arbitrary (do not assume sequential or shared with other traffic). */
@@ -46,74 +47,11 @@ let selectivePhotoAcks=true;
 const radioByHex=new Map(),radioByWire=new Map();
 const linkStats={samples:0,avgMs:0,cleanStreak:0,retries:0,mode:'starting',window:1,lastKBs:0};
 let linkPreference='auto';
-let lastManualLR='lr500',lrControlError=''; // Only the UI changes; firmware RATE protocol remains unchanged.
 const photoFlow=new globalThis.OffGridAdaptive.PhotoFlowController();
 let adaptivePhotos=true;
 let queuedReceipts=new Set(),pendingReads=new Set(),theme='dark';
 let imageMode='hq';
-/* Runtime-only RF lab: real measured RSSI is never replaced by simulated RSSI.
- * The device restores boot power on RFTEST OFF or after a 120-second lease. */
-const rfLab={available:false,active:false,power:null,base:null,live:null,sim:false,simValue:null,phy:null,mode:'AUTO',peer:false,ttl:0,output:null,status:null,heartbeat:null,busy:false};
-function rfFields(line){const o={};for(const chunk of line.split('|').slice(1)){const i=chunk.indexOf('=');if(i>0)o[chunk.slice(0,i)]=chunk.slice(i+1);}return o;}
-function rfText(){
- const power=rfLab.power===null?'—':(rfLab.power/4).toFixed(rfLab.power%4?2:0)+' dBm';
- const base=rfLab.base===null?'—':(rfLab.base/4).toFixed(rfLab.base%4?2:0)+' dBm';
- const live=rfLab.live===null||rfLab.live===-127?'unknown':rfLab.live+' dBm';
- const effective=rfLab.sim?'Simulated '+rfLab.simValue+' dBm for AUTO policy':'Real signal used by AUTO';
- const phy=(rfLab.phy===null?'—':rfLab.phy<1?Math.round(rfLab.phy*1000)+' Kbps':rfLab.phy+' Mbps');
- return `Power: ${power} (boot: ${base})\nMeasured RSSI: ${live}\nRate input: ${effective}\nActual configured PHY: ${phy} · ${rfLab.mode}\nPeer known: ${rfLab.peer?'yes':'no'} · RF test: ${rfLab.active?'active':'off'} · auto-restore: ${rfLab.ttl}s`;
-}
-function rfLabUpdate(){if(rfLab.status)rfLab.status.textContent=rfText();}
-function rfLabLog(line){if(!rfLab.output)return;rfLab.output.textContent+=line+'\n';rfLab.output.scrollTop=rfLab.output.scrollHeight;}
-function rfLabReceive(line){
- if(line.startsWith('RFTEST|')){
-  const f=rfFields(line);rfLab.available=true;rfLab.active=f.ACTIVE==='1';rfLab.power=Number(f.PWR);rfLab.base=Number(f.BASE);
-  rfLab.live=Number(f.LIVE);rfLab.phy=Number(f.PHY);rfLab.mode=f.MODE||'AUTO';rfLab.peer=f.PEER==='1';rfLab.sim=f.SIM==='ON';rfLab.ttl=Number(f.TTL)||0;
-  if(!rfLab.sim)rfLab.simValue=null;rfLabUpdate();return true;
- }
- if(line.startsWith('RFTEST_SIM|')){const f=rfFields(line);rfLab.simValue=Number(f.RSSI);rfLabUpdate();return true;}
- if(line.startsWith('RFTEST_EXPIRED|')){rfLab.active=false;rfLab.sim=false;rfLab.simValue=null;rfLabUpdate();rfLabLog('Experiment expired — device restored initial power.');return true;}
- if(line.startsWith('RFTEST_ERROR|')){rfLabLog('Device error: '+line.slice(13));toast('RF test: '+line.slice(13));return true;}
- return false;
-}
-async function rfCommand(cmd){if(!verified||!writer){toast('Connect your ESP32 first.');return false;}try{await writeLine('RFTEST '+cmd);return true;}catch(e){rfLabLog('USB: '+e.message);return false;}}
-function rfCloseHeartbeat(){if(rfLab.heartbeat){clearInterval(rfLab.heartbeat);rfLab.heartbeat=null;}}
-function showRfLab(){
- rfCloseHeartbeat();
- showDialog('RF Lab · Short-range Long Range tests',body=>{
-  const p=el('p','','Compare real low-power wireless performance with simulated RSSI rate switching. These are separate experiments. Normal encrypted messaging is untouched.');body.append(p);
-  const info=el('pre','rf-lab-status');rfLab.status=info;body.append(info);rfLabUpdate();
-  const powerLabel=el('label','','Real transmitter power (each ESP32 separately)');body.append(powerLabel);
-  const power=el('select','setting-select');
-  [['DEFAULT','Restore boot power'],['2','2 dBm · minimum'],['5','5 dBm'],['10','10 dBm'],['15','15 dBm'],['20','20 dBm · only if boot allows']].forEach(([v,label])=>{const op=document.createElement('option');op.value=v;op.textContent=label;power.append(op);});
-  body.append(power);
-  const applyPower=el('button','quiet-button','Apply radio power');body.append(applyPower);
-  applyPower.onclick=async()=>{const cmd='POWER '+power.value;rfLabLog('Request: '+cmd);await rfCommand(cmd);};
-  const simLabel=el('label','','Simulated signal (tests rate algorithm only)');body.append(simLabel);
-  const sim=el('input','rf-lab-slider');sim.type='range';sim.min='-105';sim.max='-30';sim.step='1';sim.value='-85';
-  const simCurrent=el('strong','rf-lab-value','−85 dBm (synthetic)');sim.addEventListener('input',()=>simCurrent.textContent=`${sim.value} dBm (synthetic)`);
-  const simRow=el('div','rf-lab-sim-row');simRow.append(sim,simCurrent);body.append(simRow);
-  const simActions=el('div','rf-lab-actions'),applySim=el('button','quiet-button','Apply simulated RSSI'),disableSim=el('button','quiet-button','Use real RSSI');
-  applySim.onclick=async()=>{if(linkPreference!=='auto')rfLabLog('Note: select Auto radio mode to test automatic rate switching.');await rfCommand('SIM '+sim.value);};
-  disableSim.onclick=async()=>{await rfCommand('SIM OFF');};simActions.append(applySim,disableSim);body.append(simActions);
-  const radioLabel=el('label','','Real peer link benchmark (radio MCU ACKs)');body.append(radioLabel);
-  const countSelect=el('select','setting-select');[[32,'32 packets'],[64,'64 packets'],[128,'128 packets']].forEach(([v,t])=>{const op=document.createElement('option');op.value=v;op.textContent=t;countSelect.append(op);});countSelect.value='32';body.append(countSelect);
-  const bench=el('button','primary-button','Run live radio test');body.append(bench);
-  bench.onclick=async()=>{if(rfLab.busy||speedDiagnostics.busy||speedDiagnostics.serial||runningTransfers||transferQueue.length||pendingRadio()){toast('Finish another transfer/benchmark first.');return;}
-   rfLab.busy=true;bench.disabled=true;const count=Number(countSelect.value);rfLabLog(`Radio benchmark: ${count} packets · current actual PHY ${radioTelemetry.phy} Mbps · RSSI ${radioTelemetry.rssi??'unknown'} dBm`);
-   try{const result=await runRadioBenchmark(count);rfLabLog(`${result.ok}/${result.requested} delivered; ${result.lost} lost; ${result.retries} retries; ACK ${result.rttMs} ms; ${kbps(result.bytes,result.ms).toFixed(2)} KiB/s · PHY ${result.phy} Mbps`);}catch(e){rfLabLog('FAILED: '+e.message);}finally{rfLab.busy=false;bench.disabled=false;await rfCommand('STATUS');}
-  };
-  const actions=el('div','rf-lab-actions'),auto=el('button','quiet-button','Set radio Auto'),refresh=el('button','quiet-button','Refresh status'),restore=el('button','soft-button','Restore normal RF'),copy=el('button','quiet-button','Copy results');
-  auto.onclick=()=>void applyRadioPreference('auto');refresh.onclick=()=>void rfCommand('STATUS');restore.onclick=async()=>{await rfCommand('OFF');power.value='DEFAULT';};
-  copy.onclick=()=>navigator.clipboard.writeText((rfLab.output?.textContent||'')+'\n'+rfText()).then(()=>toast('RF results copied')).catch(()=>toast('Could not copy results'));
-  actions.append(auto,refresh,restore,copy);body.append(actions);
-  const output=el('pre','rf-lab-output','RF test results (never added to chat):\n');rfLab.output=output;body.append(output);
-  body.append(el('p','','A 2 dBm test at 20 cm cannot prove a 500 m or 1 km range. Reduced power changes the real signal; simulated RSSI only changes the automatic rate policy. Set both boards separately, start with text and 32-packet tests, and compare per-PHY packet loss. RF settings revert after 120 seconds without browser heartbeat, after reboot, or with Restore normal RF.'));
- });
- void rfCommand('STATUS');
- rfLab.heartbeat=setInterval(()=>{if(!document.getElementById('modalBackdrop').classList.contains('hidden')&&verified){void rfCommand('PING');}else rfCloseHeartbeat();},15000);
-}
-let radioTelemetry={peer:'NONE',rssi:null,phy:1,mode:'AUTO',delivered:0,retries:0,failures:0,txok:0,txfail:0,rx:0,hello:0,available:false};
+let radioTelemetry={peer:'NONE',rssi:null,phy:1,mode:'AUTO',delivered:0,retries:0,failures:0,txok:0,txfail:0,rx:0,hello:0,healthGood:0,pingOk:0,pingLost:0,available:false};
 let selectedPhotoId=null,viewerZoomed=false,viewerTouchX=null,viewerPreviousFocus=null;
 /* Isolated benchmark state; measurements never enter message history. */
 const speedDiagnostics={busy:false,serial:null,full:null,results:{},output:null,runButton:null,capable:false,sackCapable:false};
@@ -188,9 +126,8 @@ async function runUsbInput(){
 async function runUsbOutput(){
  return serialBenchmark('usbOut',60000,test=>writeLine(`USBOUT ${test.token} 96`));
 }
-async function runRadioBenchmark(count=32){
- if(![32,64,128].includes(count))throw Error('Invalid radio benchmark count');
- return serialBenchmark('radio',120000,test=>writeLine(`RBENCH ${test.token} ${count}`));
+async function runRadioBenchmark(){
+ return serialBenchmark('radio',120000,test=>writeLine(`RBENCH ${test.token} 32`));
 }
 async function runFullBenchmark(batch=false){
  if(!secretKey)throw Error('Configure the same encryption key on both nodes first');
@@ -263,7 +200,6 @@ async function runDiagnostics(){
 }
 
 try{theme=localStorage.getItem('offgrid_theme')==='light'?'light':'dark';imageMode=localStorage.getItem('offgrid_image_mode')==='lossless'?'lossless':'hq';linkPreference=['auto','range','speed','lr500','lr250'].includes(localStorage.getItem('offgrid_link_preference'))?localStorage.getItem('offgrid_link_preference'):'auto';adaptivePhotos=localStorage.getItem('offgrid_adaptive_photos')!=='off';selectivePhotoAcks=localStorage.getItem('offgrid_sack_photos')!=='off';}catch{}
-try{const saved=localStorage.getItem('offgrid_last_manual_lr');if(saved==='lr500'||saved==='lr250')lastManualLR=saved;}catch{}
 document.body.classList.toggle('light',theme==='light');
 const macKey=()=>localMac||'unknown';
 const nameKey=()=>`offgrid_phase14_name_${macKey()}`;
@@ -292,7 +228,7 @@ async function wipeStored(){const rows=await listStored();await new Promise((res
 function chosenWindow(job=activeTransfer){
  // A deliberate boundary: text and control receipts never use speculative pipelining.
  // Only photo jobs can raise concurrency, starting at 1 and learning from real ACKs.
- const kind=job?.kind==='image'&&!job?.control?'image':'text';
+ const kind=['image','voice'].includes(job?.kind)&&!job?.control?'image':'text';
  const fast=(kind==='image' && selectivePhotoAcks && speedDiagnostics.sackCapable && adaptivePhotos) ||
             (job?.kind==='probe' && job?.batch && speedDiagnostics.sackCapable);
  if(fast){
@@ -320,74 +256,16 @@ function photoBudget(){
  if(linkPreference==='speed'||(linkStats.mode==='strong'&&radioTelemetry.rssi!==null&&radioTelemetry.rssi>=-65))return 60*1024;
  return 48*1024;
 }
-function updateLRQuickControl(){
- const toggle=$('lrForceToggle'),rate=$('lrRateSelect'),row=$('lrRateRow'),status=$('lrTestStatus');
- if(!toggle||!rate||!row||!status)return;
- const force=linkPreference==='lr500'||linkPreference==='lr250';
- toggle.checked=force;
- row.hidden=!force;
- rate.value=force?linkPreference:lastManualLR;
- const desired=linkPreference==='lr250'?0.25:0.5;
- const desiredLabel=linkPreference==='lr250'?'250':'500';
- status.className='lr-test-status';
- if(!verified){
-   status.textContent=force?`Manual LR ${desiredLabel} Kbps queued · connect ESP32`:'Auto mode · connect an ESP32';
-   return;
- }
- if(lrControlError){status.textContent=lrControlError;status.classList.add('is-error');return;}
- if(!radioTelemetry.available){
-   status.textContent=force?'Sending LR request · waiting for radio telemetry':'Auto selected · waiting for radio telemetry';
-   return;
- }
- if(!force){
-   status.textContent=`Auto selected · current PHY ${radioTelemetry.phy<1?radioTelemetry.phy*1000+' Kbps':radioTelemetry.phy+' Mbps'}`;
-   return;
- }
- const modeConfirmed=radioTelemetry.mode===linkPreference.toUpperCase();
- const rateConfirmed=Math.abs(radioTelemetry.phy-desired)<0.001;
- if(modeConfirmed&&rateConfirmed){
-   status.textContent=`Confirmed by ESP32 · LR ${desiredLabel} Kbps${radioTelemetry.rssi!==null?' · '+radioTelemetry.rssi+' dBm':''}`;
-   status.classList.add('is-confirmed');
- }else if(modeConfirmed){
-   status.textContent=radioTelemetry.peer==='BROADCAST'||radioTelemetry.peer==='NONE'
-     ?`LR ${desiredLabel} requested · waiting for peer discovery`
-     :`LR ${desiredLabel} requested · waiting for PHY switch (currently ${radioTelemetry.phy} Mbps)`;
- }else{
-   status.textContent=`LR ${desiredLabel} requested · waiting for ESP32 confirmation`;
- }
-}
-async function applyRadioPreference(mode){
- if(!['auto','range','speed','lr500','lr250'].includes(mode))return;
- linkPreference=mode;
- if(mode==='lr500'||mode==='lr250')lastManualLR=mode;
- lrControlError='';
- try{
-  localStorage.setItem('offgrid_link_preference',mode);
-  localStorage.setItem('offgrid_last_manual_lr',lastManualLR);
- }catch{}
- updateLinkBadge();
- if(!verified)return;
- try{
-   await writeLine('RATE '+mode.toUpperCase());
-   // Both commands enter the existing serial command queue in order.
-   await writeLine('STATUS');
- }catch(e){
-   lrControlError='Cannot apply rate: '+e.message;
-   updateLRQuickControl();
-   toast(lrControlError);
- }
-}
 function updateLinkBadge(){
  const node=$('linkModeLabel');if(!node)return;
  const speed=chosenWindow({kind:'image',control:false}),budget=Math.round(photoBudget()/1024);
  const name=linkPreference==='auto'?'Auto compression':linkPreference==='range'?'Smaller photos':linkPreference==='lr500'?'Long Range 500':linkPreference==='lr250'?'Long Range 250':'Higher-quality photos';
  let quality='learning';
  if(linkStats.samples>3)quality=linkStats.mode==='strong'?'strong':linkStats.mode==='weak'?'weak':'steady';
- const phy=radioTelemetry.available?(radioTelemetry.phy<1?`LR ${Math.round(radioTelemetry.phy*1000)} Kbps PHY`:`adaptive ${radioTelemetry.phy} Mbps PHY`):'radio discovery starting';
+ const phy=radioTelemetry.available?`${radioTelemetry.phy<1?'LR ': 'adaptive '}${radioTelemetry.phy} Mbps PHY`:'radio discovery starting';
  const signal=radioTelemetry.available&&radioTelemetry.rssi!==null?`${radioTelemetry.rssi} dBm`:'signal —';
  node.textContent=`${name} · ${phy} · ${signal} · ${selectivePhotoAcks&&speedDiagnostics.sackCapable&&adaptivePhotos?"batch ACK":"legacy ACK"} · photo window ${speed} · ~${budget} KB${photoFlow.samples?` · ACK ${Math.round(photoFlow.emaMs)} ms`:``}${linkStats.lastKBs?` · ${linkStats.lastKBs.toFixed(1)} KB/s`:``}`;
- node.title=`ESP-NOW peer: ${radioTelemetry.peer}. TX successful: ${radioTelemetry.txok}, TX failures: ${radioTelemetry.txfail}, received: ${radioTelemetry.rx}, discovery beacons received: ${radioTelemetry.hello}. Reported PHY rate is not actual file throughput.`;
- updateLRQuickControl();
+ node.title=`ESP-NOW peer: ${radioTelemetry.peer}. TX successful: ${radioTelemetry.txok}, TX failures: ${radioTelemetry.txfail}, received: ${radioTelemetry.rx}, discovery beacons received: ${radioTelemetry.hello}. Application-level radio PONGs: ${radioTelemetry.pingOk} confirmed, ${radioTelemetry.pingLost} timed out; recent confirmations ${radioTelemetry.healthGood}. Reported PHY rate is not actual file throughput.`;
 }
 function recordLinkResult(rtt,attempts,isPhoto=false){
  if(isPhoto)photoFlow.success(rtt,attempts);
@@ -416,17 +294,17 @@ function refreshStatus(){
  $('connectionDescription').textContent=verified?(localMac+' · channel 6 · protocol 2'):port?(usbHandshakeIssue||'Waiting for ESP32 READY'):'Connect your ESP32-C3 over USB';
  $('nodeAddress').textContent='Node: '+(localMac||'—');
  $('connectButton').disabled=!!port;$('disconnectButton').disabled=!port;
- $('messageInput').disabled=!ready;$('attachments').disabled=!ready;
+ $('messageInput').disabled=!ready;$('attachments').disabled=!ready;$('voiceButton').disabled=!ready&&!currentVoiceRecording;
  $('messageInput').placeholder=ready?'Message (up to 500 characters)':verified?'Pair a 256-bit key to begin':'Connect ESP32 to send messages';
  $('chatSubhead').textContent=ready?'End-to-end encrypted · ESP-NOW channel 6':verified?'Pair a key to start encrypted chat':'Offline · connect ESP32';
  $('securityIcon').textContent=ready?'🔒':'♢';
  $('securityLabel').textContent=ready?'AES-256-GCM enabled · manage pairing':verified?'Encryption key required · set up pairing':'Connect to configure encryption';
- $('composerStatus').textContent=ready?'Enter to send · images are compressed and sent in chunks':verified?'Pair the same key on both browsers to begin':'Connect an ESP32 using the sidebar';
+ $('composerStatus').textContent=ready?'Enter to send · 🎤 tap microphone for voice note':verified?'Pair the same key on both browsers to begin':'Connect an ESP32 using the sidebar';
  updateByteCount();updateLinkBadge();
 }
 function setName(name){activeContact=(name||'Nearby node').slice(0,36);$('contactSidebarName').textContent=activeContact;$('chatName').textContent=activeContact;const initial=Array.from(activeContact)[0]?.toUpperCase()||'N';$('contactAvatar').textContent=initial;$('headerAvatar').textContent=initial;}
 function persistName(){try{localStorage.setItem(nameKey(),activeContact);}catch{}}
-function updateSidebar(){const r=records[records.length-1];$('lastChatPreview').textContent=r?(r.dir==='out'?'You: ':'')+(r.kind==='image'?'📷 Photo':r.text||'Message'):'Your encrypted off-grid conversation';$('lastChatTime').textContent=r?fmtTime(r.ts):'';$('introCard').style.display=records.length?'none':'';}
+function updateSidebar(){const r=records[records.length-1];$('lastChatPreview').textContent=r?(r.dir==='out'?'You: ':'')+(r.kind==='image'?'📷 Photo':r.kind==='voice'?'🎤 Voice message':r.text||'Message'):'Your encrypted off-grid conversation';$('lastChatTime').textContent=r?fmtTime(r.ts):'';$('introCard').style.display=records.length?'none':'';}
 function createReceipt(status){const wrap=document.createElement('span');wrap.className='receipt-icon '+(status||'sending');wrap.dataset.role='tick';wrap.setAttribute('aria-label',status||'Sending');
  wrap.innerHTML='<svg viewBox="0 0 26 16" width="26" height="16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path class="tick-one" d="M1.5 8.1 6.1 12.5 16.4 2.1"/><path class="tick-two" d="M8.5 8.1 13.1 12.5 23.4 2.1"/></svg>';return wrap;}
 /* Message viewport follow mode.  A normal scrollTop assignment happens before
@@ -487,6 +365,16 @@ function makeBubble(record,animate=true){
    img.onclick=()=>openPhotoViewer(record.id);img.onkeydown=e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();openPhotoViewer(record.id);}};
    bubble.append(img);
    const photoCaption=document.createElement('div');photoCaption.className='photo-caption';photoCaption.textContent=`${record.width||'?'} × ${record.height||'?'} · ${formatBytes(record.bytes?.length||0)}`;bubble.append(photoCaption);
+ }else if(record.kind==='voice'){
+   const container=el('div','voice-clip'),sound=document.createElement('audio');
+   sound.controls=true;sound.preload='none';sound.setAttribute('aria-label','Voice message playback');
+   if(record.bytes?.length){
+     const mime=record.mime||'audio/webm';
+     const url=URL.createObjectURL(new Blob([record.bytes],{type:mime}));
+     voiceUrls.set(record.id,url);sound.src=url;container.append(sound);
+   }else container.append(el('span','voice-empty','Voice recording unavailable'));
+   const duration=el('span','voice-clip-info',`${Math.round((record.durationMs||0)/1000)}s`);
+   container.append(duration);bubble.append(container);
  }else{const content=document.createElement('div');content.className='message-text';content.textContent=record.text;bubble.append(content);}
  const meta=document.createElement('div');meta.className='message-meta';const time=document.createElement('span');time.textContent=fmtTime(record.ts);meta.append(time);
  if(record.dir==='out'){const progress=document.createElement('span');progress.className='transfer-progress';progress.dataset.role='progress';progress.textContent=record.status==='sending'&&record.progress?record.progress+'%':'';meta.append(progress,createReceipt(record.status||'sending'));}
@@ -495,10 +383,11 @@ function makeBubble(record,animate=true){
 }
 function updateBubble(r){const row=Array.from($('messages').children).find(el=>el.dataset.mid===r.id);if(!row)return;row.dataset.status=r.status||'';
  const receipt=row.querySelector('[data-role="tick"]');if(receipt){receipt.className='receipt-icon '+(r.status||'sending');receipt.setAttribute('aria-label',r.status||'Sending');}
- const prog=row.querySelector('[data-role="progress"]');if(prog)prog.textContent=r.status==='sending'&&r.progress?`${r.progress}%${r.kind==='image'&&r.speedKbps?' · '+r.speedKbps.toFixed(1)+' KB/s':''}`:'';
+ const prog=row.querySelector('[data-role="progress"]');if(prog)prog.textContent=r.status==='sending'&&r.progress?`${r.progress}%${['image','voice'].includes(r.kind)&&r.speedKbps?' · '+r.speedKbps.toFixed(1)+' KB/s':''}`:'';
  if(r.dir==='out'){row.title=(r.status||'Sending')+(r.error?': '+r.error:'');row.classList.toggle('retryable',r.status==='failed');if(r.status==='failed')row.onclick=()=>retryMessage(r.id);else row.onclick=null;}
 }
-function revokePhotos(){closePhotoViewer();for(const url of photoUrls.values())URL.revokeObjectURL(url);photoUrls.clear();}
+function revokePhotos(){closePhotoViewer();for(const url of photoUrls.values())URL.revokeObjectURL(url);photoUrls.clear();
+ for(const url of voiceUrls.values())URL.revokeObjectURL(url);voiceUrls.clear();}
 function renderHistory(){revokePhotos();$('messages').replaceChildren();for(const r of records)makeBubble(r,false);updateSidebar();scrollToNewest(true);}
 /* In-app viewer. Photo blobs are already authenticated, decrypted and locally stored. */
 function galleryPhotos(){return records.filter(r=>r.kind==='image'&&r.bytes?.length>0);}
@@ -545,7 +434,7 @@ function togglePhotoZoom(){
  if($('photoViewer').classList.contains('hidden'))return;
  viewerZoomed=!viewerZoomed;$('viewerCanvas').classList.toggle('zoomed',viewerZoomed);
 }
-function serializeRecord(r){return {id:r.id,kind:r.kind,dir:r.dir,ts:r.ts,text:r.text||'',mime:r.mime||'',width:r.width||0,height:r.height||0,bytes:r.bytes?P.base64url(r.bytes):'',readSent:!!r.readSent,deliveredAckSent:!!r.deliveredAckSent,peerMac:r.peerMac||null};}
+function serializeRecord(r){return {id:r.id,kind:r.kind,dir:r.dir,ts:r.ts,text:r.text||'',mime:r.mime||'',width:r.width||0,height:r.height||0,durationMs:r.durationMs||0,bytes:r.bytes?P.base64url(r.bytes):'',readSent:!!r.readSent,deliveredAckSent:!!r.deliveredAckSent,peerMac:r.peerMac||null};}
 async function storeRecord(r){if(!secretKey||!localMac)return;const payload=P.textBytes(JSON.stringify(serializeRecord(r)));const sealed=await P.sealAtRest(secretKey,payload,macKey(),r.id);await dbPut('messages',{pk:macKey()+'/'+r.id,owner:macKey(),id:r.id,ts:r.ts,dir:r.dir,status:r.status,seal:sealed});}
 async function storeStatus(r){if(!secretKey||!localMac)return;const old=await dbGet('messages',macKey()+'/'+r.id);if(old){old.status=r.status;await dbPut('messages',old);}else await storeRecord(r);}
 async function hydrateHistory(){records=[];recordMap.clear();const rows=await listStored();for(const row of rows){try{const bytes=await P.openAtRest(secretKey,row.seal,macKey(),row.id);const d=JSON.parse(P.textFrom(bytes));d.bytes=d.bytes?P.fromBase64urlRaw(d.bytes):null;d.status=row.status||'sent';if(d.status==='sending'||d.status==='queued')d.status='failed';d.progress=0;records.push(d);recordMap.set(d.id,d);}catch(e){console.warn('Cannot decrypt stored record',row.id,e.message);}}
@@ -689,11 +578,13 @@ async function handleEnvelope(env,mac){
   return;
  }
  if(env.kind===P.types.delivered||env.kind===P.types.read){if(env.body.length!==8)return;const original=P.hex(env.body),r=recordMap.get(original);if(r&&r.dir==='out')await setState(r,env.kind===P.types.read?'read':'delivered');return;}
- if(env.kind!==P.types.text&&env.kind!==P.types.image)return;
+ if(env.kind!==P.types.text&&env.kind!==P.types.image&&env.kind!==P.types.voice)return;
  let r=recordMap.get(env.id);
  if(r){if(r.dir==='in'){enqueueReceipt('delivered',r.id);if(r.readSent)enqueueReceipt('read',r.id);}return;}
  if(env.kind===P.types.text){let text;try{text=P.textFrom(env.body);}catch{return;}if(countChars(text)>MAX_CHARS)return;r={id:env.id,kind:'text',dir:'in',ts:env.ts||Date.now(),text,status:'received',readSent:false,deliveredAckSent:false,peerMac:mac};}
- else{if(env.body.length<2||env.body.length>MAX_PHOTO+1)return;const mime=['image/webp','image/png','image/jpeg'][env.body[0]];if(!mime||!env.width||!env.height)return;r={id:env.id,kind:'image',dir:'in',ts:env.ts||Date.now(),mime,width:env.width,height:env.height,bytes:env.body.slice(1),status:'received',readSent:false,deliveredAckSent:false,peerMac:mac};}
+ else if(env.kind===P.types.image){if(env.body.length<2||env.body.length>MAX_PHOTO+1)return;const mime=['image/webp','image/png','image/jpeg'][env.body[0]];if(!mime||!env.width||!env.height)return;r={id:env.id,kind:'image',dir:'in',ts:env.ts||Date.now(),mime,width:env.width,height:env.height,bytes:env.body.slice(1),status:'received',readSent:false,deliveredAckSent:false,peerMac:mac};}
+ else{let voice;try{voice=P.unpackVoice(env.body,env.width);}catch{return;}
+  r={id:env.id,kind:'voice',dir:'in',ts:env.ts||Date.now(),mime:voice.mime,durationMs:voice.durationMs,bytes:voice.bytes,status:'received',readSent:false,deliveredAckSent:false,peerMac:mac};}
  peerMac=mac;
  await appendRecord(r);
  enqueueReceipt('delivered',r.id);
@@ -709,11 +600,12 @@ async function sealJob(job){
  if(job.control){kind=P.types[job.kind];body=P.unhex(job.targetId);}
  else if(job.kind==='probe'){kind=P.types.probe;body=P.randomBytes(job.size);}
  else if(job.record.kind==='text'){kind=P.types.text;body=P.textBytes(job.record.text);}
+ else if(job.record.kind==='voice'){kind=P.types.voice;body=P.packVoice(job.record.mime,job.record.bytes);width=job.record.durationMs;}
  else{kind=P.types.image;const r=job.record,mimeNum=({'image/webp':0,'image/png':1,'image/jpeg':2})[r.mime];if(mimeNum===undefined)throw Error('Unsupported image encoding');body=P.concat(Uint8Array.of(mimeNum),r.bytes);width=r.width;height=r.height;}
  const plain=P.makeEnvelope(kind,id,body,Math.floor(Date.now()/1000),width,height);
  const ciphertext=await P.seal(secretKey,plain,transferId);
  return P.frames(transferId,ciphertext,{batch: Boolean(speedDiagnostics.sackCapable &&
-     ((job.kind==='image' && !job.control && selectivePhotoAcks && adaptivePhotos) ||
+     ((['image','voice'].includes(job.kind) && !job.control && selectivePhotoAcks && adaptivePhotos) ||
       (job.kind==='probe' && job.batch)))});
 }
 async function oneFragment(frame){
@@ -752,16 +644,16 @@ async function transferFragments(chunks,job){
   if(!inflight.size)break;
   const result=await Promise.race(inflight.values());inflight.delete(result.i);
   if(result.error){recordLinkFailure();fatal=result.error;break;}
-  completed++;recordLinkResult(result.ms,result.attempts,job.kind==='image'&&!job.control);
+  completed++;recordLinkResult(result.ms,result.attempts,['image','voice'].includes(job.kind)&&!job.control);
   if(job.kind==='probe')job.fragmentRTTs.push(result.ms);
   if(job.record){
     const elapsed=Math.max(0.001,(performance.now()-transferStart)/1000);
-    job.record.speedKbps=((completed/chunks.length)*(job.record.kind==='image'?job.record.bytes.length:P.textBytes(job.record.text).length))/1024/elapsed;
+    job.record.speedKbps=((completed/chunks.length)*(['image','voice'].includes(job.record.kind)?job.record.bytes.length:P.textBytes(job.record.text).length))/1024/elapsed;
     await setProgress(job.record,Math.round(completed*100/chunks.length));
   }
  }
  if(fatal){await Promise.allSettled([...inflight.values()]);throw fatal;}
- if(job.record && job.record.kind==='image'){
+ if(job.record && ['image','voice'].includes(job.record.kind)){
    linkStats.lastKBs=job.record.bytes.length/1024/Math.max(.001,(performance.now()-transferStart)/1000);
    updateLinkBadge();
  }
@@ -791,7 +683,6 @@ async function runTransfers(){
 }
 function parseLine(raw){const s=raw.trim();if(!s)return;
  if(diagnosticLine(s))return;
- if(rfLabReceive(s))return;
  // Record serial input for diagnosis, without exposing the 256-bit pairing key.
  usbLastRawAt=performance.now();
  if(s.startsWith('KEYDATA|'))logUsb('ESP32> KEYDATA|<redacted>');
@@ -817,13 +708,13 @@ function parseLine(raw){const s=raw.trim();if(!s)return;
    // Use current telemetry only; cumulative TX failures are not a permanent ban.
    radioTelemetry={peer:parts[1],phy,rssi:Number.isFinite(rssi)&&rssi>-120&&rssi<0?rssi:null,
      mode:fields.MODE||'AUTO',delivered:Number(fields.OK)||0,retries:Number(fields.RETRY)||0,
-     failures:Number(fields.FAIL)||0,txok:Number(fields.TXOK)||0,txfail:Number(fields.TXFAIL)||0,rx:Number(fields.RX)||0,hello:Number(fields.HELLO)||0,available:true};
+     failures:Number(fields.FAIL)||0,txok:Number(fields.TXOK)||0,txfail:Number(fields.TXFAIL)||0,rx:Number(fields.RX)||0,hello:Number(fields.HELLO)||0,healthGood:Number(fields.HEALTHGOOD)||0,pingOk:Number(fields.PINGOK)||0,pingLost:Number(fields.PINGLOST)||0,available:true};
    updateLinkBadge();
   }
   return;
  }
- if(s.startsWith('RATE_ERROR|')){console.warn('Radio PHY configuration:',s);lrControlError='Radio rejected rate: '+s.slice('RATE_ERROR|'.length);updateLRQuickControl();toast('ESP32 PHY rate could not be applied; see Force Long Range status.');return;}
- if(s.startsWith('RATE|')||s.startsWith('PEER|')){if(s.startsWith('RATE|'))lrControlError='';return;}
+ if(s.startsWith('RATE_ERROR|')){console.warn('Radio PHY configuration:',s);toast('ESP32 PHY rate could not be applied; falling back to safe rate.');return;}
+ if(s.startsWith('RATE|')||s.startsWith('PEER|'))return;
  if(s.startsWith('READY|')){const parts=s.split('|');speedDiagnostics.capable=parts.includes('DIAG=1');speedDiagnostics.sackCapable=parts.includes('SACK=1');if(!parts.includes('PROTO=2')||!parts.includes('CAP=180')||!parts.includes('STABLE=1')||!parts.includes('NVSKEY=1')){if(!firmwareMismatchNotified){toast('Wrong ESP32 firmware protocol; open Diagnostics to see its READY response.');firmwareMismatchNotified=true;}showUsbHint('Incompatible READY. Expected PROTO=2, CAP=180, STABLE=1, NVSKEY=1, LR=1.');console.warn('Incompatible firmware READY:',s);return;}const mac=parts[1];if(!/^[0-9A-Fa-f:]{17}$/.test(mac))return;if(!parts.includes('LR=1'))toast('ESP32 Wi-Fi driver did not enable Long Range; normal messaging remains available.');if(verified&&localMac===mac)return;void onReady(mac);return;}
  if(s.startsWith('QUEUED|')){const [,session,id,hex]=s.split('|'),slot=radioByHex.get(hex);if(slot){slot.wire=`${session}:${id}`;radioByWire.set(slot.wire,slot);}return;}
  if(s.startsWith('RX|')){const [,mac,session,id,data]=s.split('|');if(mac&&session&&id&&data)void processRx(mac,session,id,data);return;}
@@ -859,7 +750,7 @@ async function connect(){if(!navigator.serial){toast('Use Chromium with Web Seri
     handshakeTimer=setInterval(()=>{if(!verified&&writer){logUsb('HOST> STATUS (retry)');writeLine('STATUS').catch(()=>{});}},1200);
     usbWaitTimer=setInterval(updateUsbWait,1200);
  }catch(e){toast('USB connection failed: '+e.message);await disconnect();}}
-async function disconnect(){if(closing)return;closing=true;rfCloseHeartbeat();rfLab.available=false;
+async function disconnect(){if(closing)return;closing=true;stopVoiceRecording(true);
  speedDiagnostics.serial?.reject(Error('USB disconnected during benchmark'));
  speedDiagnostics.full?.reject(Error('USB disconnected during benchmark'));
  speedDiagnostics.capable=false;speedDiagnostics.sackCapable=false;clearSelectiveAcks();
@@ -905,9 +796,85 @@ async function sendPhoto(file){if(!verified||!secretKey)return;toast('Preparing 
  const r={id:P.newId(),kind:'image',dir:'out',ts:Date.now(),mime:photo.mime,width:photo.width,height:photo.height,bytes:photo.bytes,status:'sending',progress:0};
  await appendRecord(r);transferQueue.push(makeJob(r));runTransfers();toast(`Photo prepared: ${photo.width}×${photo.height}, ${formatBytes(photo.bytes.length)}. Encrypted transfer queued.`);
  }catch(e){toast('Photo not sent: '+e.message);}finally{$('photoPicker').value='';}}
+
+/* Browser microphone only. Capture/Opus encode on the laptop, AES-GCM encrypt
+ * BEFORE any bytes reach the ESP32. The firmware handles exactly the existing
+ * transport frames (no microphone permission or audio codec code on the MCU).
+ * No remote uploads, no background microphone recording, no autoplay. */
+function voiceButtonState(){
+ const btn=$('voiceButton');if(!btn)return;
+ const active=!!currentVoiceRecording;
+ btn.classList.toggle('recording',active);
+ btn.setAttribute('aria-pressed',String(active));
+ btn.setAttribute('aria-label',active?'Stop and send voice message':'Record voice message');
+ btn.title=active?'Stop and send encrypted voice note':'Record encrypted voice message (up to 30 seconds)';
+ if(active){
+  const elapsed=Math.min(MAX_VOICE_MS,Date.now()-currentVoiceRecording.started);
+  $('composerStatus').textContent=`🔴 Recording voice · ${Math.floor(elapsed/1000)}s / 30s · tap mic to send`;
+ }else if(verified&&secretKey){
+  $('composerStatus').textContent='Enter to send · 🎤 tap microphone for voice note';
+ }
+}
+function stopVoiceRecording(cancel=false){
+ const v=currentVoiceRecording;if(!v)return;
+ if(cancel)v.cancelled=true;
+ if(v.recorder.state!=='inactive'){
+  try{v.recorder.stop();}catch(e){console.warn('Voice recorder stop:',e);}
+ }
+}
+async function toggleVoiceRecording(){
+ if(currentVoiceRecording){stopVoiceRecording();return;}
+ if(!verified||!secretKey){toast('Connect and pair both ESP32s before recording.');return;}
+ if(!navigator.mediaDevices?.getUserMedia||!globalThis.MediaRecorder){toast('Microphone recording requires Chromium on localhost or HTTPS.');return;}
+ const candidate=['audio/webm;codecs=opus','audio/webm','audio/ogg;codecs=opus','audio/mp4'];
+ const mime=candidate.find(type=>MediaRecorder.isTypeSupported(type));
+ if(!mime){toast('No supported microphone audio format in this browser.');return;}
+ let stream;
+ try{
+  stream=await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:true,noiseSuppression:true,autoGainControl:true},video:false});
+  if(!verified||!secretKey){stream.getTracks().forEach(track=>track.stop());return;}
+  const recorder=new MediaRecorder(stream,{mimeType:mime,audioBitsPerSecond:12000});
+  const v={recorder,stream,chunks:[],started:Date.now(),cancelled:false,mime};
+  currentVoiceRecording=v;
+  recorder.ondataavailable=event=>{if(event.data?.size)v.chunks.push(event.data);};
+  recorder.onerror=event=>{console.warn('MediaRecorder error',event.error);v.cancelled=true;stopVoiceRecording(true);toast('Voice recording failed.');};
+  recorder.onstop=async()=>{
+   const durationMs=Math.max(100,Math.min(MAX_VOICE_MS,Date.now()-v.started));
+   stream.getTracks().forEach(track=>track.stop());
+   if(voiceTimer){clearInterval(voiceTimer);voiceTimer=null;}
+   if(currentVoiceRecording===v)currentVoiceRecording=null;
+   voiceButtonState();refreshStatus();
+   if(v.cancelled)return;
+   try{
+    const blob=new Blob(v.chunks,{type:recorder.mimeType||mime});
+    if(blob.size>P.VOICE_MAX)throw Error('Recording exceeded 80 KiB. Try a shorter note.');
+    if(blob.size<256)throw Error('Recording is empty or too short.');
+    if(!verified||!secretKey)throw Error('ESP32 disconnected; recording discarded.');
+    const bytes=new Uint8Array(await blob.arrayBuffer());
+    const codec=P.voiceCodecForMime(blob.type);
+    if(!codec)throw Error('Unsupported audio codec');
+    const r={id:P.newId(),kind:'voice',dir:'out',ts:Date.now(),mime:codec.mime,durationMs,bytes,status:'sending',progress:0};
+    await appendRecord(r);transferQueue.push(makeJob(r));runTransfers();
+    toast(`Encrypted voice note queued · ${Math.round(durationMs/1000)}s · ${formatBytes(bytes.length)}.`);
+   }catch(error){toast('Voice not sent: '+error.message);}
+  };
+  recorder.start(500);
+  voiceButtonState();
+  voiceTimer=setInterval(()=>{
+    if(currentVoiceRecording!==v)return;
+    voiceButtonState();
+    if(Date.now()-v.started>=MAX_VOICE_MS)stopVoiceRecording();
+  },240);
+ }catch(e){
+  stream?.getTracks().forEach(track=>track.stop());
+  currentVoiceRecording=null;voiceButtonState();
+  toast('Microphone unavailable: '+e.message);
+ }
+}
+
 function retryMessage(id){const r=recordMap.get(id);if(!r||r.dir!=='out'||r.status!=='failed'||!verified||!secretKey)return;r.status='sending';r.progress=0;r.error='';updateBubble(r);void storeStatus(r);transferQueue.push(makeJob(r));runTransfers();}
-function showDialog(title,render){rfCloseHeartbeat();rfLab.status=null;rfLab.output=null;$('modalTitle').textContent=title;const content=$('modalBody');content.replaceChildren();render(content);$('modalBackdrop').classList.remove('hidden');}
-function closeDialog(){rfCloseHeartbeat();rfLab.status=null;rfLab.output=null;$('modalBackdrop').classList.add('hidden');}
+function showDialog(title,render){$('modalTitle').textContent=title;const content=$('modalBody');content.replaceChildren();render(content);$('modalBackdrop').classList.remove('hidden');}
+function closeDialog(){$('modalBackdrop').classList.add('hidden');}
 function el(tag,cl='',text=''){const out=document.createElement(tag);if(cl)out.className=cl;out.textContent=text;return out;}
 async function installPairKey(raw){
  if(!verified||!localMac)throw Error('Connect a node first');
@@ -958,11 +925,11 @@ async function migrateLegacy(){const oldKey='offgrid_phase13_history_'+macKey().
 function showRename(){showDialog('Contact name',body=>{body.append(el('p','','This is a local nickname for the remote node.'));const field=document.createElement('input');field.value=activeContact;field.maxLength=36;body.append(field);const save=el('button','primary-button','Save contact name');save.onclick=()=>{setName(field.value.trim());persistName();closeDialog();};body.append(el('div','modal-actions')).append(save);setTimeout(()=>{field.focus();field.select();},40);});}
 async function clearHistory(){if(!verified||!secretKey)return;if(runningTransfers||pendingRadio()||transferQueue.length){toast('Finish active transfers before clearing history.');return;}if(!confirm('Delete encrypted chat history for this ESP32 from this browser? This cannot be undone.'))return;
  await wipeStored();records=[];recordMap.clear();revokePhotos();renderHistory();toast('Local chat history cleared.');closeDialog();}
-function showInfo(){showDialog('Chat information',body=>{[['Contact',activeContact],['Your ESP32',localMac||'Disconnected'],['Protocol','ESP-NOW firmware protocol 2 / encrypted app protocol OGM4'],['Security',secretKey?'AES-256-GCM, 256-bit random shared key':'Not paired'],['Photo target',`${Math.round(photoBudget()/1024)} KB optimized, 96 KB absolute`],['Radio PHY',radioTelemetry.available?`${radioTelemetry.phy} Mbps TX, RSSI ${radioTelemetry.rssi===null?'unknown':radioTelemetry.rssi+' dBm'}`:'Waiting for telemetry'],['Link profile',`${linkPreference}; adaptive PHY; photo window ${chosenWindow({kind:'image',control:false})}; auto ${adaptivePhotos?'on':'off'}`],['Key storage','ESP32 NVS, browser RAM only'],['History','AES-GCM encrypted IndexedDB']].forEach(([a,b])=>{const line=el('div','info-line');line.append(el('span','',a),el('strong','',b));body.append(line);});body.append(el('p','','Grey single tick = transmitted; grey double tick = peer decrypted and confirmed; blue double tick = peer app reported it was viewed. Browser history is stored encrypted at rest.'));});}
-function showSettings(){showDialog('Settings',body=>{body.append(el('p','','Experimental Phase 1.4.11.1: Espressif LR 500/250 kbps with existing 1/6/12 Mbps adaptive modes. 1.4.10.2 remains the frozen baseline. Test text before photos.'));
+function showInfo(){showDialog('Chat information',body=>{[['Contact',activeContact],['Your ESP32',localMac||'Disconnected'],['Protocol','ESP-NOW firmware protocol 2 / encrypted app protocol OGM4'],['Security',secretKey?'AES-256-GCM, 256-bit random shared key':'Not paired'],['Photo target',`${Math.round(photoBudget()/1024)} KB optimized, 96 KB absolute`],['Voice notes','Up to 30 seconds and 80 KiB, encrypted and stored locally'],['Radio PHY',radioTelemetry.available?`${radioTelemetry.phy} Mbps TX, RSSI ${radioTelemetry.rssi===null?'unknown':radioTelemetry.rssi+' dBm'}`:'Waiting for telemetry'],['Link profile',`${linkPreference}; adaptive PHY; media window ${chosenWindow({kind:'image',control:false})}; auto ${adaptivePhotos?'on':'off'}`],['Radio liveness',`${radioTelemetry.pingOk||0} confirmed peer probes · ${radioTelemetry.pingLost||0} missed · clean streak ${radioTelemetry.healthGood||0}`],['Key storage','ESP32 NVS, browser RAM only'],['History','AES-GCM encrypted IndexedDB']].forEach(([a,b])=>{const line=el('div','info-line');line.append(el('span','',a),el('strong','',b));body.append(line);});body.append(el('p','','Grey single tick = transmitted; grey double tick = peer decrypted and confirmed; blue double tick = peer app reported it was viewed. Browser history is stored encrypted at rest.'));});}
+function showSettings(){showDialog('Settings',body=>{body.append(el('p','','Phase 1.5: confirmed-probe-based adaptive LR with AES-256-GCM voice notes. Espressif LR 500/250 kbps with existing 1/6/12 Mbps adaptive modes. 1.4.11 remains the frozen stable baseline. Test text before photos and voice.'));
  const linkLabel=el('label','','Transfer profile');body.append(linkLabel);const linkSelect=document.createElement('select');linkSelect.className='setting-select';
- [['auto','Auto · 12 / 6 / 1 Mbps, LR500 / LR250 when weak'],['range','Standard 1 Mbps · conservative non-LR'],['speed','Speed first · prefer faster radio rates'],['lr500','Manual LR 500 kbps · test nearby or outdoors'],['lr250','Manual LR 250 kbps · test nearby or outdoors']].forEach(([v,t])=>{const opt=document.createElement('option');opt.value=v;opt.textContent=t;linkSelect.append(opt);});
- linkSelect.value=linkPreference;linkSelect.onchange=()=>{void applyRadioPreference(linkSelect.value);};body.append(linkSelect);
+ [['auto','Auto · 12 / 6 / 1 Mbps, LR500 / LR250 when weak'],['range','Standard 1 Mbps · conservative non-LR'],['speed','Speed first · prefer faster radio rates'],['lr500','Manual LR 500 kbps · outdoor distance test'],['lr250','Manual LR 250 kbps · maximum sensitivity test']].forEach(([v,t])=>{const opt=document.createElement('option');opt.value=v;opt.textContent=t;linkSelect.append(opt);});
+ linkSelect.value=linkPreference;linkSelect.onchange=()=>{linkPreference=linkSelect.value;try{localStorage.setItem('offgrid_link_preference',linkPreference);}catch{}if(verified)void writeLine('RATE '+linkPreference.toUpperCase()).catch(()=>{});updateLinkBadge();};body.append(linkSelect);
  const flowLabel=el('label','','Photo transfer throughput');body.append(flowLabel);const flowSelect=document.createElement('select');flowSelect.className='setting-select';
  [['on','Automatic · up to 6 in-flight batch fragments on strong links'],['off','Stable · legacy one-fragment transfer (instant rollback)']].forEach(([v,t])=>{const opt=document.createElement('option');opt.value=v;opt.textContent=t;flowSelect.append(opt);});
  flowSelect.value=adaptivePhotos?'on':'off';flowSelect.onchange=()=>{adaptivePhotos=flowSelect.value==='on';try{localStorage.setItem('offgrid_adaptive_photos',adaptivePhotos?'on':'off');}catch{}updateLinkBadge();};body.append(flowSelect);
@@ -974,21 +941,15 @@ function showSettings(){showDialog('Settings',body=>{body.append(el('p','','Expe
  sackSelect.value=selectivePhotoAcks?'on':'off';
  sackSelect.onchange=()=>{selectivePhotoAcks=sackSelect.value==='on';try{localStorage.setItem('offgrid_sack_photos',selectivePhotoAcks?'on':'off');}catch{}updateLinkBadge();};
  body.append(sackSelect);
- body.append(el('p','','Batch ACK requires 1.4.10.3 firmware on both boards and the new web app on both browsers. It only applies to NEW photo sends. Set Legacy before sending a photo to revert without flashing. Ordinary text, read/delivery receipts and encryption stay unchanged.'));
+ body.append(el('p','','Batch ACK requires 1.4.11 firmware on both boards and the new web app on both browsers. It applies to NEW photo and voice sends. Set Legacy before sending a photo to revert without flashing. Ordinary text, read/delivery receipts and encryption stay unchanged.'));
  body.append(el('p','','Photo batching is isolated from text messaging and blue ticks. If transfers regress, disable Selective batch ACK or switch Photo transfer throughput to Stable. A full image is Delivered only after the receiver authenticates its AES-GCM payload.'));
 
- body.append(el('p','','Link quality comes from real browser acknowledgments and ESP32 RSSI, not distance. 1 Mbps broadcast discovers nearby nodes; saved peer MAC enables LR recovery probes if a link becomes unreachable at normal rates. Automatic PHY adapts using RSSI and retries; manual LR500/LR250 also work for close-range testing. Both boards need Phase 1.4.11 firmware. Text/receipts keep the same encryption and acknowledgment protocol.')); 
+ body.append(el('p','','Link quality comes from real browser acknowledgments and ESP32 RSSI, not distance. 1 Mbps broadcast discovers nearby nodes; saved peer MAC enables LR recovery probes if a link becomes unreachable at normal rates. Automatic PHY adapts using RSSI and retries; manual LR500/LR250 are for outdoor testing. Both boards need Phase 1.4.11 firmware. Text/receipts keep the same encryption and acknowledgment protocol.')); 
  const modeLabel=el('label','','Image optimization');body.append(modeLabel);const select=document.createElement('select');select.className='setting-select';
  [['hq','Optimized WebP/JPEG (adaptive 32–60 KB target, may resize)'],['lossless','Lossless PNG + metadata stripping (reject if >96 KB)']].forEach(([v,t])=>{const opt=document.createElement('option');opt.value=v;opt.textContent=t;select.append(opt);});select.value=imageMode;select.onchange=()=>{imageMode=select.value;try{localStorage.setItem('offgrid_image_mode',imageMode);}catch{}updateLinkBadge();};body.append(select);
  body.append(el('p','','Metadata stripping does not make photos tiny. High-quality mode can reduce dimensions and introduce slight loss; lossless PNG keeps the canvas pixels exact but may not fit through this radio link.'));
- const buttons=el('div','settings-actions'),rename=el('button','quiet-button','Rename contact'),key=el('button','quiet-button','Node pairing key'),diagnostics=el('button','quiet-button','USB diagnostics'),speedTest=el('button','primary-button','Speed diagnostics'),rfTest=el('button','primary-button','RF Lab · power & range test'),clear=el('button','soft-button','Clear history');rename.onclick=showRename;key.onclick=showPairing;diagnostics.onclick=diagnoseUsb;speedTest.onclick=showSpeedDiagnostics;rfTest.onclick=showRfLab;clear.onclick=()=>void clearHistory();buttons.append(rfTest,speedTest,rename,key,diagnostics,clear);body.append(buttons);
+ const buttons=el('div','settings-actions'),rename=el('button','quiet-button','Rename contact'),key=el('button','quiet-button','Node pairing key'),diagnostics=el('button','quiet-button','USB diagnostics'),speedTest=el('button','primary-button','Speed diagnostics'),clear=el('button','soft-button','Clear history');rename.onclick=showRename;key.onclick=showPairing;diagnostics.onclick=diagnoseUsb;speedTest.onclick=showSpeedDiagnostics;clear.onclick=()=>void clearHistory();buttons.append(speedTest,rename,key,diagnostics,clear);body.append(buttons);
  });}
-$('lrForceToggle').addEventListener('change',event=>{
-  void applyRadioPreference(event.target.checked?lastManualLR:'auto');
-});
-$('lrRateSelect').addEventListener('change',event=>{
-  if(event.target.value==='lr500'||event.target.value==='lr250')void applyRadioPreference(event.target.value);
-});
 $('viewerClose').onclick=closePhotoViewer;
 $('viewerPrevious').onclick=()=>navigatePhoto(-1);
 $('viewerNext').onclick=()=>navigatePhoto(1);
@@ -1006,16 +967,17 @@ document.addEventListener('keydown',e=>{
  if(e.key==='ArrowLeft'){e.preventDefault();navigatePhoto(-1);}
  if(e.key==='ArrowRight'){e.preventDefault();navigatePhoto(1);}
 });
+$('voiceButton').onclick=()=>void toggleVoiceRecording();
+document.addEventListener('keydown',e=>{if(e.key==='Escape'&&currentVoiceRecording){stopVoiceRecording(true);toast('Voice recording discarded.');}});
 $('connectButton').onclick=()=>void connect();$('disconnectButton').onclick=()=>void disconnect();$('usbDiagnosticsButton').onclick=diagnoseUsb;$('sendButton').onclick=()=>void sendText();
 $('messageInput').addEventListener('input',updateByteCount);$('messageInput').addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();void sendText();}});
 $('attachments').onclick=()=>$('photoPicker').click();$('photoPicker').addEventListener('change',e=>{if(e.target.files?.length)void sendPhoto(e.target.files[0]);});
 $('securityButton').onclick=showPairing;$('renameButton').onclick=showRename;$('settingsButton').onclick=showSettings;$('infoButton').onclick=showInfo;
-$('themeToggle').onclick=()=>{theme=theme==='dark'?'light':'dark';try{const saved=localStorage.getItem('offgrid_last_manual_lr');if(saved==='lr500'||saved==='lr250')lastManualLR=saved;}catch{}
-document.body.classList.toggle('light',theme==='light');try{localStorage.setItem('offgrid_theme',theme);}catch{}};
+$('themeToggle').onclick=()=>{theme=theme==='dark'?'light':'dark';document.body.classList.toggle('light',theme==='light');try{localStorage.setItem('offgrid_theme',theme);}catch{}};
 $('contactButton').onclick=()=>{document.body.classList.add('mobile-chat');scrollToNewest(true);sendReadReceipts();};$('mobileBack').onclick=()=>document.body.classList.remove('mobile-chat');
 $('closeModal').onclick=closeDialog;$('modalBackdrop').onclick=e=>{if(e.target===$('modalBackdrop'))closeDialog();};document.addEventListener('keydown',e=>{if(e.key==='Escape')closeDialog();});
 document.addEventListener('visibilitychange',sendReadReceipts);window.addEventListener('focus',sendReadReceipts);
-window.addEventListener('beforeunload',revokePhotos);
+window.addEventListener('beforeunload',()=>{stopVoiceRecording(true);revokePhotos();});
 setInterval(pruneIncoming,45000);
 (async()=>{try{db=await openDb();}catch(e){toast('IndexedDB unavailable. Encrypted storage cannot work: '+e.message);}refreshStatus();})();
-console.info('OffGrid Phase 1.4.10.4 — auto-scroll maintenance on selective-ACK web app; unchanged ESP-IDF firmware.');
+console.info('OffGrid Phase 1.5 — encrypted voice notes and verified two-way LR fallback. Built from Phase 1.4.11 baseline.');
