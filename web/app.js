@@ -3,7 +3,7 @@
    Keys are stored on each ESP32 and imported only into browser RAM over physical USB. No external servers. */
 const P=globalThis.OGP,$=id=>document.getElementById(id);
 const MAX_CHARS=500,MAX_PHOTO=96*1024,STORE='OffGridMessengerV14';
-const APP_VERSION='1.4.11.1-manual-lr';
+const APP_VERSION='1.4.11.2-rf-test';
 const stateRank={sending:0,queued:0,sent:1,failed:1,delivered:2,read:3};
 const encoder=new TextEncoder();
 let port=null,reader=null,writer=null,readPromise=null,closing=false,verified=false,serialBuffer='',writeChain=Promise.resolve(),handshakeTimer=null;
@@ -51,6 +51,68 @@ const photoFlow=new globalThis.OffGridAdaptive.PhotoFlowController();
 let adaptivePhotos=true;
 let queuedReceipts=new Set(),pendingReads=new Set(),theme='dark';
 let imageMode='hq';
+/* Runtime-only RF lab: real measured RSSI is never replaced by simulated RSSI.
+ * The device restores boot power on RFTEST OFF or after a 120-second lease. */
+const rfLab={available:false,active:false,power:null,base:null,live:null,sim:false,simValue:null,phy:null,mode:'AUTO',peer:false,ttl:0,output:null,status:null,heartbeat:null,busy:false};
+function rfFields(line){const o={};for(const chunk of line.split('|').slice(1)){const i=chunk.indexOf('=');if(i>0)o[chunk.slice(0,i)]=chunk.slice(i+1);}return o;}
+function rfText(){
+ const power=rfLab.power===null?'—':(rfLab.power/4).toFixed(rfLab.power%4?2:0)+' dBm';
+ const base=rfLab.base===null?'—':(rfLab.base/4).toFixed(rfLab.base%4?2:0)+' dBm';
+ const live=rfLab.live===null||rfLab.live===-127?'unknown':rfLab.live+' dBm';
+ const effective=rfLab.sim?'Simulated '+rfLab.simValue+' dBm for AUTO policy':'Real signal used by AUTO';
+ const phy=(rfLab.phy===null?'—':rfLab.phy<1?Math.round(rfLab.phy*1000)+' Kbps':rfLab.phy+' Mbps');
+ return `Power: ${power} (boot: ${base})\nMeasured RSSI: ${live}\nRate input: ${effective}\nActual configured PHY: ${phy} · ${rfLab.mode}\nPeer known: ${rfLab.peer?'yes':'no'} · RF test: ${rfLab.active?'active':'off'} · auto-restore: ${rfLab.ttl}s`;
+}
+function rfLabUpdate(){if(rfLab.status)rfLab.status.textContent=rfText();}
+function rfLabLog(line){if(!rfLab.output)return;rfLab.output.textContent+=line+'\n';rfLab.output.scrollTop=rfLab.output.scrollHeight;}
+function rfLabReceive(line){
+ if(line.startsWith('RFTEST|')){
+  const f=rfFields(line);rfLab.available=true;rfLab.active=f.ACTIVE==='1';rfLab.power=Number(f.PWR);rfLab.base=Number(f.BASE);
+  rfLab.live=Number(f.LIVE);rfLab.phy=Number(f.PHY);rfLab.mode=f.MODE||'AUTO';rfLab.peer=f.PEER==='1';rfLab.sim=f.SIM==='ON';rfLab.ttl=Number(f.TTL)||0;
+  if(!rfLab.sim)rfLab.simValue=null;rfLabUpdate();return true;
+ }
+ if(line.startsWith('RFTEST_SIM|')){const f=rfFields(line);rfLab.simValue=Number(f.RSSI);rfLabUpdate();return true;}
+ if(line.startsWith('RFTEST_EXPIRED|')){rfLab.active=false;rfLab.sim=false;rfLab.simValue=null;rfLabUpdate();rfLabLog('Experiment expired — device restored initial power.');return true;}
+ if(line.startsWith('RFTEST_ERROR|')){rfLabLog('Device error: '+line.slice(13));toast('RF test: '+line.slice(13));return true;}
+ return false;
+}
+async function rfCommand(cmd){if(!verified||!writer){toast('Connect your ESP32 first.');return false;}try{await writeLine('RFTEST '+cmd);return true;}catch(e){rfLabLog('USB: '+e.message);return false;}}
+function rfCloseHeartbeat(){if(rfLab.heartbeat){clearInterval(rfLab.heartbeat);rfLab.heartbeat=null;}}
+function showRfLab(){
+ rfCloseHeartbeat();
+ showDialog('RF Lab · Short-range Long Range tests',body=>{
+  const p=el('p','','Compare real low-power wireless performance with simulated RSSI rate switching. These are separate experiments. Normal encrypted messaging is untouched.');body.append(p);
+  const info=el('pre','rf-lab-status');rfLab.status=info;body.append(info);rfLabUpdate();
+  const powerLabel=el('label','','Real transmitter power (each ESP32 separately)');body.append(powerLabel);
+  const power=el('select','setting-select');
+  [['DEFAULT','Restore boot power'],['2','2 dBm · minimum'],['5','5 dBm'],['10','10 dBm'],['15','15 dBm'],['20','20 dBm · only if boot allows']].forEach(([v,label])=>{const op=document.createElement('option');op.value=v;op.textContent=label;power.append(op);});
+  body.append(power);
+  const applyPower=el('button','quiet-button','Apply radio power');body.append(applyPower);
+  applyPower.onclick=async()=>{const cmd='POWER '+power.value;rfLabLog('Request: '+cmd);await rfCommand(cmd);};
+  const simLabel=el('label','','Simulated signal (tests rate algorithm only)');body.append(simLabel);
+  const sim=el('input','rf-lab-slider');sim.type='range';sim.min='-105';sim.max='-30';sim.step='1';sim.value='-85';
+  const simCurrent=el('strong','rf-lab-value','−85 dBm (synthetic)');sim.addEventListener('input',()=>simCurrent.textContent=`${sim.value} dBm (synthetic)`);
+  const simRow=el('div','rf-lab-sim-row');simRow.append(sim,simCurrent);body.append(simRow);
+  const simActions=el('div','rf-lab-actions'),applySim=el('button','quiet-button','Apply simulated RSSI'),disableSim=el('button','quiet-button','Use real RSSI');
+  applySim.onclick=async()=>{if(linkPreference!=='auto')rfLabLog('Note: select Auto radio mode to test automatic rate switching.');await rfCommand('SIM '+sim.value);};
+  disableSim.onclick=async()=>{await rfCommand('SIM OFF');};simActions.append(applySim,disableSim);body.append(simActions);
+  const radioLabel=el('label','','Real peer link benchmark (radio MCU ACKs)');body.append(radioLabel);
+  const countSelect=el('select','setting-select');[[32,'32 packets'],[64,'64 packets'],[128,'128 packets']].forEach(([v,t])=>{const op=document.createElement('option');op.value=v;op.textContent=t;countSelect.append(op);});countSelect.value='32';body.append(countSelect);
+  const bench=el('button','primary-button','Run live radio test');body.append(bench);
+  bench.onclick=async()=>{if(rfLab.busy||speedDiagnostics.busy||speedDiagnostics.serial||runningTransfers||transferQueue.length||pendingRadio()){toast('Finish another transfer/benchmark first.');return;}
+   rfLab.busy=true;bench.disabled=true;const count=Number(countSelect.value);rfLabLog(`Radio benchmark: ${count} packets · current actual PHY ${radioTelemetry.phy} Mbps · RSSI ${radioTelemetry.rssi??'unknown'} dBm`);
+   try{const result=await runRadioBenchmark(count);rfLabLog(`${result.ok}/${result.requested} delivered; ${result.lost} lost; ${result.retries} retries; ACK ${result.rttMs} ms; ${kbps(result.bytes,result.ms).toFixed(2)} KiB/s · PHY ${result.phy} Mbps`);}catch(e){rfLabLog('FAILED: '+e.message);}finally{rfLab.busy=false;bench.disabled=false;await rfCommand('STATUS');}
+  };
+  const actions=el('div','rf-lab-actions'),auto=el('button','quiet-button','Set radio Auto'),refresh=el('button','quiet-button','Refresh status'),restore=el('button','soft-button','Restore normal RF'),copy=el('button','quiet-button','Copy results');
+  auto.onclick=()=>void applyRadioPreference('auto');refresh.onclick=()=>void rfCommand('STATUS');restore.onclick=async()=>{await rfCommand('OFF');power.value='DEFAULT';};
+  copy.onclick=()=>navigator.clipboard.writeText((rfLab.output?.textContent||'')+'\n'+rfText()).then(()=>toast('RF results copied')).catch(()=>toast('Could not copy results'));
+  actions.append(auto,refresh,restore,copy);body.append(actions);
+  const output=el('pre','rf-lab-output','RF test results (never added to chat):\n');rfLab.output=output;body.append(output);
+  body.append(el('p','','A 2 dBm test at 20 cm cannot prove a 500 m or 1 km range. Reduced power changes the real signal; simulated RSSI only changes the automatic rate policy. Set both boards separately, start with text and 32-packet tests, and compare per-PHY packet loss. RF settings revert after 120 seconds without browser heartbeat, after reboot, or with Restore normal RF.'));
+ });
+ void rfCommand('STATUS');
+ rfLab.heartbeat=setInterval(()=>{if(!document.getElementById('modalBackdrop').classList.contains('hidden')&&verified){void rfCommand('PING');}else rfCloseHeartbeat();},15000);
+}
 let radioTelemetry={peer:'NONE',rssi:null,phy:1,mode:'AUTO',delivered:0,retries:0,failures:0,txok:0,txfail:0,rx:0,hello:0,available:false};
 let selectedPhotoId=null,viewerZoomed=false,viewerTouchX=null,viewerPreviousFocus=null;
 /* Isolated benchmark state; measurements never enter message history. */
@@ -126,8 +188,9 @@ async function runUsbInput(){
 async function runUsbOutput(){
  return serialBenchmark('usbOut',60000,test=>writeLine(`USBOUT ${test.token} 96`));
 }
-async function runRadioBenchmark(){
- return serialBenchmark('radio',120000,test=>writeLine(`RBENCH ${test.token} 32`));
+async function runRadioBenchmark(count=32){
+ if(![32,64,128].includes(count))throw Error('Invalid radio benchmark count');
+ return serialBenchmark('radio',120000,test=>writeLine(`RBENCH ${test.token} ${count}`));
 }
 async function runFullBenchmark(batch=false){
  if(!secretKey)throw Error('Configure the same encryption key on both nodes first');
@@ -728,6 +791,7 @@ async function runTransfers(){
 }
 function parseLine(raw){const s=raw.trim();if(!s)return;
  if(diagnosticLine(s))return;
+ if(rfLabReceive(s))return;
  // Record serial input for diagnosis, without exposing the 256-bit pairing key.
  usbLastRawAt=performance.now();
  if(s.startsWith('KEYDATA|'))logUsb('ESP32> KEYDATA|<redacted>');
@@ -795,7 +859,7 @@ async function connect(){if(!navigator.serial){toast('Use Chromium with Web Seri
     handshakeTimer=setInterval(()=>{if(!verified&&writer){logUsb('HOST> STATUS (retry)');writeLine('STATUS').catch(()=>{});}},1200);
     usbWaitTimer=setInterval(updateUsbWait,1200);
  }catch(e){toast('USB connection failed: '+e.message);await disconnect();}}
-async function disconnect(){if(closing)return;closing=true;
+async function disconnect(){if(closing)return;closing=true;rfCloseHeartbeat();rfLab.available=false;
  speedDiagnostics.serial?.reject(Error('USB disconnected during benchmark'));
  speedDiagnostics.full?.reject(Error('USB disconnected during benchmark'));
  speedDiagnostics.capable=false;speedDiagnostics.sackCapable=false;clearSelectiveAcks();
@@ -842,8 +906,8 @@ async function sendPhoto(file){if(!verified||!secretKey)return;toast('Preparing 
  await appendRecord(r);transferQueue.push(makeJob(r));runTransfers();toast(`Photo prepared: ${photo.width}×${photo.height}, ${formatBytes(photo.bytes.length)}. Encrypted transfer queued.`);
  }catch(e){toast('Photo not sent: '+e.message);}finally{$('photoPicker').value='';}}
 function retryMessage(id){const r=recordMap.get(id);if(!r||r.dir!=='out'||r.status!=='failed'||!verified||!secretKey)return;r.status='sending';r.progress=0;r.error='';updateBubble(r);void storeStatus(r);transferQueue.push(makeJob(r));runTransfers();}
-function showDialog(title,render){$('modalTitle').textContent=title;const content=$('modalBody');content.replaceChildren();render(content);$('modalBackdrop').classList.remove('hidden');}
-function closeDialog(){$('modalBackdrop').classList.add('hidden');}
+function showDialog(title,render){rfCloseHeartbeat();rfLab.status=null;rfLab.output=null;$('modalTitle').textContent=title;const content=$('modalBody');content.replaceChildren();render(content);$('modalBackdrop').classList.remove('hidden');}
+function closeDialog(){rfCloseHeartbeat();rfLab.status=null;rfLab.output=null;$('modalBackdrop').classList.add('hidden');}
 function el(tag,cl='',text=''){const out=document.createElement(tag);if(cl)out.className=cl;out.textContent=text;return out;}
 async function installPairKey(raw){
  if(!verified||!localMac)throw Error('Connect a node first');
@@ -917,7 +981,7 @@ function showSettings(){showDialog('Settings',body=>{body.append(el('p','','Expe
  const modeLabel=el('label','','Image optimization');body.append(modeLabel);const select=document.createElement('select');select.className='setting-select';
  [['hq','Optimized WebP/JPEG (adaptive 32–60 KB target, may resize)'],['lossless','Lossless PNG + metadata stripping (reject if >96 KB)']].forEach(([v,t])=>{const opt=document.createElement('option');opt.value=v;opt.textContent=t;select.append(opt);});select.value=imageMode;select.onchange=()=>{imageMode=select.value;try{localStorage.setItem('offgrid_image_mode',imageMode);}catch{}updateLinkBadge();};body.append(select);
  body.append(el('p','','Metadata stripping does not make photos tiny. High-quality mode can reduce dimensions and introduce slight loss; lossless PNG keeps the canvas pixels exact but may not fit through this radio link.'));
- const buttons=el('div','settings-actions'),rename=el('button','quiet-button','Rename contact'),key=el('button','quiet-button','Node pairing key'),diagnostics=el('button','quiet-button','USB diagnostics'),speedTest=el('button','primary-button','Speed diagnostics'),clear=el('button','soft-button','Clear history');rename.onclick=showRename;key.onclick=showPairing;diagnostics.onclick=diagnoseUsb;speedTest.onclick=showSpeedDiagnostics;clear.onclick=()=>void clearHistory();buttons.append(speedTest,rename,key,diagnostics,clear);body.append(buttons);
+ const buttons=el('div','settings-actions'),rename=el('button','quiet-button','Rename contact'),key=el('button','quiet-button','Node pairing key'),diagnostics=el('button','quiet-button','USB diagnostics'),speedTest=el('button','primary-button','Speed diagnostics'),rfTest=el('button','primary-button','RF Lab · power & range test'),clear=el('button','soft-button','Clear history');rename.onclick=showRename;key.onclick=showPairing;diagnostics.onclick=diagnoseUsb;speedTest.onclick=showSpeedDiagnostics;rfTest.onclick=showRfLab;clear.onclick=()=>void clearHistory();buttons.append(rfTest,speedTest,rename,key,diagnostics,clear);body.append(buttons);
  });}
 $('lrForceToggle').addEventListener('change',event=>{
   void applyRadioPreference(event.target.checked?lastManualLR:'auto');

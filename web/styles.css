@@ -213,3 +213,13 @@ body.viewer-open{overflow:hidden}
 body.light .lr-test-panel{background:#f3faf8;border-color:#cce6dc}
 body.light .lr-rate-row select{background:#fff;border-color:#cde2de;color:#21363a}
 @media(max-width:800px){.lr-test-panel{padding:10px}.lr-test-heading{gap:6px}}
+
+/* Phase 1.4.11.2: isolated RF Lab modal, preserving approved chat UI. */
+.rf-lab-status,.rf-lab-output{white-space:pre-wrap;overflow-wrap:anywhere;background:var(--shell);color:var(--ink);border:1px solid var(--line);border-radius:11px;padding:13px;font:12px/1.6 ui-monospace,SFMono-Regular,Consolas,monospace}
+.rf-lab-output{max-height:200px;overflow:auto;margin-top:13px}
+.rf-lab-slider{width:100%;accent-color:var(--accent)}.rf-lab-value{font-size:12px;white-space:nowrap;color:var(--accent)}
+.rf-lab-sim-row{display:flex;align-items:center;gap:12px;margin:10px 0}
+.rf-lab-actions{display:flex;flex-wrap:wrap;gap:8px;margin:11px 0}
+.rf-lab-actions .quiet-button,.rf-lab-actions .soft-button{white-space:normal}
+.modal:has(.rf-lab-status){width:min(680px,calc(100vw - 24px));max-height:92dvh;overflow-y:auto}
+@media(max-width:480px){.rf-lab-sim-row{flex-wrap:wrap}.rf-lab-actions>*{flex:1 1 125px}}

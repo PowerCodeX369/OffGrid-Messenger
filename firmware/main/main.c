@@ -1,4 +1,4 @@
-/* OffGrid Messenger Phase 1.4.11 experimental LR, ESP-IDF >= 5.2 / ESP32-C3.
+/* OffGrid Messenger Phase 1.4.11.2 experimental RF test mode, ESP-IDF >= 5.2 / ESP32-C3.
  * Experimental extension of the frozen, measured-working 1.4.10.2 USB IRQ baseline.
  * AES-256-GCM runs in the BROWSER. NVS key management unchanged.
  * 1 Mbps broadcast HELLO/recovery; peer-aware 1/6/12 Mbps unicast for data.
@@ -77,6 +77,9 @@
 #define SERIAL_LINE 512
 #define LINK_REPORT_MS 2500
 #define READY_BEACON_MS 2500
+#define RF_TEST_LEASE_MS 120000 /* always restore RF test settings after inactivity */
+#define RF_TEST_SIM_MIN -105
+#define RF_TEST_SIM_MAX -30
 
 static const uint8_t BROADCAST[6] = {255,255,255,255,255,255};
 static uint8_t own_mac[6];
@@ -96,7 +99,7 @@ typedef struct __attribute__((packed)) {
     uint8_t text[MAX_TEXT];
 } frame_t;
 
-typedef enum { EV_RX = 1, EV_SEND, EV_APPACK, EV_STATUS, EV_READ, EV_RATE, EV_BENCH_START, EV_APPACK_BATCH } event_type_t;
+typedef enum { EV_RX = 1, EV_SEND, EV_APPACK, EV_STATUS, EV_READ, EV_RATE, EV_BENCH_START, EV_APPACK_BATCH, EV_RFTEST } event_type_t;
 typedef struct {
     event_type_t type;
     uint8_t mac[6];
@@ -149,6 +152,16 @@ static uint8_t link_mode=OG_RATE_AUTO;
 static uint32_t hello_rx=0, hello_tx=0, valid_rssi_samples=0;
 static uint32_t phy_changes=0, rate_errors=0;
 static bool phy_configured=false;
+/* Phase 1.4.11.2: runtime-only RF experiments; NO changes to NVS or AES.
+ * The settings revert on RFTEST OFF, reboot, or expired experiment lease. */
+static bool rf_power_original_valid=false;
+static int8_t rf_power_original_raw=0;
+static int8_t rf_power_current_raw=0;
+static bool rf_power_override=false;
+static bool rf_simulated=false;
+static int8_t rf_simulated_rssi=-80;
+static int64_t rf_test_last_touch_ms=0;
+
 static int64_t last_report_ms=0;
 static int64_t last_ready_beacon_ms=0;
 /* Diagnostics run only on the dispatcher/serial tasks. No Wi-Fi callback work.
@@ -466,6 +479,9 @@ static uint8_t target_phy_for_link(void) {
     if(link_mode==OG_RATE_LR250)return 25;
     if(link_mode==OG_RATE_LR500)return 50;
     if(link_mode==OG_RATE_RANGE)return 1;
+    /* Synthetic RSSI tests ONLY the selection algorithm, never the receive
+     * callback, delivery metrics, peer identity, or displayed actual RSSI. */
+    if(rf_simulated && link_mode==OG_RATE_AUTO)return og_lr_target(phy_mbps,rf_simulated_rssi,link_mode);
     if(remote_rssi==-127 || valid_rssi_samples<3)return phy_mbps;
     return og_lr_target(phy_mbps,remote_rssi,link_mode);
 }
@@ -615,7 +631,72 @@ static void send_batch_receipt(const event_t *e) {
     /* Batch receipts must also work at LR rates. */
     (void)send_frame(peer_known?e->mac:BROADCAST,&f);
 }
+/* Dedicated RF-test control; called only from dispatcher (never a Wi-Fi RX callback).
+ * POWER changes are restricted to <= the power that was active on boot. */
+static bool rf_test_is_active(void){return rf_power_override || rf_simulated;}
+static void rf_test_touch(void){rf_test_last_touch_ms=now_ms();}
+static void rf_test_report(void){
+    int8_t actual=rf_power_current_raw;
+    if(esp_wifi_get_max_tx_power(&actual)==ESP_OK)rf_power_current_raw=actual;
+    int64_t rem=rf_test_is_active()?RF_TEST_LEASE_MS-(now_ms()-rf_test_last_touch_ms):0;
+    if(rem<0)rem=0;
+    printf("RFTEST|ACTIVE=%u|PWR=%d|BASE=%d|SIM=%s|LIVE=%ld|PHY=%s|MODE=%s|PEER=%u|TTL=%ld\n",
+        (unsigned)rf_test_is_active(),(int)rf_power_current_raw,(int)rf_power_original_raw,
+        rf_simulated?"ON":"OFF",(long)remote_rssi,phy_label(),link_mode_name(),
+        (unsigned)peer_known,(long)(rem/1000));
+    if(rf_simulated)printf("RFTEST_SIM|RSSI=%d\n",(int)rf_simulated_rssi);
+}
+static void rf_test_restore(void){
+    if(rf_power_override && rf_power_original_valid){
+        esp_err_t err=esp_wifi_set_max_tx_power(rf_power_original_raw);
+        if(err!=ESP_OK){printf("RFTEST_ERROR|POWER_RESTORE_%s\n",esp_err_to_name(err));return;}
+    }
+    rf_power_override=false;rf_simulated=false;
+    int8_t actual=rf_power_original_raw;
+    if(esp_wifi_get_max_tx_power(&actual)==ESP_OK)rf_power_current_raw=actual;
+    rf_test_last_touch_ms=0;
+}
+static void rf_test_process(const event_t *e){
+    /* action: 1=power set, 2=power restore, 3=sim set, 4=sim off,
+     * 5=status, 6=keepalive, 7=restore all */
+    const uint8_t action=e->rate_mode;
+    if(action==1){
+        const int dbm=(int)e->id;
+        if(!rf_power_original_valid){puts("RFTEST_ERROR|POWER_BASELINE_UNAVAILABLE");return;}
+        if(dbm!=2&&dbm!=5&&dbm!=10&&dbm!=15&&dbm!=20){puts("RFTEST_ERROR|INVALID_POWER");return;}
+        const int requested=dbm*4;
+        if(requested>rf_power_original_raw){puts("RFTEST_ERROR|ABOVE_BOOT_POWER");return;}
+        esp_err_t err=esp_wifi_set_max_tx_power((int8_t)requested);
+        if(err!=ESP_OK){printf("RFTEST_ERROR|POWER_%s\n",esp_err_to_name(err));return;}
+        rf_power_override=true;rf_test_touch();
+    }else if(action==2){
+        if(rf_power_original_valid && rf_power_override){
+            esp_err_t err=esp_wifi_set_max_tx_power(rf_power_original_raw);
+            if(err!=ESP_OK){printf("RFTEST_ERROR|POWER_RESTORE_%s\n",esp_err_to_name(err));return;}
+        }
+        rf_power_override=false;rf_test_touch();
+    }else if(action==3){
+        rf_simulated=true;rf_simulated_rssi=e->rssi;rf_test_touch();
+        /* Reset stability dwell ONLY in explicitly requested simulated mode;
+         * normal receive/retry timing remains untouched. */
+        last_phy_change_ms=now_ms()-PHY_DWELL_MS;
+        adjust_phy();
+    }else if(action==4){
+        rf_simulated=false;rf_test_touch();
+    }else if(action==6){
+        if(rf_test_is_active())rf_test_touch();
+    }else if(action==7){
+        rf_test_restore();
+    }
+    rf_test_report();emit_link();
+}
+static void rf_test_expire(void){
+    if(rf_test_is_active() && now_ms()-rf_test_last_touch_ms>RF_TEST_LEASE_MS){
+        rf_test_restore();puts("RFTEST_EXPIRED|RESTORED");rf_test_report();
+    }
+}
 static void process_event(const event_t *e) {
+    if(e->type==EV_RFTEST){rf_test_process(e);return;}
     if(e->type==EV_STATUS){show_ready("STATUS");emit_link();return;}
     if(e->type==EV_BENCH_START){
         if(radio_bench.active||any_pending()){
@@ -775,6 +856,7 @@ static void dispatcher(void *arg) {
         int64_t t=now_ms();
         if(t-last_report_ms>=LINK_REPORT_MS){last_report_ms=t;emit_link();}
         if(t-last_hello_ms>=HELLO_MS){last_hello_ms=t;send_hello();}
+        rf_test_expire();
         adjust_phy();
         send_lr_probe();
         radio_bench_drive();
@@ -835,7 +917,7 @@ static bool parse_batch_ack(char *line,event_t *e) {
 static void serial_task(void *arg) {
     char line[SERIAL_LINE];size_t used=0;
     uint8_t rx_batch[256];
-    puts("HELP|MSGHEX, STATUS, APPACK, APPACKB, READ, KEYGET, KEYSET, RATE AUTO/RANGE/SPEED/LR500/LR250, USBOUT, USBIN_BEGIN/USBIN/USBIN_END, RBENCH");
+    puts("HELP|MSGHEX, STATUS, APPACK, APPACKB, READ, KEYGET, KEYSET, RATE AUTO/RANGE/SPEED/LR500/LR250, USBOUT, USBIN_BEGIN/USBIN/USBIN_END, RBENCH, RFTEST POWER/SIM/STATUS/OFF");
     while (true) {
         int count=serial_receive_batch(rx_batch,sizeof(rx_batch));
         if (count<=0)continue;
@@ -897,6 +979,23 @@ static void serial_task(void *arg) {
                 else if(key_to_nvs(raw))puts("KEYSTORED");
                 else puts("KEYERROR|NVS_WRITE_FAILED");
                 memset(raw,0,sizeof(raw));
+            }
+            else if(strncmp(line,"RFTEST ",7)==0){
+                const char *arg=line+7;int value=0;char extra;
+                e.type=EV_RFTEST;
+                if(!strcmp(arg,"STATUS"))e.rate_mode=5;
+                else if(!strcmp(arg,"OFF"))e.rate_mode=7;
+                else if(!strcmp(arg,"PING"))e.rate_mode=6;
+                else if(!strcmp(arg,"POWER DEFAULT"))e.rate_mode=2;
+                else if(!strcmp(arg,"SIM OFF"))e.rate_mode=4;
+                else if(sscanf(arg,"POWER %d %c",&value,&extra)==1 &&
+                        (value==2||value==5||value==10||value==15||value==20)){
+                    e.rate_mode=1;e.id=(uint32_t)value;
+                }else if(sscanf(arg,"SIM %d %c",&value,&extra)==1 &&
+                        value>=RF_TEST_SIM_MIN&&value<=RF_TEST_SIM_MAX){
+                    e.rate_mode=3;e.rssi=(int8_t)value;
+                }else{puts("RFTEST_ERROR|BAD_COMMAND");e.type=0;}
+                if(e.type==EV_RFTEST)send=true;
             }
             else if(strncmp(line,"RATE ",5)==0){
                 if(strcmp(line+5,"AUTO")==0||strcmp(line+5,"RANGE")==0||strcmp(line+5,"SPEED")==0||
@@ -972,6 +1071,10 @@ void app_main(void) {
     if(lr_err==ESP_OK){lr_supported=true;puts("LRMODE|ENABLED|BGNLR");}
     else{lr_supported=false;printf("LRMODE|UNAVAILABLE|%s\n",esp_err_to_name(lr_err));}
     ESP_ERROR_CHECK(esp_wifi_set_ps(WIFI_PS_NONE));
+    /* Snapshot existing driver/country power limit; experiments never raise it. */
+    if(esp_wifi_get_max_tx_power(&rf_power_original_raw)==ESP_OK){
+        rf_power_original_valid=true;rf_power_current_raw=rf_power_original_raw;
+    }else puts("RFTEST_ERROR|POWER_BASELINE_UNAVAILABLE");
     ESP_ERROR_CHECK(esp_read_mac(own_mac,ESP_MAC_WIFI_STA));
     boot_session=esp_random();if(!boot_session)boot_session=1;
     event_queue=xQueueCreate(EVENT_QUEUE_LEN,sizeof(event_t));if(!event_queue)abort();
