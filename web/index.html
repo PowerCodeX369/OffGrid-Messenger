@@ -2,39 +2,52 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>OffGrid Messenger | Phase 1.1</title>
-  <style>
-    :root { color-scheme: dark; --bg:#0b1220; --panel:#121e30; --stroke:#294056; --text:#e8f2f6; --dim:#96afbd; --teal:#21c6af; }
-    * {box-sizing:border-box} body {margin:0;min-height:100vh;background:radial-gradient(circle at 25% 0%,#173648,#0b1220 50%);color:var(--text);font:15px system-ui,Arial,sans-serif;display:grid;place-items:center;padding:20px}
-    .app {width:min(100%,740px);height:min(90vh,740px);min-height:420px;background:var(--panel);border:1px solid var(--stroke);border-radius:19px;box-shadow:0 22px 85px #0007;display:flex;flex-direction:column;overflow:hidden}
-    header{padding:18px 21px;border-bottom:1px solid var(--stroke);display:flex;align-items:center;justify-content:space-between;gap:15px}
-    h1 {font-size:20px;margin:0 0 5px} .sub{font-size:12px;color:var(--dim)}
-    button{border:0;border-radius:10px;padding:11px 14px;color:#072c28;background:var(--teal);font-weight:700;cursor:pointer} button:disabled{opacity:.38;cursor:not-allowed}
-    button.secondary{background:#263e50;color:var(--text)}
-    .status {display:flex;gap:8px;align-items:center;color:var(--dim);font-size:13px;padding:10px 20px;border-bottom:1px solid var(--stroke)}
-    .dot{height:9px;width:9px;border-radius:50%;background:#64748b}.dot.online{background:#18c88c}
-    #messages{flex:1;overflow:auto;padding:22px;display:flex;flex-direction:column;gap:10px}
-    .bubble{max-width:82%;border-radius:13px;padding:11px 14px;white-space:pre-wrap;overflow-wrap:anywhere;line-height:1.5;background:#203449;align-self:flex-start}
-    .bubble.mine{align-self:flex-end;background:#125c53}.bubble.system{align-self:center;background:#192637;color:var(--dim);font-size:12px;max-width:95%;padding:8px 12px}
-    .meta{color:#abc2c8;opacity:.8;font-size:10px;margin-top:5px;display:flex;gap:9px;justify-content:flex-end}.msg-state{font-weight:700}
-    form{display:flex;gap:10px;border-top:1px solid var(--stroke);padding:14px} input{min-width:0;flex:1;color:var(--text);background:#0c1726;border:1px solid var(--stroke);border-radius:10px;padding:12px;font:inherit;outline:none}input:focus{border-color:var(--teal)}
-    .foot{font-size:11px;color:var(--dim);padding:0 16px 12px} .toolbar {display:flex;gap:8px;align-items:center;flex-wrap:wrap}
-    @media(max-width:600px){header{flex-wrap:wrap}.app{height:92vh}button{padding:10px 12px}}
-  </style>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#101b21">
+  <title>OffGrid Messenger</title>
+  <link rel="stylesheet" href="styles.css?v=1.2.0">
+  <script src="app.js?v=1.2.0" defer></script>
 </head>
 <body>
-  <main class="app">
-    <header>
-      <div><h1>◉ OffGrid Messenger</h1><div class="sub">Phase 1.1.1 • Reliable ESP-NOW • ESP32-C3 • USB ↔ ESP-NOW • No internet</div></div>
-      <div class="toolbar"><button id="connect">Connect USB</button><button class="secondary" id="disconnect" disabled>Disconnect</button></div>
+<div class="app" id="app">
+  <aside class="sidebar">
+    <header class="side-head">
+      <div class="branding"><div class="brand-icon" aria-hidden="true">◎</div><div><strong>OffGrid</strong><small>MESSENGER</small></div></div>
+      <div class="side-actions"><button class="icon-button" id="themeToggle" title="Toggle appearance" aria-label="Toggle appearance">◐</button><button class="icon-button" id="settingsButton" title="Settings" aria-label="Settings">⚙</button></div>
     </header>
-    <div class="status"><span id="dot" class="dot"></span><span id="status">Not connected — connect an ESP32-C3 over USB</span></div>
-    <div class="status">Your board: <strong id="device">—</strong> <span id="webVersion" style="font-size:11px;color:#9eb7c2">· Web v1.1.1</span> · Delivery confirms receipt by the remote browser, not just the remote radio.</div>
-    <section id="messages" aria-live="polite"><div class="bubble system">Connect your board, then send a test message. The other board will receive it over ESP-NOW.</div></section>
-    <form id="sendForm"><input id="message" autocomplete="off" placeholder="Type a message (max 180 UTF-8 bytes)" maxlength="180" disabled><button id="send" disabled>Send ➤</button></form>
-    <div class="foot">TEST BUILD — No encryption yet. ✓ = sent to radio; ✓✓ = remote browser confirmed. No internet or server required.</div>
+    <div class="side-connection" id="connectionCard">
+      <div class="connection-title"><span class="status-dot" id="statusDot"></span><div><strong id="connectionState">Disconnected</strong><small id="connectionDescription">Connect your ESP32-C3 over USB</small></div></div>
+      <div class="connection-buttons"><button class="primary-button" id="connectButton">Connect ESP32</button><button class="quiet-button" id="disconnectButton" disabled>Disconnect</button></div>
+      <div class="node-info"><span id="nodeAddress">Node: —</span><span id="nodeChannel">Channel 6</span></div>
+    </div>
+    <div class="chats-heading"><h2>Chats</h2><span class="tiny-badge">1</span></div>
+    <button class="contact active" id="contactButton" type="button">
+      <span class="avatar" id="contactAvatar">N</span>
+      <span class="contact-body"><span class="contact-top"><strong id="contactSidebarName">Nearby node</strong><span class="contact-time" id="lastChatTime"></span></span><span class="contact-preview" id="lastChatPreview">Your off-grid conversation</span></span>
+    </button>
+    <div class="side-foot"><span class="tiny-offline">◆</span> Peer-to-peer radio • No cloud required <small>Phase 1.2 · Experimental, unencrypted</small></div>
+  </aside>
+  <main class="conversation">
+    <header class="chat-header">
+      <button id="mobileBack" class="icon-button back-button" aria-label="Back to chats">‹</button>
+      <span class="avatar avatar-small" id="headerAvatar">N</span>
+      <div class="chat-title"><strong id="chatName">Nearby node</strong><span id="chatSubhead">Waiting for USB connection</span></div>
+      <div class="header-tools"><span class="header-radio" title="ESP-NOW, channel 6">⌁ <span>ESP-NOW</span></span><button class="icon-button" id="renameButton" title="Rename contact" aria-label="Rename contact">✎</button><button class="icon-button" id="infoButton" title="About this chat" aria-label="Chat information">ⓘ</button></div>
+    </header>
+    <div class="chat-background">
+      <div class="chat-scroll" id="chatScroll" aria-live="polite" aria-relevant="additions">
+        <div class="intro"><div class="intro-logo">◎</div><strong>Private radio. Simple messaging.</strong><p>This conversation travels over your ESP32-C3 nodes, with no internet service. This test build is <b>not encrypted yet</b>.</p><span>Connect both boards to begin</span></div>
+        <div class="day-divider"><span>Today</span></div>
+        <div class="messages" id="messages"></div>
+      </div>
+      <div class="send-panel">
+        <div class="composer" id="composer"><button class="icon-button composer-attach" id="attachments" title="Coming in later phases" disabled>＋</button><textarea id="messageInput" rows="1" maxlength="720" placeholder="Connect ESP32 to send messages" disabled aria-label="Message"></textarea><span id="byteCount" class="byte-count">0/180</span><button class="send-button" id="sendButton" aria-label="Send message" disabled>➤</button></div>
+        <div class="composer-caption"><span id="composerStatus">Connect an ESP32 using the sidebar</span><span id="encryptionStatus">⚠ Unencrypted test firmware</span></div>
+      </div>
+    </div>
   </main>
-  <script src="./app.js?v=1.1.1-fix-20261107"></script>
+</div>
+<div class="modal-backdrop hidden" id="modalBackdrop" role="presentation"><section class="modal" role="dialog" aria-modal="true" aria-labelledby="modalTitle"><div class="modal-head"><h2 id="modalTitle">Settings</h2><button class="icon-button" id="closeModal" aria-label="Close dialog">✕</button></div><div id="modalBody"></div></section></div>
+<div class="toast-host" id="toastHost" aria-live="polite"></div>
 </body>
 </html>
