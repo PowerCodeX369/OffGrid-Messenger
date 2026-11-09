@@ -12,7 +12,7 @@ const P=require('../web/protocol.js');
    const msgId=P.newId(),transferId=P.newId();
    const plain=P.makeEnvelope(type,msgId,data),payload=await P.seal(key,plain,transferId);
    const packets=P.frames(transferId,payload),reconstituted=[];
-   for(const pkt of packets){assert(pkt.length<=180);const rx=P.parseFrame(P.unhex(P.hex(pkt)));assert(rx);reconstituted[rx.index]=rx.bytes;}
+   for(const pkt of packets){assert(pkt.length<=228);const rx=P.parseFrame(P.unhex(P.hex(pkt)));assert(rx);reconstituted[rx.index]=rx.bytes;}
    const opened=P.parseEnvelope(await P.open(key,P.concat(...reconstituted),transferId));
    assert.equal(opened.id,msgId);assert.equal(P.hex(opened.body),P.hex(data));
    assert.equal(opened.kind,type);

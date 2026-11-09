@@ -1,17 +1,17 @@
 'use strict';
-/* OffGrid Phase 1.4.2: adaptive peer PHY firmware with encrypted transport and in-app photo gallery.
+/* OffGrid Phase 1.4.3: adaptive peer PHY firmware with encrypted transport and in-app photo gallery.
    Keys are stored as non-extractable CryptoKey objects in IndexedDB. No external servers. */
 const P=globalThis.OGP,$=id=>document.getElementById(id);
 const MAX_CHARS=500,MAX_PHOTO=96*1024,STORE='OffGridMessengerV14';
-const APP_VERSION='1.4.2';
+const APP_VERSION='1.4.3';
 const stateRank={sending:0,queued:0,sent:1,failed:1,delivered:2,read:3};
 const encoder=new TextEncoder();
 let port=null,reader=null,writer=null,readPromise=null,closing=false,verified=false,serialBuffer='',writeChain=Promise.resolve(),handshakeTimer=null;
-let localMac=null,secretKey=null,peerMac=null,activeContact='Nearby node';
+let localMac=null,secretKey=null,peerMac=null,activeContact='Nearby node',firmwareMismatchNotified=false;
 let db=null,records=[],recordMap=new Map(),photoUrls=new Map(),incoming=new Map(),recentTransfers=new Map();
 let transferQueue=[],activeTransfer=null,runningTransfers=false;
 const radioByHex=new Map(),radioByWire=new Map();
-const linkStats={samples:0,avgMs:0,cleanStreak:0,retries:0,mode:'starting',window:1};
+const linkStats={samples:0,avgMs:0,cleanStreak:0,retries:0,mode:'starting',window:1,lastKBs:0};
 let linkPreference='auto';
 let queuedReceipts=new Set(),pendingReads=new Set(),theme='dark';
 let imageMode='hq';
@@ -66,7 +66,7 @@ function updateLinkBadge(){
  if(linkStats.samples>3)quality=linkStats.mode==='strong'?'strong':linkStats.mode==='weak'?'weak':'steady';
  const phy=radioTelemetry.available?`${radioTelemetry.phy} Mbps PHY`:'radio starting';
  const signal=radioTelemetry.available&&radioTelemetry.rssi!==null?`${radioTelemetry.rssi} dBm`:'signal —';
- node.textContent=`${name} · ${phy} · ${signal} · ${speed} in flight · ~${budget} KB photos`;
+ node.textContent=`${name} · ${phy} · ${signal} · ${speed} in flight · ~${budget} KB photos${linkStats.lastKBs?` · last ${linkStats.lastKBs.toFixed(1)} KB/s`:``}`;
  node.title='Reported TX PHY rate and received peer RSSI. Mbps is PHY bitrate, not photo transfer throughput. ACK/retry pacing is separately estimated by the web client.';
 }
 function recordLinkResult(rtt,attempts){
@@ -126,7 +126,7 @@ function makeBubble(record,animate=true){
 }
 function updateBubble(r){const row=Array.from($('messages').children).find(el=>el.dataset.mid===r.id);if(!row)return;row.dataset.status=r.status||'';
  const receipt=row.querySelector('[data-role="tick"]');if(receipt){receipt.className='receipt-icon '+(r.status||'sending');receipt.setAttribute('aria-label',r.status||'Sending');}
- const prog=row.querySelector('[data-role="progress"]');if(prog)prog.textContent=r.status==='sending'&&r.progress?`${r.progress}%`:'';
+ const prog=row.querySelector('[data-role="progress"]');if(prog)prog.textContent=r.status==='sending'&&r.progress?`${r.progress}%${r.kind==='image'&&r.speedKbps?' · '+r.speedKbps.toFixed(1)+' KB/s':''}`:'';
  if(r.dir==='out'){row.title=(r.status||'Sending')+(r.error?': '+r.error:'');row.classList.toggle('retryable',r.status==='failed');if(r.status==='failed')row.onclick=()=>retryMessage(r.id);else row.onclick=null;}
 }
 function revokePhotos(){closePhotoViewer();for(const url of photoUrls.values())URL.revokeObjectURL(url);photoUrls.clear();}
@@ -194,7 +194,7 @@ function writeLine(line){const task=writeChain.then(async()=>{if(!writer)throw E
 function incomingKey(mac,session,transferId){return mac+':'+session+':'+transferId;}
 function pruneIncoming(){const t=Date.now();for(const [k,v] of incoming){if(t-v.updated>4*60_000)incoming.delete(k);}for(const [k,t0] of recentTransfers){if(t-t0>12*60_000)recentTransfers.delete(k);}while(recentTransfers.size>512)recentTransfers.delete(recentTransfers.keys().next().value);}
 async function processRx(mac,session,packetId,rawHex){
- let fr;try{if(!/^[0-9A-Fa-f]{40,360}$/.test(rawHex))return;fr=P.parseFrame(P.unhex(rawHex));}catch{return;}if(!fr||!secretKey||!verified)return;
+ let fr;try{if(!/^[0-9A-Fa-f]{40,456}$/.test(rawHex))return;fr=P.parseFrame(P.unhex(rawHex));}catch{return;}if(!fr||!secretKey||!verified)return;
  const key=incomingKey(mac,session,fr.transferId);
  /* Acknowledge each valid fragment at the receiving browser, even on retries. */
  writeLine(`APPACK ${mac} ${session} ${packetId}`).catch(()=>{});
@@ -263,6 +263,7 @@ function onRadio(type,session,id,extra){
  }
 }
 async function transferFragments(chunks,job){
+ const transferStart=performance.now();
  let next=0,completed=0,fatal=null;const inflight=new Map();
  while((completed<chunks.length)&&!fatal){
   while(next<chunks.length&&inflight.size<chosenWindow()){
@@ -274,9 +275,17 @@ async function transferFragments(chunks,job){
   const result=await Promise.race(inflight.values());inflight.delete(result.i);
   if(result.error){recordLinkFailure();fatal=result.error;break;}
   completed++;recordLinkResult(result.ms,result.attempts);
-  if(job.record)await setProgress(job.record,Math.round(completed*100/chunks.length));
+  if(job.record){
+    const elapsed=Math.max(0.001,(performance.now()-transferStart)/1000);
+    job.record.speedKbps=((completed/chunks.length)*(job.record.kind==='image'?job.record.bytes.length:P.textBytes(job.record.text).length))/1024/elapsed;
+    await setProgress(job.record,Math.round(completed*100/chunks.length));
+  }
  }
  if(fatal){await Promise.allSettled([...inflight.values()]);throw fatal;}
+ if(job.record && job.record.kind==='image'){
+   linkStats.lastKBs=job.record.bytes.length/1024/Math.max(.001,(performance.now()-transferStart)/1000);
+   updateLinkBadge();
+ }
 }
 async function runTransfers(){
  if(runningTransfers||!verified||!secretKey)return;runningTransfers=true;
@@ -314,7 +323,7 @@ function parseLine(raw){const s=raw.trim();if(!s)return;
  }
  if(s.startsWith('RATE_ERROR|')){console.warn('Radio PHY configuration:',s);toast('ESP32 PHY rate could not be applied; falling back to safe rate.');return;}
  if(s.startsWith('RATE|')||s.startsWith('PEER|'))return;
- if(s.startsWith('READY|')){const parts=s.split('|');if(!parts.includes('PROTO=2')){toast('Incompatible firmware. Flash working Phase 1.2/1.3 firmware.');return;}const mac=parts[1];if(!/^[0-9A-Fa-f:]{17}$/.test(mac))return;if(verified&&localMac===mac)return;void onReady(mac);return;}
+ if(s.startsWith('READY|')){const parts=s.split('|');if(!parts.includes('PROTO=2')||!parts.includes('CAP=228')){if(!firmwareMismatchNotified){toast('Flash Phase 1.4.3 firmware on BOTH boards (CAP=228).');firmwareMismatchNotified=true;}console.warn('Incompatible firmware READY:',s);return;}const mac=parts[1];if(!/^[0-9A-Fa-f:]{17}$/.test(mac))return;if(verified&&localMac===mac)return;void onReady(mac);return;}
  if(s.startsWith('QUEUED|')){const [,session,id,hex]=s.split('|'),slot=radioByHex.get(hex);if(slot){slot.wire=`${session}:${id}`;radioByWire.set(slot.wire,slot);}return;}
  if(s.startsWith('RX|')){const [,mac,session,id,data]=s.split('|');if(mac&&session&&id&&data)void processRx(mac,session,id,data);return;}
  if(/^(SENT|DELIVERED|FAILED|RETRY|RADIO_ERROR)\|/.test(s)){const [type,session,id,extra]=s.split('|');if(type==='RADIO_ERROR')console.warn('ESP-NOW:',extra);else onRadio(type,session,id,extra);return;}
@@ -322,7 +331,7 @@ function parseLine(raw){const s=raw.trim();if(!s)return;
 }
 function consume(data){serialBuffer+=new TextDecoder().decode(data);let i;while((i=serialBuffer.indexOf('\n'))>=0){parseLine(serialBuffer.slice(0,i));serialBuffer=serialBuffer.slice(i+1);}if(serialBuffer.length>8192)serialBuffer='';}
 async function readLoop(){try{while(port?.readable&&!closing){reader=port.readable.getReader();try{while(!closing){const {value,done}=await reader.read();if(done)break;if(value)consume(value);}}finally{reader.releaseLock();reader=null;}if(!closing&&port?.readable)await wait(100);}}catch(e){if(!closing)toast('Serial disconnected: '+e.message);}finally{if(!closing){readPromise=null;void disconnect();}}}
-async function onReady(mac){localMac=mac.toUpperCase();verified=true;
+async function onReady(mac){firmwareMismatchNotified=false;localMac=mac.toUpperCase();verified=true;
  void writeLine('RATE '+linkPreference.toUpperCase()).catch(()=>{});if(handshakeTimer){clearInterval(handshakeTimer);handshakeTimer=null;}try{
  const saved=await dbGet('keys',macKey());secretKey=saved?.key||null;
  try{setName(localStorage.getItem(nameKey())||localStorage.getItem('offgrid_phase13_name_'+macKey().replace(/:/g,'-'))||'Nearby node');}catch{setName('Nearby node');}
@@ -405,11 +414,11 @@ function showRename(){showDialog('Contact name',body=>{body.append(el('p','','Th
 async function clearHistory(){if(!verified||!secretKey)return;if(runningTransfers||pendingRadio()||transferQueue.length){toast('Finish active transfers before clearing history.');return;}if(!confirm('Delete encrypted chat history for this ESP32 from this browser? This cannot be undone.'))return;
  await wipeStored();records=[];recordMap.clear();revokePhotos();renderHistory();toast('Local chat history cleared.');closeDialog();}
 function showInfo(){showDialog('Chat information',body=>{[['Contact',activeContact],['Your ESP32',localMac||'Disconnected'],['Protocol','ESP-NOW firmware protocol 2 / encrypted app protocol OGM4'],['Security',secretKey?'AES-256-GCM, 256-bit random shared key':'Not paired'],['Photo target',`${Math.round(photoBudget()/1024)} KB optimized, 96 KB absolute`],['Radio PHY',radioTelemetry.available?`${radioTelemetry.phy} Mbps TX, RSSI ${radioTelemetry.rssi===null?'unknown':radioTelemetry.rssi+' dBm'}`:'Waiting for telemetry'],['Link profile',`${linkPreference}; adaptive PHY and 1–3 fragments in flight`],['Storage','AES-GCM encrypted local IndexedDB']].forEach(([a,b])=>{const line=el('div','info-line');line.append(el('span','',a),el('strong','',b));body.append(line);});body.append(el('p','','Grey single tick = transmitted; grey double tick = peer decrypted and confirmed; blue double tick = peer app reported it was viewed. Browser history is stored encrypted at rest.'));});}
-function showSettings(){showDialog('Settings',body=>{body.append(el('p','','Phase 1.4.2: adaptive radio PHY (1/6/12 Mbps), reliable encrypted chat, and an in-app photo gallery.'));
+function showSettings(){showDialog('Settings',body=>{body.append(el('p','','Phase 1.4.3: callback-paced radio TX, larger fragments and adaptive radio PHY (1/6/12 Mbps), reliable encrypted chat, and an in-app photo gallery.'));
  const linkLabel=el('label','','Transfer profile');body.append(linkLabel);const linkSelect=document.createElement('select');linkSelect.className='setting-select';
  [['auto','Auto · adapts 1–3 fragments in flight based on ACK latency/retries'],['range','Range first · 1 fragment in flight, ~48 KB images'],['speed','Speed first · up to 3 fragments in flight, ~72 KB images']].forEach(([v,t])=>{const opt=document.createElement('option');opt.value=v;opt.textContent=t;linkSelect.append(opt);});
  linkSelect.value=linkPreference;linkSelect.onchange=()=>{linkPreference=linkSelect.value;try{localStorage.setItem('offgrid_link_preference',linkPreference);}catch{}if(verified)void writeLine('RATE '+linkPreference.toUpperCase()).catch(()=>{});updateLinkBadge();};body.append(linkSelect);
- body.append(el('p','','Link quality is estimated from receiver acknowledgments and retries, not measured distance. Phase 1.4.2 firmware adapts unicast transmit PHY between 1/6/12 Mbps using RSSI and successful acknowledgments; Range first locks 1 Mbps. Image size and packet concurrency also adapt. Actual range depends on interference and antenna orientation.')); 
+ body.append(el('p','','Link quality is estimated from receiver acknowledgments and retries, not measured distance. Phase 1.4.3 firmware adapts unicast transmit PHY between 1/6/12 Mbps using RSSI and successful acknowledgments; Range first locks 1 Mbps. Image size and packet concurrency also adapt. Actual range depends on interference and antenna orientation.')); 
  const modeLabel=el('label','','Image optimization');body.append(modeLabel);const select=document.createElement('select');select.className='setting-select';
  [['hq','Optimized WebP/JPEG (adaptive 48–72 KB target, may resize)'],['lossless','Lossless PNG + metadata stripping (reject if >96 KB)']].forEach(([v,t])=>{const opt=document.createElement('option');opt.value=v;opt.textContent=t;select.append(opt);});select.value=imageMode;select.onchange=()=>{imageMode=select.value;try{localStorage.setItem('offgrid_image_mode',imageMode);}catch{}updateLinkBadge();};body.append(select);
  body.append(el('p','','Metadata stripping does not make photos tiny. High-quality mode can reduce dimensions and introduce slight loss; lossless PNG keeps the canvas pixels exact but may not fit through this radio link.'));
@@ -443,4 +452,4 @@ document.addEventListener('visibilitychange',sendReadReceipts);window.addEventLi
 window.addEventListener('beforeunload',revokePhotos);
 setInterval(pruneIncoming,45000);
 (async()=>{try{db=await openDb();}catch(e){toast('IndexedDB unavailable. Encrypted storage cannot work: '+e.message);}refreshStatus();})();
-console.info('OffGrid Phase 1.4.2 — adaptive ESP-NOW PHY + encrypted gallery.');
+console.info('OffGrid Phase 1.4.3 — callback-paced radio TX, 208-byte encrypted fragments, adaptive PHY and encrypted gallery.');

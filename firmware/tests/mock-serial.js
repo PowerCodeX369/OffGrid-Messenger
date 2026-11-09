@@ -23,7 +23,7 @@
           this._push=(line)=>{ctrl.enqueue(new TextEncoder().encode(line+'\n'));};
           this.writable=new WritableStream({write(data){
             const text=new TextDecoder().decode(data).trim();
-            if(text==='STATUS')p._push(`READY|${mac}|CHANNEL=6|SESSION=${node==='A'?333:444}|PROTO=2`);
+            if(text==='STATUS')p._push(`READY|${mac}|CHANNEL=6|SESSION=${node==='A'?333:444}|PROTO=2|CAP=228|TXDONE=1`);
             else if(text.startsWith('MSGHEX ')){
               const hex=text.slice(7),id=seq++,session=node==='A'?333:444;
               p._push(`QUEUED|${session}|${id}|${hex}`);
