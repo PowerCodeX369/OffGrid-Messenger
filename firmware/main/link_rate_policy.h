@@ -8,6 +8,20 @@
 #define OG_RATE_SPEED 2u
 #define OG_RATE_LR500 3u
 #define OG_RATE_LR250 4u
+/* A missing application receipt does not imply an RF outage.  Require
+ * multiple missing periodic HELLOs before allowing a fallback, and give
+ * each recovery step a bounded cooldown. All times are monotonic ms. */
+#define OG_PHY_REGULAR_WINDOW_MS 6000LL
+static inline bool og_phy_recent_regular_contact(int64_t now, int64_t last_regular) {
+    return last_regular>0 && now>=last_regular &&
+           now-last_regular<=OG_PHY_REGULAR_WINDOW_MS;
+}
+static inline bool og_phy_should_fallback_on_app_timeout(int64_t now,
+                                                       int64_t last_regular,
+                                                       int64_t hold_until) {
+    return now>=hold_until && !og_phy_recent_regular_contact(now,last_regular);
+}
+
 static inline uint8_t og_rate_target(uint8_t current, int32_t rssi, uint8_t mode) {
     if(mode==OG_RATE_RANGE || rssi<=-100)return 1;
     /* Speed profile relaxes thresholds only slightly; reliability is still

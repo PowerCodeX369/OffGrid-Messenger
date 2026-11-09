@@ -73,8 +73,8 @@
 #define LR_HELLO_ID 0x4C523235u /* LR25, proprietary probe flag */
 #define LR_PERSISTED_PEER_KEY "peer_mac"
 #define PEER_TIMEOUT_MS 12000
-#define PHY_DWELL_MS 4200
-#define PHY_HOLD_MS 10000
+#define PHY_DWELL_MS 7000 /* minimum between RSSI-driven PHY changes */
+#define PHY_HOLD_MS 12000 /* recovery cooldown, not extended by each retry */
 #define EVENT_QUEUE_LEN 32
 #define SERIAL_LINE 512
 #define LINK_REPORT_MS 2500
@@ -139,7 +139,7 @@ static uint32_t tx_ok=0,tx_fail=0,rx_ok=0,delivery_count=0,retry_count=0,failure
 /* New state is isolated from original ACK / encryption / USB protocol. */
 static uint8_t peer_mac[6];
 static bool peer_known=false;
-static int64_t peer_last_seen_ms=0, last_hello_ms=0, last_phy_change_ms=0;
+static int64_t peer_last_seen_ms=0, last_regular_peer_ms=0, last_hello_ms=0, last_phy_change_ms=0;
 static int64_t last_lr_probe_ms=0;
 static bool lr_supported=false;
 static bool peer_persisted=false;
@@ -153,6 +153,7 @@ static uint8_t phy_mbps=1;
 static uint8_t link_mode=OG_RATE_AUTO;
 static uint32_t hello_rx=0, hello_tx=0, valid_rssi_samples=0;
 static uint32_t phy_changes=0, rate_errors=0;
+static uint32_t ack_rf_downgrades_suppressed=0, lr_probe_downgrades_suppressed=0;
 static bool phy_configured=false;
 static int64_t last_report_ms=0;
 static int64_t last_ready_beacon_ms=0;
@@ -335,10 +336,13 @@ static void emit_link(void){
     ble_printf("LINK|%s|RSSI=%ld|PHY=%s|MODE=%s|OK=%" PRIu32
            "|RETRY=%" PRIu32 "|FAIL=%" PRIu32 "|TXOK=%" PRIu32
            "|TXFAIL=%" PRIu32 "|RX=%" PRIu32 "|HELLO=%" PRIu32 "|CHANGES=%" PRIu32
-           "|LR=%u|LRPROBE=%" PRIu32 "|LRRX=%" PRIu32 "|LRFALLBACK=%" PRIu32 "|PHYMODE=%s\n",
+           "|LR=%u|LRPROBE=%" PRIu32 "|LRRX=%" PRIu32 "|LRFALLBACK=%" PRIu32 "|PHYMODE=%s"
+           "|REGAGE=%" PRIi64 "|ACKRF_SKIP=%" PRIu32 "|PROBE_SKIP=%" PRIu32 "\n",
            peer,(long)remote_rssi,peer_known?phy_label():"1",link_mode_name(),
            delivery_count,retry_count,failure_count,tx_ok,tx_fail,rx_ok,hello_rx,phy_changes,
-           (unsigned)lr_supported,lr_probe_tx,lr_probe_rx,lr_fallbacks,phy_mode_label());
+           (unsigned)lr_supported,lr_probe_tx,lr_probe_rx,lr_fallbacks,phy_mode_label(),
+           last_regular_peer_ms>0 ? (now_ms()-last_regular_peer_ms) : -1,
+           ack_rf_downgrades_suppressed,lr_probe_downgrades_suppressed);
 }
 static bool parse_mac(const char *s, uint8_t *m) {
     unsigned a[6]; int end = 0;
@@ -439,13 +443,13 @@ static bool any_pending(void) {
 }
 /* A successful 1 Mbps broadcast discovery frame is our independent RSSI sample.
  * A peer can appear even when there are no chat messages yet. */
-static bool learn_or_observe_peer(const uint8_t *mac, int8_t rssi) {
+static bool learn_or_observe_peer(const uint8_t *mac, int8_t rssi, bool regular_frame) {
     if(!peer_known){
         if(!ensure_peer(mac))return false;
         memcpy(peer_mac,mac,6);peer_known=true;
         memcpy(last_remote_mac,mac,6);have_remote=true;
         phy_configured=false;phy_mbps=1;
-        remote_rssi=-127;valid_rssi_samples=0;
+        remote_rssi=-127;valid_rssi_samples=0;last_regular_peer_ms=0;
         rate_hold_until_ms=0;last_phy_change_ms=now_ms();
         /* Keep first-time nearby discovery at the original 1-Mbps rate.
          * An explicit LR recovery probe will select 250 Kbps before replying. */
@@ -456,9 +460,14 @@ static bool learn_or_observe_peer(const uint8_t *mac, int8_t rssi) {
     }
     if(memcmp(mac,peer_mac,6)!=0)return false;
     peer_last_seen_ms=now_ms();
-    if(rssi>=-105 && rssi<=-5){
-        remote_rssi=(remote_rssi==-127)?rssi:(remote_rssi*7+rssi*3)/10;
-        if(valid_rssi_samples<1000000)valid_rssi_samples++;
+    /* LR probe/reply RSSI must not be mistaken for healthy normal-PHY
+     * contact: doing so caused probe -> LR250 -> RSSI upgrade loops. */
+    if(regular_frame){
+        last_regular_peer_ms=peer_last_seen_ms;
+        if(rssi>=-105 && rssi<=-5){
+            remote_rssi=(remote_rssi==-127)?rssi:(remote_rssi*7+rssi*3)/10;
+            if(valid_rssi_samples<1000000)valid_rssi_samples++;
+        }
     }
     return true;
 }
@@ -466,8 +475,19 @@ static bool learn_or_observe_peer(const uint8_t *mac, int8_t rssi) {
  * attempting to infer distance from an RSSI number alone. A weak link is
  * progressively stepped down to LR and never forcibly reset to 1 Mbps. */
 static void downgrade_on_missing_ack(void) {
-    rate_hold_until_ms=now_ms()+PHY_HOLD_MS;
+    const int64_t t=now_ms();
     if(!peer_known)return;
+    /* Keep explicit manual modes locked unless the user changes them. */
+    if(link_mode==OG_RATE_RANGE || link_mode==OG_RATE_LR250 || link_mode==OG_RATE_LR500)return;
+    /* NO_APP_RECEIPT is an app-level timeout, NOT proof of RF failure.
+     * The web/BLE client can be busy even while regular ESP-NOW HELLOs
+     * arrive. Never downshift for that situation; only recover when
+     * regular radio contact has actually gone stale. */
+    if(!og_phy_should_fallback_on_app_timeout(t,last_regular_peer_ms,rate_hold_until_ms)) {
+        ack_rf_downgrades_suppressed++;
+        return;
+    }
+    rate_hold_until_ms=t+PHY_HOLD_MS;
     uint8_t next=og_lr_fallback(phy_mbps,lr_supported);
     if(next!=phy_mbps){
         if(next==50||next==25)lr_fallbacks++;
@@ -488,15 +508,23 @@ static void adjust_phy(void) {
         /* Do NOT forget the MAC: at distances beyond normal 1 Mbps we need
          * LR unicast to a known peer for reconnect and ACK recovery. */
         rate_hold_until_ms=t+PHY_HOLD_MS;
-        if(lr_supported && phy_mbps!=25)(void)set_peer_phy(25);
+        if(lr_supported && phy_mbps!=25 &&
+           (link_mode==OG_RATE_AUTO || link_mode==OG_RATE_SPEED))
+            (void)set_peer_phy(25);
         return;
     }
     uint8_t desired=target_phy_for_link();
     if(desired==phy_mbps)return;
+    /* Explicit RATE controls are immediate, and remain useful for testing. */
+    if(link_mode!=OG_RATE_AUTO && link_mode!=OG_RATE_SPEED){
+        (void)set_peer_phy(desired);return;
+    }
     const bool upgrading=og_lr_rank(desired)>og_lr_rank(phy_mbps);
-    if(t<rate_hold_until_ms && upgrading)return;
-    /* Increasing rate requires stable samples, dwell time and empty queue. */
-    if(upgrading && (t-last_phy_change_ms<PHY_DWELL_MS || any_pending()))return;
+    /* No RSSI-driven changes while recently hearing ONLY LR probes.
+     * Regular HELLO/data/receipt traffic must confirm proximity. */
+    if(!og_phy_recent_regular_contact(t,last_regular_peer_ms))return;
+    if(t-last_phy_change_ms<PHY_DWELL_MS)return;
+    if(upgrading && (t<rate_hold_until_ms || any_pending()))return;
     (void)set_peer_phy(desired);
 }
 static void send_hello(void) {
@@ -508,6 +536,8 @@ static void send_hello(void) {
     if(send_frame(BROADCAST,&hello)==ESP_OK)hello_tx++;
 }
 static void send_lr_probe(void) {
+    /* Explicit RANGE mode must never silently trigger an LR PHY probe. */
+    if(link_mode==OG_RATE_RANGE)return;
     if(!lr_supported || !peer_known ||
        (now_ms()-peer_last_seen_ms<LR_PROBE_DELAY_MS && link_mode!=OG_RATE_LR250 && link_mode!=OG_RATE_LR500))return;
     if(now_ms()-last_lr_probe_ms<LR_PROBE_MS)return;
@@ -705,16 +735,22 @@ static void process_event(const event_t *e) {
     }
     if(e->type!=EV_RX)return;
     const frame_t *f=&e->frame;
-    if(!learn_or_observe_peer(e->mac,e->rssi))return;
+    const bool regular_frame=!(f->type==TYPE_HELLO &&
+        (f->id==LR_HELLO_ID || f->id==LR_HELLO_ID+1));
+    if(!learn_or_observe_peer(e->mac,e->rssi,regular_frame))return;
     if(f->type==TYPE_HELLO){
         hello_rx++;
         if(f->id==LR_HELLO_ID){
             lr_probe_rx++;
             if(link_mode==OG_RATE_AUTO && lr_supported){
-                /* An LR recovery probe needs an LR reply, not a 1-Mbps
-                 * broadcast that may be below the distant peer's sensitivity. */
-                rate_hold_until_ms=now_ms()+PHY_HOLD_MS;
-                (void)set_peer_phy(25);
+                /* If normal traffic is healthy, an unsolicited recovery probe
+                 * must not knock us down to LR250. Otherwise reply at LR. */
+                if(!og_phy_recent_regular_contact(now_ms(),last_regular_peer_ms)){
+                    rate_hold_until_ms=now_ms()+PHY_HOLD_MS;
+                    (void)set_peer_phy(25);
+                }else{
+                    lr_probe_downgrades_suppressed++;
+                }
             }
             if(lr_supported){
                 frame_t reply={0};
