@@ -3,7 +3,7 @@
    Keys are stored on each ESP32 and imported only into browser RAM over physical USB. No external servers. */
 const P=globalThis.OGP,$=id=>document.getElementById(id);
 const MAX_CHARS=500,MAX_PHOTO=96*1024,STORE='OffGridMessengerV14';
-const APP_VERSION='1.4.9-diagnostics';
+const APP_VERSION='1.4.10.3-selective-ack';
 const stateRank={sending:0,queued:0,sent:1,failed:1,delivered:2,read:3};
 const encoder=new TextEncoder();
 let port=null,reader=null,writer=null,readPromise=null,closing=false,verified=false,serialBuffer='',writeChain=Promise.resolve(),handshakeTimer=null;
@@ -37,6 +37,12 @@ function diagnoseUsb(){
 
 let db=null,records=[],recordMap=new Map(),photoUrls=new Map(),incoming=new Map(),recentTransfers=new Map();
 let transferQueue=[],activeTransfer=null,runningTransfers=false;
+/* Photo-only selective ACK. Groups are per sender MAC and ESP32 boot-session;
+ * IDs remain arbitrary (do not assume sequential or shared with other traffic). */
+const sackGroups=new Map();
+const SACK_GROUP_MAX=6, SACK_FLUSH_MS=75;
+let selectivePhotoAcks=true;
+
 const radioByHex=new Map(),radioByWire=new Map();
 const linkStats={samples:0,avgMs:0,cleanStreak:0,retries:0,mode:'starting',window:1,lastKBs:0};
 let linkPreference='auto';
@@ -47,7 +53,7 @@ let imageMode='hq';
 let radioTelemetry={peer:'NONE',rssi:null,phy:1,mode:'AUTO',delivered:0,retries:0,failures:0,txok:0,txfail:0,rx:0,hello:0,available:false};
 let selectedPhotoId=null,viewerZoomed=false,viewerTouchX=null,viewerPreviousFocus=null;
 /* Isolated benchmark state; measurements never enter message history. */
-const speedDiagnostics={busy:false,serial:null,full:null,results:{},output:null,runButton:null,capable:false};
+const speedDiagnostics={busy:false,serial:null,full:null,results:{},output:null,runButton:null,capable:false,sackCapable:false};
 const benchToken=()=>crypto.getRandomValues(new Uint32Array(1))[0]||1;
 const kbps=(bytes,ms)=>bytes/1024/Math.max(.001,ms/1000);
 function diagnosticLine(line){
@@ -122,10 +128,10 @@ async function runUsbOutput(){
 async function runRadioBenchmark(){
  return serialBenchmark('radio',120000,test=>writeLine(`RBENCH ${test.token} 32`));
 }
-async function runFullBenchmark(){
+async function runFullBenchmark(batch=false){
  if(!secretKey)throw Error('Configure the same encryption key on both nodes first');
  return new Promise((resolve,reject)=>{
-  const job={kind:'probe',control:false,probeId:P.newId(),created:Date.now(),started:performance.now(),fragmentRTTs:[],size:8192};
+  const job={kind:'probe',control:false,batch,probeId:P.newId(),created:Date.now(),started:performance.now(),fragmentRTTs:[],size:8192};
   const finish=(err,value)=>{
    if(speedDiagnostics.full!==bench)return;
    clearTimeout(bench.timer);speedDiagnostics.full=null;
@@ -139,14 +145,14 @@ async function runFullBenchmark(){
 }
 function showSpeedDiagnostics(){
  showDialog('Connection speed diagnostics',body=>{
-  body.append(el('p','','Isolated tests compare USB upload, USB download, ESP-NOW radio with device-level ACK, and a fully encrypted browser-to-browser transfer. Both nodes must run the new diagnostic firmware. No test data goes into chat history.'));
+  body.append(el('p','','Tests USB upload/download, ESP-NOW-only, encrypted legacy transfer, and encrypted selective-ACK transfer. Flash both nodes with 1.4.10.3 and keep the peer browser connected. No test data enters chat history.'));
   const output=el('pre','diagnostic-results',speedDiagnostics.capable?'Ready. Connect both boards, then run one test at a time.\n':'Phase 1.4.9 diagnostic firmware not detected. Flash both boards before running.\n');body.append(output);
   const actions=el('div','diagnostic-actions'),run=el('button','primary-button','Run all tests'),copy=el('button','quiet-button','Copy results');
   speedDiagnostics.output=output;speedDiagnostics.runButton=run;
   run.onclick=()=>void runDiagnostics();
   copy.onclick=()=>navigator.clipboard.writeText(output.textContent).then(()=>toast('Results copied')).catch(()=>toast('Select the results to copy them'));
   actions.append(run,copy);body.append(actions);
-  body.append(el('p','','USB throughput measures transport with no ESP-NOW. Radio throughput uses 32 direct ESP32-to-ESP32 packets and firmware ACKs. Full path uses an encrypted 8 KiB probe and waits for the other browser to authenticate it. These tests report delivered payload throughput, not PHY speed.'));
+  body.append(el('p','','USB/radio tests are unchanged. The two encrypted 8 KiB probes compare legacy per-fragment ACK and the new selective-batch ACK over the same hardware. Each requires a final authenticated acknowledgment. Throughput is delivered application data, not PHY speed.'));
  });
 }
 async function runDiagnostics(){
@@ -157,8 +163,11 @@ async function runDiagnostics(){
  speedDiagnostics.busy=true;if(speedDiagnostics.runButton)speedDiagnostics.runButton.disabled=true;
  speedDiagnostics.output.textContent='';speedDiagnostics.results={};
  const begin=performance.now();
- const tests=[['USB PC → ESP32',runUsbInput,'usbIn'],['USB ESP32 → PC',runUsbOutput,'usbOut'],['ESP-NOW radio only',runRadioBenchmark,'radio'],['Encrypted browser-to-browser',runFullBenchmark,'full']];
- diagPrint('OffGrid diagnostic release 1.4.9 · '+new Date().toLocaleString());
+ const tests=[['USB PC → ESP32',runUsbInput,'usbIn'],['USB ESP32 → PC',runUsbOutput,'usbOut'],
+  ['ESP-NOW radio only',runRadioBenchmark,'radio'],
+  ['Encrypted browser-to-browser (legacy)',()=>runFullBenchmark(false),'full']];
+ if(speedDiagnostics.sackCapable)tests.push(['Encrypted browser-to-browser (selective ACK)',()=>runFullBenchmark(true),'sack']);
+ diagPrint('OffGrid diagnostic release 1.4.10.3 selective ACK · '+new Date().toLocaleString());
  diagPrint(`Local node: ${localMac||'unknown'} · PHY: ${radioTelemetry.phy} Mbps · RSSI: ${radioTelemetry.rssi??'unknown'} dBm`);
  for(const [label,fn,key] of tests){
   if(!verified){diagPrint('Stopped: ESP32 disconnected.');break;}
@@ -168,7 +177,11 @@ async function runDiagnostics(){
    diagPrint(`${label}: ${kbps(result.bytes,result.ms).toFixed(2)} KiB/s · ${result.bytes} bytes in ${(result.ms/1000).toFixed(2)} s`);
    if(key==='usbIn'||key==='usbOut')diagPrint(`  ESP32 elapsed: ${result.nodeMs} ms · ${result.packets} packets`);
    if(key==='radio')diagPrint(`  ${result.ok}/${result.requested} delivered · lost ${result.lost} · retries ${result.retries} · mean MCU ACK ${result.rttMs} ms · PHY ${result.phy} Mbps`);
-   if(key==='full')diagPrint(`  ${result.frames} fragments · avg browser fragment ACK ${result.avgFragmentMs.toFixed(0)} ms · authenticated final ACK confirmed`);
+   if(key==='full'||key==='sack')diagPrint(`  ${result.frames} fragments · avg browser fragment ACK ${result.avgFragmentMs.toFixed(0)} ms · authenticated final ACK confirmed`);
+   if(key==='sack'&&speedDiagnostics.results.full){
+     const old=speedDiagnostics.results.full;
+     diagPrint(`  Selective ACK speedup vs. legacy: ${(kbps(result.bytes,result.ms)/kbps(old.bytes,old.ms)).toFixed(2)}×`);
+   }
   }catch(e){diagPrint(`${label}: FAILED — ${e.message}`);}
  }
  const d=speedDiagnostics.results;
@@ -185,7 +198,7 @@ async function runDiagnostics(){
  speedDiagnostics.busy=false;if(speedDiagnostics.runButton)speedDiagnostics.runButton.disabled=false;
 }
 
-try{theme=localStorage.getItem('offgrid_theme')==='light'?'light':'dark';imageMode=localStorage.getItem('offgrid_image_mode')==='lossless'?'lossless':'hq';linkPreference=['auto','range','speed'].includes(localStorage.getItem('offgrid_link_preference'))?localStorage.getItem('offgrid_link_preference'):'auto';adaptivePhotos=localStorage.getItem('offgrid_adaptive_photos')!=='off';}catch{}
+try{theme=localStorage.getItem('offgrid_theme')==='light'?'light':'dark';imageMode=localStorage.getItem('offgrid_image_mode')==='lossless'?'lossless':'hq';linkPreference=['auto','range','speed'].includes(localStorage.getItem('offgrid_link_preference'))?localStorage.getItem('offgrid_link_preference'):'auto';adaptivePhotos=localStorage.getItem('offgrid_adaptive_photos')!=='off';selectivePhotoAcks=localStorage.getItem('offgrid_sack_photos')!=='off';}catch{}
 document.body.classList.toggle('light',theme==='light');
 const macKey=()=>localMac||'unknown';
 const nameKey=()=>`offgrid_phase14_name_${macKey()}`;
@@ -215,6 +228,16 @@ function chosenWindow(job=activeTransfer){
  // A deliberate boundary: text and control receipts never use speculative pipelining.
  // Only photo jobs can raise concurrency, starting at 1 and learning from real ACKs.
  const kind=job?.kind==='image'&&!job?.control?'image':'text';
+ const fast=(kind==='image' && selectivePhotoAcks && speedDiagnostics.sackCapable && adaptivePhotos) ||
+            (job?.kind==='probe' && job?.batch && speedDiagnostics.sackCapable);
+ if(fast){
+   // C firmware MAX_PENDING=8; reserve two slots for scheduling margin.
+   // A 6-slot window is large enough for one selective ACK group.
+   const rssi=radioTelemetry.rssi;
+   if(linkPreference==='range'||(Number.isFinite(rssi)&&rssi< -79))return 3;
+   if(photoFlow.cooldown>0)return 3;
+   return 6;
+ }
  return photoFlow.window({kind,rssi:radioTelemetry.rssi,enabled:adaptivePhotos,
    profile:linkPreference,txFailures:0});
 }
@@ -236,7 +259,7 @@ function updateLinkBadge(){
  if(linkStats.samples>3)quality=linkStats.mode==='strong'?'strong':linkStats.mode==='weak'?'weak':'steady';
  const phy=radioTelemetry.available?`adaptive ${radioTelemetry.phy} Mbps PHY`:'radio discovery starting';
  const signal=radioTelemetry.available&&radioTelemetry.rssi!==null?`${radioTelemetry.rssi} dBm`:'signal —';
- node.textContent=`${name} · ${phy} · ${signal} · photo window ${speed} · ~${budget} KB${photoFlow.samples?` · ACK ${Math.round(photoFlow.emaMs)} ms`:``}${linkStats.lastKBs?` · ${linkStats.lastKBs.toFixed(1)} KB/s`:``}`;
+ node.textContent=`${name} · ${phy} · ${signal} · ${selectivePhotoAcks&&speedDiagnostics.sackCapable&&adaptivePhotos?"batch ACK":"legacy ACK"} · photo window ${speed} · ~${budget} KB${photoFlow.samples?` · ACK ${Math.round(photoFlow.emaMs)} ms`:``}${linkStats.lastKBs?` · ${linkStats.lastKBs.toFixed(1)} KB/s`:``}`;
  node.title=`ESP-NOW peer: ${radioTelemetry.peer}. TX successful: ${radioTelemetry.txok}, TX failures: ${radioTelemetry.txfail}, received: ${radioTelemetry.rx}, discovery beacons received: ${radioTelemetry.hello}. Reported PHY rate is not actual file throughput.`;
 }
 function recordLinkResult(rtt,attempts,isPhoto=false){
@@ -424,11 +447,42 @@ async function adoptNodeKey(raw){
 
 function incomingKey(mac,session,transferId){return mac+':'+session+':'+transferId;}
 function pruneIncoming(){const t=Date.now();for(const [k,v] of incoming){if(t-v.updated>4*60_000)incoming.delete(k);}for(const [k,t0] of recentTransfers){if(t-t0>12*60_000)recentTransfers.delete(k);}while(recentTransfers.size>512)recentTransfers.delete(recentTransfers.keys().next().value);}
+function flushSelectiveAck(key){
+ const group=sackGroups.get(key);
+ if(!group)return;
+ sackGroups.delete(key);
+ if(group.timer)clearTimeout(group.timer);
+ if(!verified||!writer)return;
+ const ids=[...group.ids];
+ // The legacy APPACK command is the on-demand fallback if the batch USB
+ // write fails. Sender's firmware also handles lost batch ACKs by retrying
+ // the original data; duplicate RX then generates the old single ACK.
+ writeLine(`APPACKB ${group.mac} ${group.session} ${ids.join(' ')}`).catch(()=>{
+  if(writer)for(const id of ids)writeLine(`APPACK ${group.mac} ${group.session} ${id}`).catch(()=>{});
+ });
+}
+function queueSelectiveAck(mac,session,packetId){
+ const key=`${mac}:${session}`;
+ let group=sackGroups.get(key);
+ if(!group){
+  group={mac,session,ids:new Set(),timer:null};
+  sackGroups.set(key,group);
+  group.timer=setTimeout(()=>flushSelectiveAck(key),SACK_FLUSH_MS);
+ }
+ group.ids.add(packetId);
+ if(group.ids.size>=SACK_GROUP_MAX)flushSelectiveAck(key);
+}
+function clearSelectiveAcks(){
+ for(const group of sackGroups.values())if(group.timer)clearTimeout(group.timer);
+ sackGroups.clear();
+}
 async function processRx(mac,session,packetId,rawHex){
  let fr;try{if(!/^[0-9A-Fa-f]{40,456}$/.test(rawHex))return;fr=P.parseFrame(P.unhex(rawHex));}catch{return;}if(!fr||!secretKey||!verified)return;
  const key=incomingKey(mac,session,fr.transferId);
- /* Acknowledge each valid fragment at the receiving browser, even on retries. */
- writeLine(`APPACK ${mac} ${session} ${packetId}`).catch(()=>{});
+ /* All normal messages and controls retain the original immediate APPACK.
+    Bulk image frames use one selective acknowledgment for up to six radio IDs. */
+ if(fr.bulk && speedDiagnostics.sackCapable)queueSelectiveAck(mac,session,packetId);
+ else writeLine(`APPACK ${mac} ${session} ${packetId}`).catch(()=>{});
  if(recentTransfers.has(key))return;
  let state=incoming.get(key);
  if(!state){if(incoming.size>=5){const oldest=incoming.keys().next().value;incoming.delete(oldest);}state={count:fr.count,total:fr.length,chunks:Array(fr.count),received:0,updated:Date.now()};incoming.set(key,state);}
@@ -483,7 +537,9 @@ async function sealJob(job){
  else{kind=P.types.image;const r=job.record,mimeNum=({'image/webp':0,'image/png':1,'image/jpeg':2})[r.mime];if(mimeNum===undefined)throw Error('Unsupported image encoding');body=P.concat(Uint8Array.of(mimeNum),r.bytes);width=r.width;height=r.height;}
  const plain=P.makeEnvelope(kind,id,body,Math.floor(Date.now()/1000),width,height);
  const ciphertext=await P.seal(secretKey,plain,transferId);
- return P.frames(transferId,ciphertext);
+ return P.frames(transferId,ciphertext,{batch: Boolean(speedDiagnostics.sackCapable &&
+     ((job.kind==='image' && !job.control && selectivePhotoAcks && adaptivePhotos) ||
+      (job.kind==='probe' && job.batch)))});
 }
 async function oneFragment(frame){
  const hex=P.hex(frame),started=performance.now();let lastErr;
@@ -592,7 +648,7 @@ function parseLine(raw){const s=raw.trim();if(!s)return;
  }
  if(s.startsWith('RATE_ERROR|')){console.warn('Radio PHY configuration:',s);toast('ESP32 PHY rate could not be applied; falling back to safe rate.');return;}
  if(s.startsWith('RATE|')||s.startsWith('PEER|'))return;
- if(s.startsWith('READY|')){const parts=s.split('|');speedDiagnostics.capable=parts.includes('DIAG=1');if(!parts.includes('PROTO=2')||!parts.includes('CAP=180')||!parts.includes('STABLE=1')||!parts.includes('NVSKEY=1')){if(!firmwareMismatchNotified){toast('Wrong ESP32 firmware protocol; open Diagnostics to see its READY response.');firmwareMismatchNotified=true;}showUsbHint('Incompatible READY. Expected PROTO=2, CAP=180, STABLE=1, NVSKEY=1.');console.warn('Incompatible firmware READY:',s);return;}const mac=parts[1];if(!/^[0-9A-Fa-f:]{17}$/.test(mac))return;if(verified&&localMac===mac)return;void onReady(mac);return;}
+ if(s.startsWith('READY|')){const parts=s.split('|');speedDiagnostics.capable=parts.includes('DIAG=1');speedDiagnostics.sackCapable=parts.includes('SACK=1');if(!parts.includes('PROTO=2')||!parts.includes('CAP=180')||!parts.includes('STABLE=1')||!parts.includes('NVSKEY=1')){if(!firmwareMismatchNotified){toast('Wrong ESP32 firmware protocol; open Diagnostics to see its READY response.');firmwareMismatchNotified=true;}showUsbHint('Incompatible READY. Expected PROTO=2, CAP=180, STABLE=1, NVSKEY=1.');console.warn('Incompatible firmware READY:',s);return;}const mac=parts[1];if(!/^[0-9A-Fa-f:]{17}$/.test(mac))return;if(verified&&localMac===mac)return;void onReady(mac);return;}
  if(s.startsWith('QUEUED|')){const [,session,id,hex]=s.split('|'),slot=radioByHex.get(hex);if(slot){slot.wire=`${session}:${id}`;radioByWire.set(slot.wire,slot);}return;}
  if(s.startsWith('RX|')){const [,mac,session,id,data]=s.split('|');if(mac&&session&&id&&data)void processRx(mac,session,id,data);return;}
  if(/^(SENT|DELIVERED|FAILED|RETRY|RADIO_ERROR)\|/.test(s)){const [type,session,id,extra]=s.split('|');if(type==='RADIO_ERROR'){console.warn('ESP-NOW:',extra);if(radioTelemetry.txfail<=2)toast('Radio send issue: '+extra+' — check Radio diagnostics in Settings.');}else onRadio(type,session,id,extra);return;}
@@ -600,7 +656,7 @@ function parseLine(raw){const s=raw.trim();if(!s)return;
 }
 function consume(data){serialBuffer+=new TextDecoder().decode(data);let i;while((i=serialBuffer.indexOf('\n'))>=0){parseLine(serialBuffer.slice(0,i));serialBuffer=serialBuffer.slice(i+1);}if(serialBuffer.length>8192)serialBuffer='';}
 async function readLoop(){try{while(port?.readable&&!closing){reader=port.readable.getReader();try{while(!closing){const {value,done}=await reader.read();if(done)break;if(value)consume(value);}}finally{reader.releaseLock();reader=null;}if(!closing&&port?.readable)await wait(100);}}catch(e){if(!closing)toast('Serial disconnected: '+e.message);}finally{if(!closing){readPromise=null;void disconnect();}}}
-async function onReady(mac){firmwareMismatchNotified=false;localMac=mac.toUpperCase();verified=true;
+async function onReady(mac){clearSelectiveAcks();firmwareMismatchNotified=false;localMac=mac.toUpperCase();verified=true;
  if(usbWaitTimer){clearInterval(usbWaitTimer);usbWaitTimer=null;}
  clearUsbHint();
  void writeLine('RATE '+linkPreference.toUpperCase()).catch(()=>{});
@@ -630,7 +686,7 @@ async function connect(){if(!navigator.serial){toast('Use Chromium with Web Seri
 async function disconnect(){if(closing)return;closing=true;
  speedDiagnostics.serial?.reject(Error('USB disconnected during benchmark'));
  speedDiagnostics.full?.reject(Error('USB disconnected during benchmark'));
- speedDiagnostics.capable=false;
+ speedDiagnostics.capable=false;speedDiagnostics.sackCapable=false;clearSelectiveAcks();
  try{if(handshakeTimer)clearInterval(handshakeTimer);handshakeTimer=null;if(usbWaitTimer){clearInterval(usbWaitTimer);usbWaitTimer=null;}if(reader)try{await reader.cancel();}catch{}if(readPromise)try{await readPromise;}catch{}if(writer){try{writer.releaseLock();}catch{}writer=null;}if(port){try{await port.close();}catch{}port=null;}}
  finally{
   finishNodeKeyRequest('get',null,Error('Disconnected'));finishNodeKeyRequest('set',null,Error('Disconnected'));
@@ -727,14 +783,23 @@ function showRename(){showDialog('Contact name',body=>{body.append(el('p','','Th
 async function clearHistory(){if(!verified||!secretKey)return;if(runningTransfers||pendingRadio()||transferQueue.length){toast('Finish active transfers before clearing history.');return;}if(!confirm('Delete encrypted chat history for this ESP32 from this browser? This cannot be undone.'))return;
  await wipeStored();records=[];recordMap.clear();revokePhotos();renderHistory();toast('Local chat history cleared.');closeDialog();}
 function showInfo(){showDialog('Chat information',body=>{[['Contact',activeContact],['Your ESP32',localMac||'Disconnected'],['Protocol','ESP-NOW firmware protocol 2 / encrypted app protocol OGM4'],['Security',secretKey?'AES-256-GCM, 256-bit random shared key':'Not paired'],['Photo target',`${Math.round(photoBudget()/1024)} KB optimized, 96 KB absolute`],['Radio PHY',radioTelemetry.available?`${radioTelemetry.phy} Mbps TX, RSSI ${radioTelemetry.rssi===null?'unknown':radioTelemetry.rssi+' dBm'}`:'Waiting for telemetry'],['Link profile',`${linkPreference}; adaptive PHY; photo window ${chosenWindow({kind:'image',control:false})}; auto ${adaptivePhotos?'on':'off'}`],['Key storage','ESP32 NVS, browser RAM only'],['History','AES-GCM encrypted IndexedDB']].forEach(([a,b])=>{const line=el('div','info-line');line.append(el('span','',a),el('strong','',b));body.append(line);});body.append(el('p','','Grey single tick = transmitted; grey double tick = peer decrypted and confirmed; blue double tick = peer app reported it was viewed. Browser history is stored encrypted at rest.'));});}
-function showSettings(){showDialog('Settings',body=>{body.append(el('p','','Phase 1.4.9: isolated speed diagnostics with adaptive ESP-NOW PHY (1/6/12 Mbps). The original 1.4.5.2 stable firmware remains your rollback. Photo concurrency is separately adjustable.'));
+function showSettings(){showDialog('Settings',body=>{body.append(el('p','','Phase 1.4.10.3: selective photo ACKs and existing speed diagnostics, with adaptive ESP-NOW PHY (1/6/12 Mbps). Phase 1.4.10.2 remains the frozen rollback baseline.'));
  const linkLabel=el('label','','Transfer profile');body.append(linkLabel);const linkSelect=document.createElement('select');linkSelect.className='setting-select';
  [['auto','Auto · balanced photo compression, stable packet flow'],['range','Range first · more compressed photos, ~32 KB'],['speed','Quality first · less compression, ~60 KB']].forEach(([v,t])=>{const opt=document.createElement('option');opt.value=v;opt.textContent=t;linkSelect.append(opt);});
  linkSelect.value=linkPreference;linkSelect.onchange=()=>{linkPreference=linkSelect.value;try{localStorage.setItem('offgrid_link_preference',linkPreference);}catch{}if(verified)void writeLine('RATE '+linkPreference.toUpperCase()).catch(()=>{});updateLinkBadge();};body.append(linkSelect);
  const flowLabel=el('label','','Photo transfer throughput');body.append(flowLabel);const flowSelect=document.createElement('select');flowSelect.className='setting-select';
- [['on','Automatic · 1–3 in-flight fragments based on RSSI and ACK latency'],['off','Stable · always 1 in-flight fragment (instant rollback)']].forEach(([v,t])=>{const opt=document.createElement('option');opt.value=v;opt.textContent=t;flowSelect.append(opt);});
+ [['on','Automatic · up to 6 in-flight batch fragments on strong links'],['off','Stable · legacy one-fragment transfer (instant rollback)']].forEach(([v,t])=>{const opt=document.createElement('option');opt.value=v;opt.textContent=t;flowSelect.append(opt);});
  flowSelect.value=adaptivePhotos?'on':'off';flowSelect.onchange=()=>{adaptivePhotos=flowSelect.value==='on';try{localStorage.setItem('offgrid_adaptive_photos',adaptivePhotos?'on':'off');}catch{}updateLinkBadge();};body.append(flowSelect);
- body.append(el('p','','Adaptive mode only changes encrypted PHOTO-fragment concurrency; texts, acknowledgments, and radio PHY remain on the original stable transport. It starts at one, increases only after many clean acknowledgments and strong RSSI, and falls back on delays or loss. Disable it here instantly if throughput worsens.'));
+ const sackLabel=el('label','','Photo receipt protocol (new in 1.4.10.3)');body.append(sackLabel);
+ const sackSelect=document.createElement('select');sackSelect.className='setting-select';
+ [['on','Selective batch ACK · up to 6 fragments per confirmation'],['off','Legacy · acknowledge every fragment (instant fallback)']].forEach(([v,t])=>{
+   const opt=document.createElement('option');opt.value=v;opt.textContent=t;sackSelect.append(opt);
+ });
+ sackSelect.value=selectivePhotoAcks?'on':'off';
+ sackSelect.onchange=()=>{selectivePhotoAcks=sackSelect.value==='on';try{localStorage.setItem('offgrid_sack_photos',selectivePhotoAcks?'on':'off');}catch{}updateLinkBadge();};
+ body.append(sackSelect);
+ body.append(el('p','','Batch ACK requires 1.4.10.3 firmware on both boards and the new web app on both browsers. It only applies to NEW photo sends. Set Legacy before sending a photo to revert without flashing. Ordinary text, read/delivery receipts and encryption stay unchanged.'));
+ body.append(el('p','','Photo batching is isolated from text messaging and blue ticks. If transfers regress, disable Selective batch ACK or switch Photo transfer throughput to Stable. A full image is Delivered only after the receiver authenticates its AES-GCM payload.'));
 
  body.append(el('p','','Link quality comes from real browser acknowledgments and ESP32 RSSI, not distance. 1 Mbps broadcast discovers and recovers the link. Peer unicast adapts actual PHY speed to RSSI, with fallback after unanswered messages. Text/receipts keep the same encryption and acknowledgment protocol.')); 
  const modeLabel=el('label','','Image optimization');body.append(modeLabel);const select=document.createElement('select');select.className='setting-select';

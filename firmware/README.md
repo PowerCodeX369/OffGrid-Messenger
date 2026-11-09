@@ -1,79 +1,66 @@
-# OffGrid Messenger — Phase 1.4.10.2 USB interrupt-driver experiment
+# OffGrid Messenger — Phase 1.4.10.3 Selective Photo ACK (experimental)
 
-**Status: experimental, not hardware verified.** Based on **Phase 1.4.10.1 USBRecovery**, which you measured at **2.45 KiB/s USB upload, 116.91 KiB/s USB download, 15.63 KiB/s ESP-NOW-only and 1.70 KiB/s encrypted end-to-end**. The authoritative stable baseline remains **Phase 1.4.5.2 WatchdogFix**. Do not overwrite either rollback ZIP.
+**Authoritative frozen baseline: Phase 1.4.10.2_InterruptUSB.** This new release is a *separate, reversible experiment*, not a replacement for that measured-working version.
 
-## Scope of this release
+## Why this version exists
 
-This release changes **only the native USB receive mechanism** on the ESP32-C3. It installs Espressif's interrupt-driven USB Serial/JTAG driver with a 4 KiB RX ring buffer and a 4 KiB TX ring buffer, directs normal stdout through that same installed driver and reads input in batches of up to 256 bytes using `usb_serial_jtag_read_bytes()`.
+On two ESP32-C3 Super Minis, Phase 1.4.10.2 was measured at **215.83 KiB/s USB upload**, **42.16 KiB/s USB download**, **15.15 KiB/s ESP-NOW-only**, **4.11 KiB/s encrypted browser-to-browser** with 37 ms fragment ACKs, and about **7.2 KiB/s actual photo transfer**. The radio was running up to 12 Mbps PHY.
 
-The same character-by-character **command parser** is reused for both driver and legacy modes, including partial-line handling. This fixes the main error in the older 1.4.10 attempt, which called `read()` on the *unmodified, nonblocking VFS console*, without installing an interrupt-driven driver.
+Espressif notes that the MAC send callback does not prove the application received data, and recommends application acknowledgments, sequence numbers, and retransmissions. See the ESP32-C3 ESP-NOW documentation: <https://docs.espressif.com/projects/esp-idf/en/latest/esp32c3/api-reference/network/esp_now.html>.
 
-**Preserved:** ESP-NOW adaptive 1/6/12 Mbps, USB READY/STATUS handshake, 500-character encrypted browser messages, AES-256-GCM in the browser, key persistence in ESP32 NVS, photo transfer and ACK protocol, read/delivery receipts, radio/USB speed diagnostics, gallery, approved UI and the task watchdog fix.
+We therefore reduce acknowledgment overhead for *photos only*, without weakening authenticated whole-message delivery.
 
-The web folder has **no changes** from the measured 1.4.10.1 release. This does not add batch photo acknowledgments.
+## What is new
 
-## Build (VS Code + ESP-IDF)
+- Each encrypted photo uses an optional new **OGB5** fragment marker, with exactly the same 20-byte frame header and up to 160 ciphertext bytes as the existing **OGC4** frames. This flag only identifies a bulk transfer; the photo remains encrypted in the browser with AES-256-GCM. It does not reveal photo contents.
+- The receiving browser groups up to **six received radio packet IDs** (not necessarily consecutive) from the same sender MAC and boot session. It sends a single `APPACKB` USB command, flushing a partial group after **75 ms**.
+- The receiving ESP32 sends one low-rate (1 Mbps) `TYPE_BATCH_RECEIPT` ESP-NOW packet containing those specific packet IDs. The sending ESP32 reports `DELIVERED` for each included ID, and the browser can advance its photo upload window.
+- Up to **six fragments can be in flight** on strong links, staying below the existing firmware limit of eight pending messages. Weak links use a smaller window.
+- Missing batch ACK: the sender's **existing 850 ms firmware retry** resends outstanding fragments. The receiver's original duplicate-processing path issues a single legacy ACK for duplicates, so lost batch receipts are recoverable. The normal three-attempt browser retransmission and progress/status handling remain in place.
+- Text, delivery/read receipts, pairing, NVS keys, AES-256-GCM, USB interrupt-driven driver, watchdog fix, adaptive PHY, image compression and gallery are otherwise unchanged.
+- Settings now includes **Photo receipt protocol**: `Selective batch ACK` or `Legacy` (immediate fallback for new photo transfers). Disabling automatic photo throughput also restores legacy single-fragment behavior.
+- Speed diagnostics now compare **two encrypted 8 KiB tests**: legacy versus selective ACK, while preserving the original USB and ESP-NOW-only tests.
 
-Requirements: ESP32-C3 Super Mini with **native USB Serial/JTAG port** (often `/dev/ttyACM*` on Linux) and **ESP-IDF 5.2 or newer**. In the ESP-IDF extension open the project folder, set target `esp32c3`, build and flash.
+**Status integrity:** A fragment ACK only means the receiving browser accepted a structurally valid encrypted fragment. The sender's *chat* double-grey tick still requires the final encrypted, authenticated, receiver-generated `delivered` message after complete reassembly. Read receipts are unchanged. Radio acknowledgment frames themselves are not end-to-end authenticated; final delivery is.
 
-```bash
-idf.py set-target esp32c3
-idf.py build
-idf.py -p /dev/ttyACM0 flash
-```
+## Install carefully
 
-Adjust the port to your actual board. Use normal Flash, **not erase-flash**; erasing would remove the NVS pairing key.
+1. Save a copy of your **Phase 1.4.10.2_InterruptUSB.zip**. Do not overwrite it.
+2. Open this Phase 1.4.10.3 project in VS Code + ESP-IDF 5.2+ and select the `esp32c3` target.
+3. Build the firmware. **A complete ESP-IDF build has not been performed by the project authoring environment**; fix any local build error before flashing.
+4. Flash **both** ESP32-C3 Super Minis using normal `flash` — **not `erase-flash`**. The NVS pairing keys must be preserved.
+5. Stop any ESP-IDF serial monitors, then start the web UI from this project directory:
 
-After reset, the USB terminal should show one of:
+   ```bash
+   python3 -m http.server 8765 --directory web
+   ```
 
-- `USBMODE|IRQ|RXBUF=4096|TXBUF=4096` — experimental driver is running.
-- `USBMODE|LEGACY|DRIVER_INIT=...` — initialization failed, legacy stdio input is active.
+6. Open `http://localhost:8765/?v=1.4.10.3` in **both tabs**, hard-refresh Ctrl+Shift+R, and connect one ESP32 per tab. Keep the same localhost origin and port to preserve existing encrypted chat history.
+7. `READY` must include `PROTO=2|CAP=180|...|DIAG=1|SACK=1`. Check both connections before testing photos.
 
-The ESP32 should also continue to send its existing `READY|...|PROTO=2|CAP=180...` handshake. Close the ESP-IDF serial monitor before connecting in the browser; the port cannot normally be opened by both simultaneously.
+## Test checklist
 
-## Web interface
+1. **Ordinary encrypted text**: send 10 messages in each direction; verify immediate two-way delivery and read receipts. This uses the unchanged original protocol.
+2. **Legacy photo**: Settings → Photo receipt protocol → Legacy. Send a known photo and record KB/s and actual duration. Make sure the receiver sees the photo and that Delivered ticks appear only when it arrives.
+3. **Selective photo**: Change setting to Selective batch ACK on the **sending browser**. Send the same source photo and compare time, transfer KB/s, output size, success and image integrity.
+4. **Range test**: Increase physical separation, watch PHY/RSSI, and confirm retries recover missing packets. Verify that a lost/incomplete photo is *never* marked Delivered.
+5. **Speed diagnostics**: Run all tests in one tab with the other connected; new output includes `Encrypted browser-to-browser (legacy)` and `(selective ACK)` and the measured speedup ratio. The remote browser must also run this release.
+6. **Instant fallback**: Select Legacy again to revert all *new* photo transfers to the proven per-fragment protocol, without reflashing. If text/USB/radio regression occurs, flash both nodes back to the frozen **1.4.10.2 firmware**.
 
-From the extracted project root:
+### Important compatibility detail
 
-```bash
-python3 -m http.server 8765 --directory web
-```
+Old web browsers do not understand the `OGB5` bulk-frame marker, and old firmware does not understand `APPACKB`. **Both boards and both browser clients must be upgraded** for the fast photo mode. Legacy text is unchanged. Use Legacy photo mode for mixed-version testing.
 
-Open `http://localhost:8765/?v=1.4.9` in Chromium. Because the browser files are unchanged, existing pairing, encrypted history and diagnostics are compatible at the same browser origin and port. If the page looks cached, hard-refresh (Ctrl+Shift+R). Both windows can use the bundled web app.
+## Testing performed here
 
-## Controlled test procedure
+- JavaScript syntax checks and the existing AES-GCM/500-char/photo protocol/regression suites.
+- Real Web Crypto AES-GCM: encrypted 45 KB simulated photo; 289 frames; randomized omissions/reordering; selective retransmission; exact image reconstruction; altered ciphertext rejected.
+- C host compiler: actual ID parsing/packing helpers and command parser; overflow, negative ID, unknown MAC, too many IDs rejected.
+- Full firmware host-stub syntax-only validation with both IRQ and legacy USB configurations.
+- Actual browser-side ACK grouping function exercised in Node with a simulated Web Serial writer: six-ID flush, timeout flush, duplicate prevention, sender session separation.
+- Source comparison confirms the original USB driver, adaptive-PHY policy, UI styling, key handling and watchdog fix were retained.
+- **Not tested here:** full ESP-IDF build, physical ESP-NOW performance, real browser-to-browser operation, packet-loss behavior on hardware or a measured speedup. The environment blocks local Chromium navigation. Please share real diagnostics before promoting this version to stable.
 
-1. **Flash only Board A first**. Leave Board B on the currently measured-working 1.4.10.1 firmware. This USB-only change does not change the radio protocol.
-2. Confirm the `USBMODE|IRQ` line and normal `READY` handshake on Board A.
-3. Connect Board A in the web app. Run **USB PC → ESP32** benchmark; record KiB/s, duration, and any timeout. Compare with **2.45 KiB/s**.
-4. Run **USB ESP32 → PC** benchmark; compare with **116.91 KiB/s**.
-5. Keeping Board B connected with the same pairing key, confirm a short encrypted text sent in **both directions** and correct double ticks.
-6. Run **ESP-NOW-only** and **Encrypted browser-to-browser** benchmarks; compare with **15.63 KiB/s** and **1.70 KiB/s**. Then try a small image and compare with **2.1 KiB/s** actual previous photo transfer speed.
-7. If upload, chat or ACKs regress, roll back Board A to the original 1.4.10.1 firmware. Do not change Board B or the web app until the experiment passes.
-8. Flash Board B only after the new driver path passes all tests. Run the four diagnostics again on each node.
+## Next planned release — ESP-NOW-LR
 
-There is no guaranteed improvement: the driver may improve inbound USB scheduling, but browser writes, line-hex framing and per-fragment acknowledgments can still limit the encrypted end-to-end rate.
-
-## Quick fallback without replacing source files
-
-The project includes an ESP-IDF build setting:
-
-`idf.py menuconfig` → **OffGrid USB input experiment** → uncheck **Use interrupt-driven native USB Serial/JTAG receive (experimental)**.
-
-Rebuild and flash; the firmware uses the exact legacy `getchar()` + `vTaskDelay(1)` input method. The app will report `USBMODE|LEGACY|BUILD_SETTING`. This is a *compile-time* selection, not a runtime feature toggle.
-
-For a complete measured rollback, use **OffGridMessenger_Phase1_4_10_1_USBRecovery.zip**. For the original stable fallback, use **OffGridMessenger_Phase1_4_5_2_WatchdogFix.zip**.
-
-## Verification performed before delivery
-
-- Host C syntax-smoke tests with ESP-IDF header stubs for both driver-on and driver-off modes.
-- Byte-for-byte comparison of all web assets and radio-rate policy against 1.4.10.1.
-- Verified command parser contents were not changed.
-- JavaScript and protocol tests supplied by the project.
-- ZIP integrity check.
-
-**Not done here:** a full ESP-IDF firmware compile, hardware USB driver initialization, watchdog test on ESP32-C3 or speed measurement. Please share any ESP-IDF compiler error or new diagnostics so this experimental branch can be assessed before promotion.
-
-### Technical implementation note
-
-Unlike calling `read(STDIN_FILENO, ...)` against the default VFS console (which caused the earlier 1.4.10 regression), this experimental path uses `usb_serial_jtag_driver_install()`, the corresponding VFS driver mode for stdout, and `usb_serial_jtag_read_bytes()` from the driver's interrupt-fed receive buffer. Only the dedicated serial task consumes incoming bytes; both modes use the same line-oriented commands.
+Once this extension is demonstrated reliable, research and test the ESP32-C3's ESP-NOW Long Range mode **as a separate experimental firmware branch**, comparing range, latency and throughput against frozen 1.4.10.2. Do not mix an unverified LR change into this transfer-speed release.

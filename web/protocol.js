@@ -34,23 +34,26 @@ function parseEnvelope(data){
   if(!Object.values(types).includes(kind)||size!==data.length-24||size>MAX_BLOB)throw Error('Invalid payload length/type');
   return {kind,id,ts:v.getUint32(12,false)*1000,width:v.getUint16(16,false),height:v.getUint16(18,false),body:data.subarray(24)};
 }
-function frames(transferId,payload){
+function frames(transferId,payload,options={}){
+  const batch=Boolean(options.batch);
   if(payload.length>MAX_PACKET)throw Error('Encrypted payload exceeds transfer limit');
   const id=unhex(transferId),total=Math.ceil(payload.length/CHUNK);if(!total||total>65535)throw Error('Invalid packet count');
   const result=[];
   for(let i=0;i<total;i++){
     const piece=payload.subarray(i*CHUNK,(i+1)*CHUNK),f=new Uint8Array(FRAME_HEADER+piece.length),v=new DataView(f.buffer);
-    f.set([79,71,67,52],0);f.set(id,4);v.setUint16(12,i,false);v.setUint16(14,total,false);v.setUint32(16,payload.length,false);f.set(piece,20);result.push(f);
+    f.set(batch?[79,71,66,53]:[79,71,67,52],0);f.set(id,4);v.setUint16(12,i,false);v.setUint16(14,total,false);v.setUint32(16,payload.length,false);f.set(piece,20);result.push(f);
   }
   return result;
 }
 function parseFrame(data){
-  if(data.length<FRAME_HEADER||data.length>FRAME_MAX||data[0]!==79||data[1]!==71||data[2]!==67||data[3]!==52)return null;
+  if(data.length<FRAME_HEADER||data.length>FRAME_MAX||data[0]!==79||data[1]!==71)return null;
+  const bulk=data[2]===66&&data[3]===53;
+  if(!bulk&&(data[2]!==67||data[3]!==52))return null;
   const v=new DataView(data.buffer,data.byteOffset,data.byteLength),index=v.getUint16(12,false),count=v.getUint16(14,false),length=v.getUint32(16,false);
   if(!count||index>=count||length<28||length>MAX_PACKET||count!==Math.ceil(length/CHUNK))return null;
   const expect=index===count-1?length-index*CHUNK:CHUNK;
   if(data.length!==20+expect)return null;
-  return {transferId:hex(data.subarray(4,12)),index,count,length,bytes:data.subarray(20)};
+  return {transferId:hex(data.subarray(4,12)),index,count,length,bytes:data.subarray(20),bulk};
 }
 const textBytes=s=>enc.encode(s);
 const textFrom=bytes=>dec.decode(bytes);
