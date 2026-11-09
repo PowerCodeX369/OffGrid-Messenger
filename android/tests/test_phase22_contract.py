@@ -17,7 +17,7 @@ for fragment in ['if(t.media && !t.control && t.frames.size>1)',
 for fragment in ['window: Int = 3','onQueued(', 'onDelivered(', 'onFailed(', 'pauseForReceipts()', 'APPACKB']:
     assert fragment in media, fragment
 assert 'qualityFallback' in photo and 'FAST_PHOTO_TARGET' in (src/'MediaPayload.kt').read_text()
-assert 'versionCode=230' in (root/'app/build.gradle.kts').read_text()
+assert 'versionCode=240' in (root/'app/build.gradle.kts').read_text()
 if (base/'PRESERVATION_22.json').is_file():
     manifest=json.loads((base/'PRESERVATION_22.json').read_text())
     frozen=manifest['frozen_sha256']
