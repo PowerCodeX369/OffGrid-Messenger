@@ -75,9 +75,11 @@ private val mainHandler = Handler(Looper.getMainLooper())
 
 data class ChatItem(val id:String,val text:String,val outgoing:Boolean,val timestamp:Long,
     val status:String="sent",val kind:Int=OgmCodec.TEXT,val bytes:ByteArray?=null,
-    val mime:String="",val width:Int=0,val height:Int=0,val durationMs:Int=0,val progress:Int=0)
+    val mime:String="",val width:Int=0,val height:Int=0,val durationMs:Int=0,val progress:Int=0, val speedKiBs:Float=0f)
 private data class Transfer(val frames:List<ByteArray>,val messageId:String,val control:Boolean=false,
-    var index:Int=0,var session:String="",var packetId:String="",var attempts:Int=0)
+    val media:Boolean=false,
+    var index:Int=0,var session:String="",var packetId:String="",var attempts:Int=0,
+    var mediaWindow:MediaTransferWindow?=null)
 
 class MainActivity : ComponentActivity() {
     private lateinit var secure: SecureKeyStore
@@ -86,6 +88,13 @@ class MainActivity : ComponentActivity() {
     private val items = mutableStateListOf<ChatItem>()
     private val pending = ArrayDeque<Transfer>()
     private var isSending = false
+    private var activeMedia:MediaTransferWindow?=null
+    private var fastPhotos by mutableStateOf(true)
+    private val mediaAcks = RadioMediaAckBatcher(
+        { action, timeout -> mainHandler.postDelayed(action, timeout) },
+        { action -> mainHandler.removeCallbacks(action) },
+        { command -> link?.send(command) }
+    )
     private var ackTimeout: Runnable? = null
     private var connected by mutableStateOf(false)
     private var state by mutableStateOf("Not connected")
@@ -129,6 +138,7 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         secure = SecureKeyStore(this)
+        fastPhotos = getSharedPreferences("offgrid_media", MODE_PRIVATE).getBoolean("fast_photos", true)
         voiceRecorder = VoiceNoteRecorder(this)
         trustedAddress = secure.nodeAddress()
         pairingSaved = secure.readPairingKey()?.let { it.fill(0);true } ?: false
@@ -136,6 +146,9 @@ class MainActivity : ComponentActivity() {
         link = BleNodeClient(this, {secure.readPairingKey()}, {s,ready ->
             state=s;connected=ready
             if(ready) startNext() else {
+                activeMedia?.cancelTransfer(); activeMedia=null
+                pending.forEach { it.mediaWindow=null; it.index=0 }
+                mediaAcks.clear()
                 isSending=false; cancelAckTimeout()
                 if(recording) {
                     recordAutoStop?.let(mainHandler::removeCallbacks);recordAutoStop=null
@@ -152,6 +165,7 @@ class MainActivity : ComponentActivity() {
         if (recording) runCatching { voiceRecorder.finish(cancel=true) }
         recordAutoStop?.let(mainHandler::removeCallbacks)
         mediaWorker.shutdownNow()
+        activeMedia?.cancelTransfer();activeMedia=null;mediaAcks.clear()
         link?.stop();cancelAckTimeout();super.onDestroy()
     }
     private fun hasBluetoothPermission():Boolean = Build.VERSION.SDK_INT < 31 ||
@@ -182,9 +196,62 @@ class MainActivity : ComponentActivity() {
         ackTimeout=runnable
         mainHandler.postDelayed(runnable,if(phase=="queued")7500 else 16000)
     }
+    private fun startMediaWindow(job:Transfer) {
+        isSending=true
+        val sender = job.mediaWindow ?: MediaTransferWindow(
+            frames = job.frames, window = 3,
+            nowMs = { android.os.SystemClock.elapsedRealtime() },
+            schedule = { alarm, delay -> mainHandler.postDelayed(alarm,delay) },
+            cancel = { alarm -> mainHandler.removeCallbacks(alarm) },
+            sendFrame = { frame -> link?.send("MSGHEX ${OgmCodec.hex(frame)}") },
+            onProgress = { count, elapsedMs ->
+                if(count % 8 == 0 || count == job.frames.size) {
+                    val idx=items.indexOfFirst { it.id == job.messageId }
+                    if(idx >= 0) {
+                        val message=items[idx]
+                        val bytes=(message.bytes?.size ?: 0).toDouble()
+                        val rate=(bytes * count / job.frames.size / 1024.0 / (elapsedMs/1000.0)).toFloat()
+                        items[idx]=message.copy(progress=100*count/job.frames.size, speedKiBs=rate)
+                    }
+                }
+            },
+            onFinished = { elapsedMs ->
+                bleTrace("MEDIA_TX_COMPLETE kind=${if(job.frames.size>1)"batch" else "single"} frames=${job.frames.size} duration_ms=$elapsedMs")
+                activeMedia=null;job.mediaWindow=null
+                pending.remove(job);isSending=false
+                startNext()
+            },
+            onFailed = { reason ->
+                bleTrace("MEDIA_TX_FAILED $reason")
+                activeMedia=null;job.mediaWindow=null
+                pending.remove(job);isSending=false
+                updateReceipt(job.messageId,"failed")
+                state="Media transfer failed: $reason"
+                startNext()
+            },
+            onPaused = {
+                if(activeMedia === job.mediaWindow) {
+                    activeMedia=null;isSending=false
+                    // Retain completed window state. Urgent receipts go first.
+                    val urgent=pending.firstOrNull { it.control }
+                    if(urgent!=null) { pending.remove(urgent);pending.addFirst(urgent) }
+                    startNext()
+                }
+            }
+        ).also { job.mediaWindow=it }
+        activeMedia=sender
+        sender.startOrResume()
+    }
     private fun startNext() {
         if(!connected || isSending)return
-        val t = pending.firstOrNull()?:return
+        // Acknowledge delivered/read/played promptly even during a large photo.
+        val front=pending.firstOrNull()?:return
+        if(!front.control) {
+            val urgent=pending.firstOrNull { it.control }
+            if(urgent!=null) { pending.remove(urgent);pending.addFirst(urgent) }
+        }
+        val t=pending.firstOrNull()?:return
+        if(t.media && !t.control && t.frames.size>1) { startMediaWindow(t);return }
         isSending=true
         t.attempts=0
         link?.send("MSGHEX ${OgmCodec.hex(t.frames[t.index])}")
@@ -228,7 +295,8 @@ class MainActivity : ComponentActivity() {
         val secret=secure.readPairingKey() ?: return
         try {
             val frames=OgmCodec.seal(secret,kind,messageId,body,width,height)
-            pending.addLast(Transfer(frames,messageId,control))
+            pending.addLast(Transfer(frames,messageId,control,kind==OgmCodec.IMAGE || kind==OgmCodec.VOICE))
+            if(control) activeMedia?.pauseForReceipts()
             startNext()
         } catch (ex: Exception) { state="Encryption error: ${ex.message}" }
         finally { secret.fill(0) }
@@ -244,8 +312,9 @@ class MainActivity : ComponentActivity() {
     private fun sendPhoto(uri:Uri) {
         if(!connected)return
         state="Preparing private photo…"
+        val targetBytes = if(fastPhotos) MediaPayload.FAST_PHOTO_TARGET else MediaPayload.ANDROID_PHOTO_TARGET
         mediaWorker.execute {
-            val result=runCatching { PhotoPreparer.prepare(contentResolver,uri) }
+            val result=runCatching { PhotoPreparer.prepare(contentResolver,uri,targetBytes) }
             mainHandler.post {
                 if(activityDestroyed)return@post
                 result.onSuccess { photo ->
@@ -334,6 +403,7 @@ class MainActivity : ComponentActivity() {
             "READY" -> state="ESP32 ready · channel 6"
             "LINK" -> if(connected)state="Connected · encrypted · adaptive LR"
             "QUEUED" -> if(split.size>=4&&isSending){
+                if(activeMedia != null) { activeMedia?.onQueued(split[3], split[1], split[2]);return }
                 val job=pending.firstOrNull()?:return
                 // MCU echoes the exact OGC4 frame as hex; reject stale queued responses.
                 if(split[3].equals(OgmCodec.hex(job.frames[job.index]),ignoreCase=true)){
@@ -342,10 +412,12 @@ class MainActivity : ComponentActivity() {
                 }
             }
             "DELIVERED" -> if(split.size>=3&&isSending){
+                if(activeMedia != null) { activeMedia?.onDelivered(split[1],split[2]);return }
                 val job=pending.firstOrNull()?:return
                 if(job.session==split[1]&&job.packetId==split[2])advanceFrame()
             }
             "FAILED" -> if(split.size>=3&&isSending){
+                if(activeMedia != null) { activeMedia?.onFailed(split[1],split[2]);return }
                 val job=pending.firstOrNull()?:return
                 if(job.session==split[1]&&job.packetId==split[2]){
                     cancelAckTimeout()
@@ -363,7 +435,8 @@ class MainActivity : ComponentActivity() {
                     val frame=OgmCodec.unhex(split[4]);val parsed=OgmCodec.parseFrame(frame)?:return
                     // Radio-level APPACK prevents transport congestion. The final
                     // encrypted DELIVERED/READ receipts confirm end-to-end handling.
-                    link?.send("APPACK ${split[1]} ${split[2]} ${split[3]}")
+                    if(parsed.bulk) mediaAcks.accept(split[1],split[2],split[3])
+                    else link?.send("APPACK ${split[1]} ${split[2]} ${split[3]}")
                     val env=assembler.accept(split[1],split[2],frame)?:return
                     when(env.kind) {
                         OgmCodec.TEXT -> {
@@ -548,7 +621,17 @@ class MainActivity : ComponentActivity() {
                                     Column(Modifier.fillMaxWidth().padding(14.dp),verticalArrangement=Arrangement.spacedBy(8.dp)){
                                         Text("Saved device: ${trustedAddress?:"None"}",style=MaterialTheme.typography.bodySmall)
                                         Text("AES-256-GCM · ESP-NOW Long Range · BLE bridge",style=MaterialTheme.typography.bodySmall)
-                                        Text("Stage 2.1: encrypted text, photos and AAC voice notes. Camera capture, notifications and push-to-talk are later stages.",style=MaterialTheme.typography.bodySmall)
+                                        Text("Phase 2.2: encrypted media pipeline · bounded radio window · grouped media ACKs",style=MaterialTheme.typography.bodySmall)
+                                        Row(verticalAlignment=Alignment.CenterVertically,modifier=Modifier.fillMaxWidth()) {
+                                            Column(Modifier.weight(1f)) {
+                                                Text("Fast photos",style=MaterialTheme.typography.bodyMedium)
+                                                Text("~28 KiB uploads (off = quality mode, ~48 KiB)",style=MaterialTheme.typography.labelSmall)
+                                            }
+                                            Switch(checked=fastPhotos,onCheckedChange={ value ->
+                                                fastPhotos=value
+                                                getSharedPreferences("offgrid_media",MODE_PRIVATE).edit().putBoolean("fast_photos",value).apply()
+                                            })
+                                        }
                                         TextButton(onClick={showKey=true}){Text("Update pairing key")}
                                         TextButton(onClick={link?.stop();state="Disconnected"}){Text("Disconnect")}
                                         TextButton(onClick={startSystemPairing(systemPicker::launch)}){Text("Choose another ESP32")}
@@ -626,7 +709,7 @@ class MainActivity : ComponentActivity() {
                                                 }
                                                 if(item.outgoing && item.progress in 1..99 && item.kind!=OgmCodec.TEXT) {
                                                     LinearProgressIndicator(progress={item.progress/100f},modifier=Modifier.fillMaxWidth())
-                                                    Text("Transferring ${item.progress}%",style=MaterialTheme.typography.labelSmall)
+                                                    Text("Transferring ${item.progress}% · ${"%.1f".format(java.util.Locale.US,item.speedKiBs)} KiB/s",style=MaterialTheme.typography.labelSmall)
                                                 }
                                                 Spacer(Modifier.height(6.dp))
                                                 Row(Modifier.align(Alignment.End),verticalAlignment=Alignment.CenterVertically){

@@ -1,0 +1,29 @@
+{
+  "version": "2.2",
+  "frozen_sha256": {
+    "ANDROID_BASELINE_SHA256.json": "4983f2e39662fcc6d6f4f5c386c952599f53354d94f8266b611c40ba50a495f1",
+    "ANDROID_BLE_FIX_208.md": "9578ab3160b8c265ba03c383b2e1c79f55efee643604f2ee8cd791c82c867729",
+    "PHASE_2_1_MEDIA.md": "89a070624d9e42c9cd5c708b2f82cc0ee894670268f5d3da997677a13dd4c0d3",
+    "app/src/main/AndroidManifest.xml": "96bde2f10ed96eddae99f0859edaafe1cc29a8b294cf6bc5eb8e032b42b8a190",
+    "app/src/main/java/com/offgrid/messenger/BleNodeClient.kt": "fe81b9e08e9c7d32649eb0537cec037d8118895c00d37461bbab7a770465ad39",
+    "app/src/main/java/com/offgrid/messenger/OgmCodec.kt": "b320ced5f96b8b0b0e539c748c524d4f85bf0fc9cb851852a4d5dc996006ee1d",
+    "app/src/main/java/com/offgrid/messenger/SecureKeyStore.kt": "ff8e61f7892a903b0544b8be2aa2294eb7e99b9b8c63f1fc3d526bf795b1db92",
+    "build.gradle.kts": "1d583f9e97cdb434946374f9885a2b2fc7b897e696242f1becb72ecf129b3d2c",
+    "gradle.properties": "fa078c27c9e4bde28a029d673875b028884505efa436b68cf60e1ac0be5b679b",
+    "gradle/wrapper/gradle-wrapper.properties": "89de2bc4f83751f84ade8d281044bfced7dfd55df21cab8dbe8a2611a99ad20b",
+    "settings.gradle.kts": "a97c7e975e8322f0eec8c50573462d17001a23738b8df26c05896a19212702e8",
+    "tests/MediaInteropEmit.kt": "1caf4045927bfcbc37d9b6a874f38d9e1778e653758b95429f6f90b5063f78f7",
+    "tests/MediaInteropImport.kt": "079d8de653a7857c4c4f6b9d919833029d579d1ebcf5d5d166ec49693e4b9f2e",
+    "tests/MediaPayloadJvmTest.kt": "e2732479b7c4e3b006d35fa090888daf89c50526c947f02f3c6dc3e63128405b",
+    "tests/OgmCodecEmit.kt": "5330c93aed0f1d272cb8f9370e0d863b11d6f8f8264b1877afdd3831a0612d69",
+    "tests/OgmCodecJvmTest.kt": "bb0beab5e8a8cd8e810e6b24f14985d2dcf6a94ca1a8dcb6a2903441fbac862a",
+    "tests/emit_web_media.cjs": "414e5431cb924aebeb3c3ed281f017f920182d60fe39631eca82ff081e9e2235",
+    "tests/kotlin_vector.txt": "fa4fcbb7320c20efe1ba9d5973470cd49ba7f84af775a1ba256bd488c5a12fcc",
+    "tests/reference_web_protocol.cjs": "0d6fe9b9ed701444d8ad1c538f6e3ce6bb65a69f6796053d67085dadd4149635",
+    "tests/run_phase21_tests.sh": "61495522680a87315afebcaca03c1c3340387cd054387ee667cb73fd35e4b619",
+    "tests/test_ble_latency_contract.py": "3d6b17332765eccd95d571525840445682e622b1576406d030e5d588b1d3e090",
+    "tests/test_media_web_interop.cjs": "8d5702bba87cb2ad8cf6e71a22fbeef3b720281dae4fa42ddff41ef88c8a7fd0",
+    "tests/test_phase21_integrity.py": "e8555706f8b6ea814dcba6b1e5c34942d8ff3b6c6b28c5a1be618439eb97c244",
+    "tests/web_vector.txt": "d29748f6c0656abcaeed41b1ea4a7430452daeaabc7bb4701aee80a71826793b"
+  }
+}

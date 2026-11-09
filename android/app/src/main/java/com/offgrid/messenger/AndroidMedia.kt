@@ -14,7 +14,8 @@ import kotlin.math.max
 
 /** Photo selection is offline: decode bounded, re-encode to JPEG (strips EXIF/GPS). */
 object PhotoPreparer {
-    fun prepare(resolver:ContentResolver,uri:Uri):MediaPayload.Photo {
+    fun prepare(resolver:ContentResolver,uri:Uri,targetBytes:Int=MediaPayload.ANDROID_PHOTO_TARGET):MediaPayload.Photo {
+        require(targetBytes in 12*1024..MediaPayload.ANDROID_PHOTO_TARGET)
         val info=BitmapFactory.Options().apply { inJustDecodeBounds=true }
         val source=resolver.openInputStream(uri) ?: error("Cannot open selected photo")
         source.use { BitmapFactory.decodeStream(it,null,info) } // Bounds-only decoding intentionally returns null.
@@ -24,6 +25,9 @@ object PhotoPreparer {
         val options=BitmapFactory.Options().apply { inSampleSize=sample; inPreferredConfig=Bitmap.Config.ARGB_8888 }
         var working=resolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it,null,options) }
             ?: error("Cannot decode selected photo")
+        // If a detailed photo cannot reach the fast 28-KiB target, return a
+        // valid <=48-KiB quality encode rather than failing a working feature.
+        var qualityFallback:MediaPayload.Photo?=null
         try {
             for (maxEdge in intArrayOf(1280,1100,950,800,700,600,480,360)) {
                 val scale=minOf(1.0,maxEdge.toDouble()/max(working.width,working.height))
@@ -34,11 +38,15 @@ object PhotoPreparer {
                         val stream=ByteArrayOutputStream()
                         if(!scaled.compress(Bitmap.CompressFormat.JPEG,quality,stream))continue
                         val bytes=stream.toByteArray()
-                        if(bytes.size<=MediaPayload.ANDROID_PHOTO_TARGET)
+                        if(bytes.size<=targetBytes)
                             return MediaPayload.Photo(bytes,"image/jpeg",scaled.width,scaled.height)
+                        if(targetBytes<MediaPayload.ANDROID_PHOTO_TARGET &&
+                            bytes.size<=MediaPayload.ANDROID_PHOTO_TARGET && qualityFallback==null)
+                            qualityFallback=MediaPayload.Photo(bytes,"image/jpeg",scaled.width,scaled.height)
                     }
                 } finally { if(scaled!==working)scaled.recycle() }
             }
+            qualityFallback?.let { return it }
             error("Photo exceeds 48 KiB after compression; choose a simpler picture")
         } finally { working.recycle() }
     }
