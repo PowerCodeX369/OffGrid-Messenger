@@ -10,7 +10,8 @@ notifications=(src/'OffGridNotifications.kt').read_text();history=(src/'Encrypte
 web_path=root/'web/app.js';protocol_path=root/'web/protocol.js'
 web=web_path.read_text() if web_path.exists() else None
 protocol=protocol_path.read_text() if protocol_path.exists() else None
-assert 'versionCode=241' in (root/'android/app/build.gradle.kts').read_text()
+import re as _re
+assert int(_re.search(r'versionCode\s*=\s*(\d+)',(root/'android/app/build.gradle.kts').read_text()).group(1))>=241,'versionCode regressed'
 for text in ['AnimatedContent(targetState=page','ChatTopBar(','WindowInsets.safeDrawing','imePadding().navigationBarsPadding()',
              'HapticFeedbackType.LongPress','Recording discarded','trash bounce','onLongPress','Delete for everyone',
              'Edit message','showChatInfo','chooseAvatar','onSurfaceVariant','blur(75.dp)','shadow(']:

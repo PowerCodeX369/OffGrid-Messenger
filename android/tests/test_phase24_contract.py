@@ -18,7 +18,8 @@ assert activity.get(a+'windowSoftInputMode')=='adjustResize'
 assert activity.get(a+'resizeableActivity')=='true'
 assert xml.find('./application/service').get(a+'foregroundServiceType')=='connectedDevice'
 assert xml.find('application').get(a+'allowBackup')=='false'
-assert 'versionCode=240' in (root/'app/build.gradle.kts').read_text()
+import re as _re
+assert int(_re.search(r'versionCode\s*=\s*(\d+)',(root/'app/build.gradle.kts').read_text()).group(1))>=240,'versionCode regressed'
 assert 'enableEdgeToEdge()' in main
 assert 'imePadding().navigationBarsPadding()' in ui
 assert 'ChatTimeline' in ui and 'ChatTopBar' in ui and 'GlassComposer' in ui

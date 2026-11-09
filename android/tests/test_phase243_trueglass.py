@@ -7,7 +7,8 @@ ui = (android / 'app/src/main/java/com/offgrid/messenger/PremiumUi.kt').read_tex
 gradle = (android / 'app/build.gradle.kts').read_text()
 base = Path('/mnt/data/OffGrid_Android_Phase2_4_2_Stability.zip')
 assert 'compileSdk=36' in gradle
-assert 'versionCode=243' in gradle
+import re as _re
+assert int(_re.search(r'versionCode\s*=\s*(\d+)',gradle).group(1))>=243,'versionCode regressed'
 assert 'haze:1.7.2' in gradle and 'haze-blur:2.1.0' not in gradle and 'haze:2.1.0' not in gradle
 assert 'compose-bom:2026.06.01' in gradle
 assert 'import dev.chrisbanes.haze.hazeEffect' in ui

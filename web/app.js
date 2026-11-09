@@ -577,7 +577,7 @@ function togglePhotoZoom(){
  if($('photoViewer').classList.contains('hidden'))return;
  viewerZoomed=!viewerZoomed;$('viewerCanvas').classList.toggle('zoomed',viewerZoomed);
 }
-function serializeRecord(r){return {edited:!!r.edited,deleted:!!r.deleted,mutationFailed:!!r.mutationFailed,id:r.id,kind:r.kind,dir:r.dir,ts:r.ts,text:r.text||'',mime:r.mime||'',width:r.width||0,height:r.height||0,durationMs:r.durationMs||0,bytes:r.bytes?P.base64url(r.bytes):'',readSent:!!r.readSent,deliveredAckSent:!!r.deliveredAckSent,played:!!r.played,playedSent:!!r.playedSent,seenLocally:!!r.seenLocally,peerMac:r.peerMac||null};}
+function serializeRecord(r){return {editTs:r.editTs||0,edited:!!r.edited,deleted:!!r.deleted,mutationFailed:!!r.mutationFailed,id:r.id,kind:r.kind,dir:r.dir,ts:r.ts,text:r.text||'',mime:r.mime||'',width:r.width||0,height:r.height||0,durationMs:r.durationMs||0,bytes:r.bytes?P.base64url(r.bytes):'',readSent:!!r.readSent,deliveredAckSent:!!r.deliveredAckSent,played:!!r.played,playedSent:!!r.playedSent,seenLocally:!!r.seenLocally,peerMac:r.peerMac||null};}
 async function storeRecord(r){if(!secretKey||!localMac)return;const payload=P.textBytes(JSON.stringify(serializeRecord(r)));const sealed=await P.sealAtRest(secretKey,payload,macKey(),r.id);await dbPut('messages',{pk:macKey()+'/'+r.id,owner:macKey(),id:r.id,ts:r.ts,dir:r.dir,status:r.status,seal:sealed});}
 async function storeStatus(r){if(!secretKey||!localMac)return;const old=await dbGet('messages',macKey()+'/'+r.id);if(old){old.status=r.status;await dbPut('messages',old);}else await storeRecord(r);}
 async function hydrateHistory(){records=[];recordMap.clear();const rows=await listStored();for(const row of rows){try{const bytes=await P.openAtRest(secretKey,row.seal,macKey(),row.id);const d=JSON.parse(P.textFrom(bytes));d.bytes=d.bytes?P.fromBase64urlRaw(d.bytes):null;d.status=row.status||'sent';d.edited=!!d.edited;d.deleted=!!d.deleted;d.mutationFailed=!!d.mutationFailed;d.seenLocally=typeof d.seenLocally==='boolean'?d.seenLocally:!!d.readSent;if(d.status==='sending'||d.status==='queued')d.status='failed';d.progress=0;records.push(d);recordMap.set(d.id,d);}catch(e){console.warn('Cannot decrypt stored record',row.id,e.message);}}
@@ -746,7 +746,9 @@ async function handleEnvelope(env,mac){
    if(r.kind!=='text'||env.body.length>2112||env.body.length<9)return;
    const replacement=P.textFrom(env.body.subarray(8));
    if(!replacement.trim()||countChars(replacement)>MAX_CHARS)return;
-   r.text=replacement;r.edited=true;
+   /* Replay protection: ignore an EDIT older than the last applied one. */
+   if(env.ts<(r.editTs||0))return;
+   r.text=replacement;r.edited=true;r.editTs=Math.max(r.editTs||0,env.ts);
   }
   await storeRecord(r);refreshMessageBubble(r);updateSidebar();return;
  }

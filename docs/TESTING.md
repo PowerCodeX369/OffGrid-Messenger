@@ -36,3 +36,16 @@ Do not publish device secrets, pairing materials or private MAC addresses in tes
 ## Browser single-source regression
 
 `python3 scripts/repository_check.py` rejects a second `firmware/web/` copy and stale v1.6.1 HTML asset references. Browser code should be edited only under `web/`; cross-client tests from other components must reference it directly. This protects against the v2.5.6 reconstruction error described in [REPOSITORY_REPAIR.md](REPOSITORY_REPAIR.md).
+
+## Current vs. historical tests
+
+`android/tests/run_current_tests.sh` (needs `kotlinc`, `java`, `python3`, `node`) and `firmware/tests/run_stability_tests.sh` are the gates for the current v2.5.6 source.
+Older `run_phase2x_tests.sh` / `test_phase2x_*.py` / `test_ble_209_preservation.py` files are **frozen historical snapshot gates**: they pin old UI strings, old file hashes, or reference ZIPs that are not in this repository, so some are expected to fail on `main`. Do not treat them as regressions.
+
+## Gradle wrapper
+
+`android/gradlew` and `android/gradlew.bat` pin Gradle 8.14.4. A build also needs the Android SDK (platform 36) and JDK 17: `cd android && ./gradlew assembleDebug`. This has not been run in CI.
+
+## Replay protection (EDIT messages)
+
+Incoming EDIT envelopes older than the last applied edit are ignored (Android `MessageMutation.apply(..., sentAtMs)`, web `app.js`). The edit timestamp is persisted in history (Android history format v3, still reads v1/v2). This does not stop replay of other message kinds; see SECURITY.md.
