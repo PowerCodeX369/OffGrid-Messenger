@@ -1,4 +1,6 @@
-# OffGrid Messenger — Phase 1.4.9 Diagnostics
+# OffGrid Messenger — Phase 1.4.9.1 Diagnostics Compile Fix
+
+**Compile fix:** Corrected `RBENCH_DONE` format argument for average RTT in `main/main.c` (line ~374). Uses `PRIu32` plus explicit `(uint32_t)` cast, resolving ESP-IDF `-Werror=format`. **No protocol, radio, encryption, UI, or diagnostic behavior changes.**
 
 **Purpose:** Measure, before changing the working photo transfer protocol, where its ~1.1 KB/s throughput bottleneck lies.
 
