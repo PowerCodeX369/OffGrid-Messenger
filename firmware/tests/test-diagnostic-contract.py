@@ -2,7 +2,7 @@
 from pathlib import Path
 import re,hashlib
 root=Path(__file__).resolve().parents[1]
-source=Path('/mnt/data/working_offgrid/OffGridMessenger_Phase1_4_8_USBOutput')
+source=root.parent/'OffGridMessenger_Phase1_4_10_2_InterruptUSB'
 fw=(root/'main/main.c').read_text();app=(root/'web/app.js').read_text()
 for path in ('main/link_rate_policy.h','sdkconfig.defaults','web/adaptive.js','web/logo.svg'):
  assert (root/path).read_bytes()==(source/path).read_bytes(),f'Unexpected modification: {path}'
@@ -21,5 +21,5 @@ assert 'BENCH_MAX_PACKETS 128' in fw
 assert 'BENCH_PAYLOAD_BYTES 160' in fw
 assert 'nvs_flash_erase()' in fw  # pre-existing recovery path; no new erase command
 assert 'diagPrint' in app
-assert (root/'web/index.html').read_text().count('app.js?v=1.4.9')==1
+assert (root/'web/index.html').read_text().count('app.js?v=1.4.10.3')==1
 print('PASS diagnostic command contracts and preserved key/radio/watchdog wiring')

@@ -1,9 +1,9 @@
-/* OffGrid Messenger Phase 1.4.10.2 interrupt-driven USB experiment — ESP-IDF >= 5.2 / ESP32-C3.
- * EXPERIMENTAL branch of FROZEN Phase 1.4.5.2 WatchdogFix.
+/* OffGrid Messenger Phase 1.4.10.3 photo selective ACK — ESP-IDF >= 5.2 / ESP32-C3.
+ * Experimental extension of the frozen, measured-working 1.4.10.2 USB IRQ baseline.
  * AES-256-GCM runs in the BROWSER. NVS key management unchanged.
  * 1 Mbps broadcast HELLO/recovery; peer-aware 1/6/12 Mbps unicast for data.
  * Browser protocol, app ACK, retry IDs, USB READY, and task watchdog fix preserved.
- * Revert to 1.4.5.2 firmware immediately if this branch underperforms.
+ * Revert to 1.4.10.2 firmware immediately if this branch underperforms.
  */
 #include <stdio.h>
 #include <string.h>
@@ -60,6 +60,8 @@
 #define TYPE_HELLO 4 /* broadcast discovery/keepalive: unchanged radio 1 Mbps */
 #define TYPE_BENCH_DATA 5 /* diagnostic only, never a chat message */
 #define TYPE_BENCH_ACK 6 /* ESP32-to-ESP32 ACK, bypasses browsers */
+#define TYPE_BATCH_RECEIPT 7 /* selective ACK list; optional photo-only extension */
+#define SACK_MAX_IDS 6 /* capped below MAX_PENDING, and well within 250 byte ESPNOW v1 frame */
 #define BENCH_PAYLOAD_BYTES 160
 #define BENCH_MAX_PACKETS 128
 #define BENCH_TIMEOUT_MS 1000
@@ -90,7 +92,7 @@ typedef struct __attribute__((packed)) {
     uint8_t text[MAX_TEXT];
 } frame_t;
 
-typedef enum { EV_RX = 1, EV_SEND, EV_APPACK, EV_STATUS, EV_READ, EV_RATE, EV_BENCH_START } event_type_t;
+typedef enum { EV_RX = 1, EV_SEND, EV_APPACK, EV_STATUS, EV_READ, EV_RATE, EV_BENCH_START, EV_APPACK_BATCH } event_type_t;
 typedef struct {
     event_type_t type;
     uint8_t mac[6];
@@ -306,7 +308,7 @@ static bool read_hex(const char *s,uint8_t *dst,uint16_t *len) {
  * IMPORTANT: single printf to avoid splitting the READY frame over lines. */
 static void show_ready(const char *source) {
     printf("READY|%02X:%02X:%02X:%02X:%02X:%02X|CHANNEL=%d|SESSION=%" PRIu32
-           "|PROTO=2|CAP=180|STABLE=1|NVSKEY=1|ADAPTIVEPHY=1|DIAG=1|FROM=%s\n",
+           "|PROTO=2|CAP=180|STABLE=1|NVSKEY=1|ADAPTIVEPHY=1|DIAG=1|SACK=1|FROM=%s\n",
            own_mac[0],own_mac[1],own_mac[2],own_mac[3],own_mac[4],own_mac[5],
            CHANNEL,boot_session,source);
 }
@@ -320,9 +322,12 @@ static void on_receive(const esp_now_recv_info_t *info,const uint8_t *data,int l
     frame_t *f=&ev.frame;
     if(f->magic!=PROTOCOL_MAGIC||f->version!=PROTOCOL_VERSION)return;
     if(f->length>MAX_TEXT||(size_t)len!=base+f->length)return;
-    if(f->type!=TYPE_TEXT&&f->type!=TYPE_RECEIPT&&f->type!=TYPE_READ&&f->type!=TYPE_HELLO&&f->type!=TYPE_BENCH_DATA&&f->type!=TYPE_BENCH_ACK)return;
+    if(f->type!=TYPE_TEXT&&f->type!=TYPE_RECEIPT&&f->type!=TYPE_READ&&f->type!=TYPE_HELLO&&f->type!=TYPE_BENCH_DATA&&f->type!=TYPE_BENCH_ACK&&f->type!=TYPE_BATCH_RECEIPT)return;
     if((f->type==TYPE_RECEIPT||f->type==TYPE_READ||f->type==TYPE_HELLO||f->type==TYPE_BENCH_ACK)&&f->length!=0)return;
     if(f->type==TYPE_BENCH_DATA&&f->length!=BENCH_PAYLOAD_BYTES)return;
+    if(f->type==TYPE_BATCH_RECEIPT &&
+       (f->length<5 || f->length>1+4*SACK_MAX_IDS || f->text[0]<1 ||
+        f->text[0]>SACK_MAX_IDS || f->length!=1+4*f->text[0]))return;
     if(memcmp(f->sender,ev.mac,6)!=0||memcmp(f->sender,own_mac,6)==0)return;
     (void)xQueueSend(event_queue,&ev,0); /* Wi-Fi callback must never block */
 }
@@ -498,6 +503,34 @@ static void display_rx(const frame_t *f,const uint8_t *mac) {
         mac[0],mac[1],mac[2],mac[3],mac[4],mac[5],f->session,f->id);
     emit_hex_record(prefix,f->text,f->length);
 }
+/* Big-endian 32-bit IDs, deterministic encoding on both ESP32s. */
+static uint32_t sack_read32(const uint8_t *p) {
+    return ((uint32_t)p[0]<<24)|((uint32_t)p[1]<<16)|((uint32_t)p[2]<<8)|p[3];
+}
+static void sack_write32(uint8_t *p, uint32_t id) {
+    p[0]=(uint8_t)(id>>24);p[1]=(uint8_t)(id>>16);
+    p[2]=(uint8_t)(id>>8);p[3]=(uint8_t)id;
+}
+/* Keep this extension independent of the proven single APPACK path. */
+static void send_batch_receipt(const event_t *e) {
+    if(e->length<5 || e->length>1+4*SACK_MAX_IDS)return;
+    frame_t f={0}; f.magic=PROTOCOL_MAGIC;f.version=PROTOCOL_VERSION;
+    f.type=TYPE_BATCH_RECEIPT;memcpy(f.sender,own_mac,6);
+    f.session=e->session;
+    int count=0;
+    for(unsigned i=0;i<e->text[0];i++){
+        const uint32_t id=sack_read32(&e->text[1+i*4]);
+        received_t *r=find_history(e->mac,e->session,id);
+        if(!r)continue; /* never acknowledge a frame not received by this ESP32 */
+        r->app_acked=true;
+        sack_write32(&f.text[1+count*4],id);
+        count++;
+    }
+    if(!count)return;
+    f.text[0]=(uint8_t)count;f.length=(uint16_t)(1+4*count);
+    /* All control/ACK traffic stays on robust broadcast 1 Mbps. */
+    (void)send_frame(BROADCAST,&f);
+}
 static void process_event(const event_t *e) {
     if(e->type==EV_STATUS){show_ready("STATUS");emit_link();return;}
     if(e->type==EV_BENCH_START){
@@ -559,6 +592,7 @@ static void process_event(const event_t *e) {
         }
         return;
     }
+    if(e->type==EV_APPACK_BATCH) {send_batch_receipt(e);return;}
     if(e->type==EV_APPACK) {
         received_t *r=find_history(e->mac,e->session,e->id);
         if(!r){puts("ERROR|UNKNOWN_APPACK");return;}
@@ -594,6 +628,19 @@ static void process_event(const event_t *e) {
     if(f->type==TYPE_READ) {
         /* Sender browser decides whether this ID belongs to its outgoing chat. */
         printf("READ|%" PRIu32 "|%" PRIu32 "\n",f->session,f->id);
+        return;
+    }
+    if(f->type==TYPE_BATCH_RECEIPT) {
+        for(unsigned j=0;j<f->text[0];j++){
+            const uint32_t ack_id=sack_read32(&f->text[1+j*4]);
+            for(int i=0;i<MAX_PENDING;i++){
+                outgoing_t *o=&pending[i];
+                if(o->active&&o->frame.session==f->session&&o->frame.id==ack_id){
+                    printf("DELIVERED|%" PRIu32 "|%" PRIu32 "\n",f->session,ack_id);
+                    o->active=false;delivery_count++;break;
+                }
+            }
+        }
         return;
     }
     if(f->type==TYPE_RECEIPT) {
@@ -661,10 +708,35 @@ static void dispatcher(void *arg) {
         vTaskDelay(1);
     }
 }
+/* Parse no more than 6 noncontiguous original radio IDs in one serial command.
+   Works across any interleaved radio traffic; no assumption that IDs are sequential. */
+static bool parse_batch_ack(char *line,event_t *e) {
+    char *save=NULL;
+    char *mac=strtok_r(line," ",&save);
+    char *session=strtok_r(NULL," ",&save);
+    if(!mac||!session||!parse_mac(mac,e->mac))return false;
+    for(const char *x=session;*x;x++)if(!isdigit((unsigned char)*x))return false;
+    unsigned long long sess=strtoull(session,NULL,10);
+    if(sess>UINT32_MAX)return false;
+    e->session=(uint32_t)sess;e->type=EV_APPACK_BATCH;
+    uint8_t count=0;
+    char *token=NULL;
+    while((token=strtok_r(NULL," ",&save))!=NULL){
+        if(count>=SACK_MAX_IDS||!token[0])return false;
+        for(const char *x=token;*x;x++)if(!isdigit((unsigned char)*x))return false;
+        unsigned long long id=strtoull(token,NULL,10);
+        if(id>UINT32_MAX)return false;
+        sack_write32(&e->text[1+count*4],(uint32_t)id);
+        count++;
+    }
+    if(count==0)return false;
+    e->text[0]=count;e->length=(uint16_t)(1+4*count);
+    return true;
+}
 static void serial_task(void *arg) {
     char line[SERIAL_LINE];size_t used=0;
     uint8_t rx_batch[256];
-    puts("HELP|MSGHEX, STATUS, APPACK, READ, KEYGET, KEYSET, RATE, USBOUT, USBIN_BEGIN/USBIN/USBIN_END, RBENCH");
+    puts("HELP|MSGHEX, STATUS, APPACK, APPACKB, READ, KEYGET, KEYSET, RATE, USBOUT, USBIN_BEGIN/USBIN/USBIN_END, RBENCH");
     while (true) {
         int count=serial_receive_batch(rx_batch,sizeof(rx_batch));
         if (count<=0)continue;
@@ -743,6 +815,9 @@ static void serial_task(void *arg) {
                 size_t n=strlen(line+4);
                 if(n<=MAX_TEXT){e.type=EV_SEND;e.length=n;memcpy(e.text,line+4,n);send=true;}
                 else puts("ERROR|MESSAGE_TOO_LONG");
+            }else if(strncmp(line,"APPACKB ",8)==0) {
+                if(parse_batch_ack(line+8,&e))send=true;
+                else puts("ERROR|BAD_APPACKB");
             }else if(strncmp(line,"APPACK ",7)==0) {
                 char mac_str[32],extra;
                 unsigned long session,id;
