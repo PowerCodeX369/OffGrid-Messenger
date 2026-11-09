@@ -41,8 +41,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
-import androidx.compose.ui.draw.blur
-import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.graphics.Brush
@@ -60,11 +58,6 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
-import dev.chrisbanes.haze.HazeState
-import dev.chrisbanes.haze.hazeSource
-import dev.chrisbanes.haze.hazeEffect
-import dev.chrisbanes.haze.HazeInputScale
-import dev.chrisbanes.haze.rememberHazeState
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.delay
@@ -78,10 +71,8 @@ private val VividBlue = Color(0xFF4386FF)
 private val Midnight = Color(0xFF080E20)
 private val Ink = Color(0xFF162437)
 
-// Source-backed Haze 1.x: the *scrolling chat*, not wallpaper, supplies the pixels
-// under the fixed glass navigation and composer. The dialog overlay separately samples the UI.
-private val LocalOffGridHaze = compositionLocalOf<HazeState?> { null }
-
+// Intentional stability choice: no backdrop snapshots or blur sources. The UI uses
+// accessible Material surfaces; no duplicated photo/image layers are possible.
 
 @Composable
 fun OffGridPremiumTheme(dark: Boolean, content: @Composable () -> Unit) {
@@ -107,12 +98,18 @@ fun OffGridPremiumTheme(dark: Boolean, content: @Composable () -> Unit) {
     MaterialTheme(colorScheme=colors, shapes=Shapes(
         small=RoundedCornerShape(12.dp), medium=RoundedCornerShape(18.dp),
         large=RoundedCornerShape(24.dp),extraLarge=RoundedCornerShape(30.dp)
-    ),content=content)
+    )) {
+        // A gradient Box does not set Material's LocalContentColor; without this,
+        // unstyled Text/Icon composables can inherit black even in dark appearance.
+        CompositionLocalProvider(LocalContentColor provides colors.onBackground) {
+            content()
+        }
+    }
 }
 
-/** Optional real backdrop glass. Only enable on surfaces that overlap a Haze source.
- * Bubbles/settings panels remain ordinary Material surfaces so scroll does not trigger
- * recursive, expensive blur effects; labels and touch targets stay perfectly sharp.
+/** Premium Material surface with stable color semantics.
+ * We deliberately avoid any backdrop sampling: user's screenshots showed stale/duplicated
+ * chat pixels behind toolbars and contact dialogs. Color and contrast must take priority.
  */
 @Composable
 private fun GlassCard(
@@ -120,27 +117,25 @@ private fun GlassCard(
     frost:Boolean=false,
     content: @Composable ColumnScope.() -> Unit
 ) {
+    val colors=MaterialTheme.colorScheme
     val shape=RoundedCornerShape(radius)
-    val haze=LocalOffGridHaze.current
-    val upper=if(dark) Color(0xFF17283D).copy(alpha=if(frost).40f else .93f)
-        else Color.White.copy(alpha=if(frost).34f else .94f)
-    val lower=if(dark) Color(0xFF112039).copy(alpha=if(frost).43f else .94f)
-        else Color(0xFFE9F3FF).copy(alpha=if(frost).38f else .96f)
-    val shapeBorder=if(dark)Color(0xFFD5E9FF).copy(alpha=.22f)
-        else Color.White.copy(alpha=.78f)
-    val actualBackdrop=if(frost && haze!=null) Modifier.hazeEffect(state=haze) {
-        blurRadius=24.dp
-        noiseFactor=.045f
-        inputScale=HazeInputScale.Auto
-    } else Modifier
-    Column(
-        modifier.shadow(if(radius==0.dp)0.dp else 3.dp,shape)
-            .clip(shape)
-            .then(actualBackdrop)
-            .background(Brush.verticalGradient(listOf(upper,lower)))
-            .border(1.dp,shapeBorder,shape),
-        content=content
-    )
+    val surface=when {
+        dark && frost -> Color(0xFF1B3048)
+        dark -> Color(0xFF18283D)
+        frost -> Color(0xFFF8FBFF)
+        else -> Color(0xFFFFFFFF)
+    }
+    // Surface provides the correct LocalContentColor for *every* nested Text/Icon.
+    // A gentle tonal edge and elevation replace blur without sacrificing readability.
+    Surface(
+        modifier=modifier,
+        shape=shape,
+        color=surface,
+        contentColor=colors.onSurface,
+        tonalElevation=if(radius==0.dp)1.dp else 2.dp,
+        shadowElevation=if(radius==0.dp)0.dp else 3.dp,
+        border=BorderStroke(1.dp,colors.outlineVariant.copy(alpha=if(dark).72f else .65f))
+    ) { Column(content=content) }
 }
 
 private fun timeOf(millis:Long)=SimpleDateFormat("h:mm a",Locale.getDefault()).format(Date(millis))
@@ -197,22 +192,16 @@ fun PremiumMessenger(
         if(dark)Color(0xFF091125) else Color(0xFFE6F2FF),
         animationSpec=androidx.compose.animation.core.tween(360),label="theme background end")
     val bg=listOf(bgStart,bgMiddle,bgEnd)
-    val hazeState=rememberHazeState()
-    val modalBackdrop=rememberHazeState()
-    val modalVisible=chosenMessage!=null || editTarget!=null || confirmRemoteDelete!=null ||
-        showChatInfo || renameDialog || showDiagnostics || confirmErase
     BoxWithConstraints(Modifier.fillMaxSize()
-        .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Top+WindowInsetsSides.Horizontal))
-        .background(Brush.linearGradient(bg))) {
+        .background(Brush.linearGradient(bg)) // cover the system status-bar region too
+        .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Top+WindowInsetsSides.Horizontal))) {
         val wide=maxWidth>=720.dp
         val micro=maxWidth<355.dp
         if(!wide && page=="chat") BackHandler { page="chats" }
         if(page=="settings") BackHandler { page=if(wide)"chat" else "chats" }
         LaunchedEffect(page,wide) { actions.chatVisibility(page=="chat" || (wide && page!="settings")) }
-        // The modal overlay samples the whole displayed UI; the *glass bars* sample
-        // the LazyColumn separately so messages and photos blur while scrolling.
-        Box(Modifier.matchParentSize().then(if(modalVisible) Modifier.hazeSource(modalBackdrop) else Modifier)) {
-        CompositionLocalProvider(LocalOffGridHaze provides hazeState) {
+        // Chat/list content is drawn once. Menus are normal Material dialogs (platform
+        // scrim + opaque surface), so overlays never duplicate or ghost photos.
         Row(Modifier.fillMaxSize()) {
             if(wide) {
                 NavigationPane(
@@ -245,10 +234,8 @@ fun PremiumMessenger(
                         openChat={page="chat"},openSettings={page="settings"},onConnect=actions.connect
                         )
                     else -> {
-                        // Draw timeline across the entire available chat viewport. The
-                        // toolbar and composer are overlays, NOT vertical siblings.
-                        // This is essential: the actual messages must render under the
-                        // translucent bars or there is nothing real to blur.
+                        // Keep the chat viewport behind the pinned opaque toolbars,
+                        // preserving scroll/inset behavior without expensive capture effects.
                         Box(Modifier.fillMaxSize().imePadding().navigationBarsPadding()) {
                             ChatTimeline(items=items,filter=if(showSearch)query else "",dark=dark,
                                 playingId=playingId,connected=connected,appVisible=appVisible,
@@ -257,7 +244,7 @@ fun PremiumMessenger(
                                 onLongPress={chosenMessage=it},
                                 topSpace=if(showSearch)150.dp else 94.dp,
                                 bottomSpace=if(recording)170.dp else 112.dp,
-                                modifier=Modifier.fillMaxSize().hazeSource(hazeState))
+                                modifier=Modifier.fillMaxSize())
                             Column(Modifier.fillMaxWidth().align(Alignment.TopCenter)) {
                                 ChatTopBar(
                                     dark=dark,connected=connected,status=status,
@@ -301,21 +288,12 @@ fun PremiumMessenger(
                 }
             }
         } // End Row
-        } // End CompositionLocalProvider
-        } // End sampled UI (modal backdrop source)
-        if(modalVisible) {
-            // Same-root frost, deliberately above UI and below the AlertDialog.
-            // The alert's own text remains sharp in Android's dialog window.
-            Box(Modifier.matchParentSize().hazeEffect(state=modalBackdrop) {
-                blurRadius=28.dp
-                noiseFactor=.025f
-                inputScale=HazeInputScale.Auto
-            }.background(if(dark)Color(0x4D061324) else Color(0x33F2F7FD)))
-        }
     }
     chosenMessage?.let { message ->
         AlertDialog(
-        containerColor=MaterialTheme.colorScheme.surface.copy(alpha=if(dark).76f else .88f),
+        containerColor=MaterialTheme.colorScheme.surface,
+        titleContentColor=MaterialTheme.colorScheme.onSurface,
+        textContentColor=MaterialTheme.colorScheme.onSurfaceVariant,
         tonalElevation=2.dp,shape=RoundedCornerShape(26.dp),
         onDismissRequest={chosenMessage=null},
             title={Text("Message options")},
@@ -343,7 +321,9 @@ fun PremiumMessenger(
             }},confirmButton={TextButton(onClick={chosenMessage=null}) {Text("Close")}})
     }
     editTarget?.let { target -> AlertDialog(
-        containerColor=MaterialTheme.colorScheme.surface.copy(alpha=if(dark).76f else .88f),
+        containerColor=MaterialTheme.colorScheme.surface,
+        titleContentColor=MaterialTheme.colorScheme.onSurface,
+        textContentColor=MaterialTheme.colorScheme.onSurfaceVariant,
         tonalElevation=2.dp,shape=RoundedCornerShape(26.dp),
         onDismissRequest={editTarget=null},
         title={Text("Edit message")},text={OutlinedTextField(editDraft,{editDraft=it.take(500)},
@@ -353,7 +333,9 @@ fun PremiumMessenger(
         }){Text("Save edit")}},dismissButton={TextButton(onClick={editTarget=null}){Text("Cancel")}})
     }
     confirmRemoteDelete?.let { target -> AlertDialog(
-        containerColor=MaterialTheme.colorScheme.surface.copy(alpha=if(dark).76f else .88f),
+        containerColor=MaterialTheme.colorScheme.surface,
+        titleContentColor=MaterialTheme.colorScheme.onSurface,
+        textContentColor=MaterialTheme.colorScheme.onSurfaceVariant,
         tonalElevation=2.dp,shape=RoundedCornerShape(26.dp),
         onDismissRequest={confirmRemoteDelete=null},
         title={Text("Delete for everyone?")},
@@ -362,7 +344,9 @@ fun PremiumMessenger(
         dismissButton={TextButton(onClick={confirmRemoteDelete=null}){Text("Cancel")}})
     }
     if(showChatInfo) AlertDialog(
-        containerColor=MaterialTheme.colorScheme.surface.copy(alpha=if(dark).76f else .88f),
+        containerColor=MaterialTheme.colorScheme.surface,
+        titleContentColor=MaterialTheme.colorScheme.onSurface,
+        textContentColor=MaterialTheme.colorScheme.onSurfaceVariant,
         tonalElevation=2.dp,shape=RoundedCornerShape(26.dp),
         onDismissRequest={showChatInfo=false},
         title={Text("Contact details")},text={Column(verticalArrangement=Arrangement.spacedBy(12.dp)) {
@@ -375,7 +359,9 @@ fun PremiumMessenger(
             TextButton(onClick={renameDraft=contactName;renameDialog=true;showChatInfo=false}){Text("Rename contact")}
         }},confirmButton={TextButton(onClick={showChatInfo=false}){Text("Done")}})
     if(renameDialog) AlertDialog(
-        containerColor=MaterialTheme.colorScheme.surface.copy(alpha=if(dark).76f else .88f),
+        containerColor=MaterialTheme.colorScheme.surface,
+        titleContentColor=MaterialTheme.colorScheme.onSurface,
+        textContentColor=MaterialTheme.colorScheme.onSurfaceVariant,
         tonalElevation=2.dp,shape=RoundedCornerShape(26.dp),
         onDismissRequest={renameDialog=false},title={Text("Contact name")},
         text={OutlinedTextField(renameDraft,{renameDraft=it.take(36)},singleLine=true)},
@@ -383,7 +369,9 @@ fun PremiumMessenger(
         dismissButton={TextButton(onClick={renameDialog=false}){Text("Cancel")}})
     enlargedPhoto?.let { FullPhoto(item=it,onClose={enlargedPhoto=null}) }
     if(showDiagnostics) AlertDialog(
-        containerColor=MaterialTheme.colorScheme.surface.copy(alpha=if(dark).76f else .88f),
+        containerColor=MaterialTheme.colorScheme.surface,
+        titleContentColor=MaterialTheme.colorScheme.onSurface,
+        textContentColor=MaterialTheme.colorScheme.onSurfaceVariant,
         tonalElevation=2.dp,shape=RoundedCornerShape(26.dp),
         onDismissRequest={showDiagnostics=false},title={Text("BLE diagnostics")},
         text={Column(Modifier.heightIn(max=420.dp)) {
@@ -391,7 +379,9 @@ fun PremiumMessenger(
         }},confirmButton={TextButton(onClick={showDiagnostics=false}){Text("Close")}}
     )
     if(confirmErase) AlertDialog(
-        containerColor=MaterialTheme.colorScheme.surface.copy(alpha=if(dark).76f else .88f),
+        containerColor=MaterialTheme.colorScheme.surface,
+        titleContentColor=MaterialTheme.colorScheme.onSurface,
+        textContentColor=MaterialTheme.colorScheme.onSurfaceVariant,
         tonalElevation=2.dp,shape=RoundedCornerShape(26.dp),
         onDismissRequest={confirmErase=false},
         title={Text("Clear encrypted history?")},
@@ -455,20 +445,26 @@ private fun NavigationPane(
         Spacer(Modifier.height(10.dp))
         // Exactly one conversation exists; no chat-list search or filtering.
         val latest=items.lastOrNull()
-            Row(Modifier.fillMaxWidth().clickable(onClick=openChat).padding(16.dp),verticalAlignment=Alignment.CenterVertically) {
-                NodeAvatar(55.dp,dark,avatarBytes)
-                Spacer(Modifier.width(13.dp))
-                Column(Modifier.weight(1f)) {
-                    Row(verticalAlignment=Alignment.CenterVertically) {
-                        Text(contactName,fontWeight=FontWeight.SemiBold,modifier=Modifier.weight(1f))
-                        latest?.let {Text(timeOf(it.timestamp),style=MaterialTheme.typography.labelSmall,color=MaterialTheme.colorScheme.onSurfaceVariant)}
-                    }
-                    Spacer(Modifier.height(4.dp))
-                    Text(latest?.let{when(it.kind){OgmCodec.IMAGE->"📷 Photo";OgmCodec.VOICE->"🎤 Voice message";else->it.text}} ?: "Encrypted off-grid conversation",
-                        maxLines=1,overflow=TextOverflow.Ellipsis,style=MaterialTheme.typography.bodySmall,
-                        color=MaterialTheme.colorScheme.onSurfaceVariant)
+        Row(Modifier.fillMaxWidth().clickable(onClick=openChat).padding(16.dp),
+            verticalAlignment=Alignment.CenterVertically) {
+            NodeAvatar(55.dp,dark,avatarBytes)
+            Spacer(Modifier.width(13.dp))
+            Column(Modifier.weight(1f)) {
+                Row(verticalAlignment=Alignment.CenterVertically) {
+                    Text(contactName,fontWeight=FontWeight.SemiBold,modifier=Modifier.weight(1f))
+                    latest?.let { Text(timeOf(it.timestamp),style=MaterialTheme.typography.labelSmall,
+                        color=MaterialTheme.colorScheme.onSurfaceVariant) }
                 }
+                Spacer(Modifier.height(4.dp))
+                Text(latest?.let { when(it.kind) {
+                    OgmCodec.IMAGE -> "📷 Photo"
+                    OgmCodec.VOICE -> "🎤 Voice message"
+                    else -> it.text
+                } } ?: "Encrypted off-grid conversation",
+                    maxLines=1,overflow=TextOverflow.Ellipsis,style=MaterialTheme.typography.bodySmall,
+                    color=MaterialTheme.colorScheme.onSurfaceVariant)
             }
+        }
         HorizontalDivider(Modifier.padding(horizontal=18.dp),color=MaterialTheme.colorScheme.onSurface.copy(alpha=.08f))
         if(!connected) TextButton(onClick=onConnect,modifier=Modifier.padding(10.dp)) {
             Icon(Icons.Default.Bluetooth,null);Spacer(Modifier.width(6.dp));Text("Connect to node")
@@ -629,7 +625,8 @@ private fun ResponsivePhoto(message:ChatItem,maxBubble:Dp,onOpen:(ChatItem)->Uni
         .background(MaterialTheme.colorScheme.surfaceVariant)
         .combinedClickable(enabled=bitmap!=null,onClick={onOpen(message)},onLongClick={onLongPress(message)}),
         contentAlignment=Alignment.Center) {
-        if(bitmap!=null) Image(bitmap,"Open encrypted photo",Modifier.fillMaxSize(),contentScale=ContentScale.Fit)
+        val photo=bitmap // delegated Compose state cannot be smart-cast directly
+        if(photo!=null) Image(photo,"Open encrypted photo",Modifier.fillMaxSize(),contentScale=ContentScale.Fit)
         else if(message.bytes!=null) CircularProgressIndicator(Modifier.size(22.dp),strokeWidth=2.dp)
         else Icon(Icons.Default.BrokenImage,"Photo unavailable")
     }
@@ -822,17 +819,18 @@ private fun SettingsPane(
     connected:Boolean,nodeAddress:String?,diagnostics:List<String>,onBack:()->Unit,actions:PremiumActions,
     onShowDiagnostics:()->Unit,onClear:()->Unit
 ) {
-    // Settings scrolls *under* its pinned glass heading, like the conversation.
-    val background=LocalOffGridHaze.current
+    // Settings scrolls below a pinned opaque Material header; no blur snapshot.
     Box(Modifier.fillMaxSize().navigationBarsPadding()) {
-        LazyColumn(Modifier.fillMaxSize().then(if(background!=null) Modifier.hazeSource(background) else Modifier),
+        LazyColumn(Modifier.fillMaxSize(),
             contentPadding=PaddingValues(start=18.dp,end=18.dp,top=94.dp,bottom=18.dp),
             verticalArrangement=Arrangement.spacedBy(15.dp)) {
-            item { GlassCard(dark=dark) {
+            item { GlassCard(Modifier.fillMaxWidth(),dark=dark) {
                 Column(Modifier.padding(18.dp)) {
                     Text("CONNECTED DEVICE",style=MaterialTheme.typography.labelSmall,color=MaterialTheme.colorScheme.primary)
                     Spacer(Modifier.height(10.dp))
-                    Text(nodeAddress ?: "No BLE device selected",style=MaterialTheme.typography.bodyMedium)
+                    Text(nodeAddress ?: "No BLE device selected",style=MaterialTheme.typography.bodyMedium,
+                        color=MaterialTheme.colorScheme.onSurface,
+                        maxLines=2,overflow=TextOverflow.Ellipsis)
                     Text(if(connected)"Authenticated · offline transport" else "Disconnected",
                         style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.onSurfaceVariant)
                     Row(horizontalArrangement=Arrangement.spacedBy(6.dp)) {
@@ -845,7 +843,7 @@ private fun SettingsPane(
                     TextButton(onClick=actions.forgetNode){Text("Forget node (keep key)")}
                 }
             } }
-            item { GlassCard(dark=dark) { Column(Modifier.padding(16.dp)) {
+            item { GlassCard(Modifier.fillMaxWidth(),dark=dark) { Column(Modifier.padding(16.dp)) {
                 ToggleSetting("Dark appearance","Midnight glass palette",dark,actions.changeDark)
                 ToggleSetting("Fast photos","Smaller photos, quicker transfers",fastPhotos,actions.changeFastPhotos)
                 ToggleSetting("Message notifications","Notify when chat is not visible",notifications,actions.changeNotifications)
@@ -853,7 +851,7 @@ private fun SettingsPane(
                 ToggleSetting("Keep BLE active","Persistent device connection notification; uses battery",backgroundEnabled,actions.changeBackground)
                 ToggleSetting("Tap to record","Accessible alternative to press-and-hold",accessibleVoiceTap,actions.changeAccessibleVoiceTap)
             } } }
-            item { GlassCard(dark=dark) { Column(Modifier.padding(16.dp)) {
+            item { GlassCard(Modifier.fillMaxWidth(),dark=dark) { Column(Modifier.padding(16.dp)) {
                 Text("Privacy & diagnostics",fontWeight=FontWeight.SemiBold)
                 Text("History encrypted with Android Keystore, stored only on this phone. No cloud sync.",
                     style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.onSurfaceVariant)
@@ -876,9 +874,10 @@ private fun SettingsPane(
 
 @Composable
 private fun ToggleSetting(title:String,description:String,checked:Boolean,onChanged:(Boolean)->Unit) {
-    Row(Modifier.fillMaxWidth().padding(vertical=9.dp),verticalAlignment=Alignment.CenterVertically) {
+    Row(Modifier.fillMaxWidth().padding(vertical=11.dp),verticalAlignment=Alignment.CenterVertically) {
         Column(Modifier.weight(1f)) {
-            Text(title,style=MaterialTheme.typography.bodyLarge,fontWeight=FontWeight.Medium)
+            Text(title,style=MaterialTheme.typography.bodyLarge,fontWeight=FontWeight.Medium,
+                color=MaterialTheme.colorScheme.onSurface)
             Text(description,style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.onSurfaceVariant)
         }
         Spacer(Modifier.width(8.dp))
