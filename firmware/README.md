@@ -1,6 +1,26 @@
-# OffGrid Messenger — Phase 1.4.10.3 Selective Photo ACK (experimental)
+# OffGrid Messenger — Phase 1.4.10.4 Auto-scroll (web-only patch to experimental Selective ACK)
 
 **Authoritative frozen baseline: Phase 1.4.10.2_InterruptUSB.** This new release is a *separate, reversible experiment*, not a replacement for that measured-working version.
+
+## Phase 1.4.10.4 changes — only Web UI
+
+- **Incoming and outgoing messages automatically scroll to the latest bubble** on arrival.
+- **Incoming photos stay in view after decoding/rendering** using a `ResizeObserver` and image-load event.
+- **Restoring chat history** and **opening a chat on a narrow/mobile screen** scroll to its latest message.
+- When the reader intentionally scrolls up through history, automatic scrolling caused by *layout resize alone* pauses. A genuinely new message resumes auto-follow.
+- The approved visual design, encryption, stored keys, original message protocol, photo transfer protocol, diagnostics, and ESP32 firmware are unchanged.
+- **GPS/location sharing has been removed from the project scope and future roadmap**, per user request.
+- **Next planned radio phase:** ESP-NOW Long Range (LR), as a separate hardware-tested experiment. See [ROADMAP.md](ROADMAP.md) for the revised plan with GPS removed. Actual outdoor range is not yet established.
+
+### Install without reflashing
+
+Keep both ESP32 boards on the **Phase 1.4.10.3 firmware** if you are testing Selective ACK; or retain the frozen **Phase 1.4.10.2 firmware** with Legacy photo receipt mode.
+
+Run `python3 -m http.server 8765 --directory web` from this project directory. Open `http://localhost:8765/?v=1.4.10.4` in both tabs and hard-refresh. No changes to NVS, pairing, or the radio firmware are required for auto-scroll.
+
+### Selective ACK performance observation
+
+Observed real photo speed improved from **7.2 KiB/s (1.4.10.2)** to **7.7 KiB/s (1.4.10.3)**, only about 7%. The selective ACK implementation is still experimental and is **not promoted to stable**. Keep the frozen 1.4.10.2 rollback separately.
 
 ## Why this version exists
 
@@ -35,7 +55,7 @@ We therefore reduce acknowledgment overhead for *photos only*, without weakening
    python3 -m http.server 8765 --directory web
    ```
 
-6. Open `http://localhost:8765/?v=1.4.10.3` in **both tabs**, hard-refresh Ctrl+Shift+R, and connect one ESP32 per tab. Keep the same localhost origin and port to preserve existing encrypted chat history.
+6. Open `http://localhost:8765/?v=1.4.10.4` in **both tabs**, hard-refresh Ctrl+Shift+R, and connect one ESP32 per tab. Keep the same localhost origin and port to preserve existing encrypted chat history.
 7. `READY` must include `PROTO=2|CAP=180|...|DIAG=1|SACK=1`. Check both connections before testing photos.
 
 ## Test checklist

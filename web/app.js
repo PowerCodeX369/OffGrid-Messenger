@@ -302,11 +302,59 @@ function persistName(){try{localStorage.setItem(nameKey(),activeContact);}catch{
 function updateSidebar(){const r=records[records.length-1];$('lastChatPreview').textContent=r?(r.dir==='out'?'You: ':'')+(r.kind==='image'?'📷 Photo':r.text||'Message'):'Your encrypted off-grid conversation';$('lastChatTime').textContent=r?fmtTime(r.ts):'';$('introCard').style.display=records.length?'none':'';}
 function createReceipt(status){const wrap=document.createElement('span');wrap.className='receipt-icon '+(status||'sending');wrap.dataset.role='tick';wrap.setAttribute('aria-label',status||'Sending');
  wrap.innerHTML='<svg viewBox="0 0 26 16" width="26" height="16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path class="tick-one" d="M1.5 8.1 6.1 12.5 16.4 2.1"/><path class="tick-two" d="M8.5 8.1 13.1 12.5 23.4 2.1"/></svg>';return wrap;}
+/* Message viewport follow mode.  A normal scrollTop assignment happens before
+ * decoded image dimensions become available, so ResizeObserver keeps the newest
+ * message visible as the chat grows.  A deliberate upward user scroll pauses
+ * resizing-based auto-follow; a genuinely new message resumes it. */
+const chatScrollState = {follow:true, frame:0, touchY:null};
+function chatNearBottom(){
+ const view=$('chatScroll');
+ return view.scrollHeight - view.clientHeight - view.scrollTop < 88;
+}
+function scrollToNewest(force=false){
+ if(force)chatScrollState.follow=true;
+ if(!chatScrollState.follow || chatScrollState.frame)return;
+ chatScrollState.frame=requestAnimationFrame(()=>{
+  chatScrollState.frame=0;
+  if(!chatScrollState.follow)return;
+  const view=$('chatScroll');
+  view.scrollTop=view.scrollHeight;
+ });
+}
+function setupChatAutoScroll(){
+ const view=$('chatScroll');
+ // Wheel / touch / keyboard scrolling is a deliberate choice to read history.
+ view.addEventListener('wheel',event=>{
+  if(event.deltaY < -2)chatScrollState.follow=false;
+  else if(chatNearBottom())chatScrollState.follow=true;
+ },{passive:true});
+ view.addEventListener('touchstart',event=>{
+  chatScrollState.touchY=event.touches[0]?.clientY??null;
+ },{passive:true});
+ view.addEventListener('touchmove',event=>{
+  if(chatScrollState.touchY===null)return;
+  const y=event.touches[0]?.clientY??chatScrollState.touchY;
+  if(y>chatScrollState.touchY+8)chatScrollState.follow=false;
+  else if(chatNearBottom())chatScrollState.follow=true;
+  chatScrollState.touchY=y;
+ },{passive:true});
+ view.addEventListener('scroll',()=>{
+  if(chatNearBottom())chatScrollState.follow=true;
+ },{passive:true});
+ view.addEventListener('keydown',event=>{
+  if(['PageUp','Home','ArrowUp'].includes(event.key))chatScrollState.follow=false;
+  if(['End'].includes(event.key)){chatScrollState.follow=true;scrollToNewest(true);}
+ });
+ if('ResizeObserver' in window){
+  new ResizeObserver(()=>scrollToNewest()).observe($('messages'));
+ }
+}
+setupChatAutoScroll();
 function makeBubble(record,animate=true){
  const row=document.createElement('div');row.className='message-row '+(record.dir==='out'?'out':'in')+(animate?' is-new':'');row.dataset.mid=record.id;row.dataset.status=record.status||'';
  const bubble=document.createElement('div');bubble.className='message-bubble';
  if(record.kind==='image'){
-   const img=document.createElement('img');img.className='chat-photo';img.alt='Shared photograph';img.loading='lazy';
+   const img=document.createElement('img');img.className='chat-photo';img.alt='Shared photograph';img.loading=animate?'eager':'lazy';img.addEventListener('load',()=>scrollToNewest());
    const mime=record.mime||'image/webp',url=URL.createObjectURL(new Blob([record.bytes],{type:mime}));photoUrls.set(record.id,url);img.src=url;
    img.tabIndex=0;img.setAttribute('role','button');img.setAttribute('aria-label','Open photograph in gallery');
    img.onclick=()=>openPhotoViewer(record.id);img.onkeydown=e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();openPhotoViewer(record.id);}};
@@ -316,7 +364,7 @@ function makeBubble(record,animate=true){
  const meta=document.createElement('div');meta.className='message-meta';const time=document.createElement('span');time.textContent=fmtTime(record.ts);meta.append(time);
  if(record.dir==='out'){const progress=document.createElement('span');progress.className='transfer-progress';progress.dataset.role='progress';progress.textContent=record.status==='sending'&&record.progress?record.progress+'%':'';meta.append(progress,createReceipt(record.status||'sending'));}
  bubble.append(meta);row.append(bubble);$('messages').append(row);updateBubble(record);
- $('chatScroll').scrollTop=$('chatScroll').scrollHeight;return row;
+ if(animate)scrollToNewest(true);return row;
 }
 function updateBubble(r){const row=Array.from($('messages').children).find(el=>el.dataset.mid===r.id);if(!row)return;row.dataset.status=r.status||'';
  const receipt=row.querySelector('[data-role="tick"]');if(receipt){receipt.className='receipt-icon '+(r.status||'sending');receipt.setAttribute('aria-label',r.status||'Sending');}
@@ -324,7 +372,7 @@ function updateBubble(r){const row=Array.from($('messages').children).find(el=>e
  if(r.dir==='out'){row.title=(r.status||'Sending')+(r.error?': '+r.error:'');row.classList.toggle('retryable',r.status==='failed');if(r.status==='failed')row.onclick=()=>retryMessage(r.id);else row.onclick=null;}
 }
 function revokePhotos(){closePhotoViewer();for(const url of photoUrls.values())URL.revokeObjectURL(url);photoUrls.clear();}
-function renderHistory(){revokePhotos();$('messages').replaceChildren();for(const r of records)makeBubble(r,false);updateSidebar();}
+function renderHistory(){revokePhotos();$('messages').replaceChildren();for(const r of records)makeBubble(r,false);updateSidebar();scrollToNewest(true);}
 /* In-app viewer. Photo blobs are already authenticated, decrypted and locally stored. */
 function galleryPhotos(){return records.filter(r=>r.kind==='image'&&r.bytes?.length>0);}
 function showSelectedPhoto(animated=true){
@@ -829,10 +877,10 @@ $('messageInput').addEventListener('input',updateByteCount);$('messageInput').ad
 $('attachments').onclick=()=>$('photoPicker').click();$('photoPicker').addEventListener('change',e=>{if(e.target.files?.length)void sendPhoto(e.target.files[0]);});
 $('securityButton').onclick=showPairing;$('renameButton').onclick=showRename;$('settingsButton').onclick=showSettings;$('infoButton').onclick=showInfo;
 $('themeToggle').onclick=()=>{theme=theme==='dark'?'light':'dark';document.body.classList.toggle('light',theme==='light');try{localStorage.setItem('offgrid_theme',theme);}catch{}};
-$('contactButton').onclick=()=>{document.body.classList.add('mobile-chat');sendReadReceipts();};$('mobileBack').onclick=()=>document.body.classList.remove('mobile-chat');
+$('contactButton').onclick=()=>{document.body.classList.add('mobile-chat');scrollToNewest(true);sendReadReceipts();};$('mobileBack').onclick=()=>document.body.classList.remove('mobile-chat');
 $('closeModal').onclick=closeDialog;$('modalBackdrop').onclick=e=>{if(e.target===$('modalBackdrop'))closeDialog();};document.addEventListener('keydown',e=>{if(e.key==='Escape')closeDialog();});
 document.addEventListener('visibilitychange',sendReadReceipts);window.addEventListener('focus',sendReadReceipts);
 window.addEventListener('beforeunload',revokePhotos);
 setInterval(pruneIncoming,45000);
 (async()=>{try{db=await openDb();}catch(e){toast('IndexedDB unavailable. Encrypted storage cannot work: '+e.message);}refreshStatus();})();
-console.info('OffGrid Phase 1.4.9 Diagnostics — unchanged encrypted chat, isolated USB / radio / full-path benchmarks.');
+console.info('OffGrid Phase 1.4.10.4 — auto-scroll maintenance on selective-ACK web app; unchanged ESP-IDF firmware.');
