@@ -1,17 +1,21 @@
 'use strict';
-/* OffGrid Phase 1.4: AES-256-GCM browser-to-browser, fragmented over unchanged ESP-NOW protocol 2.
+/* OffGrid Phase 1.4.1: responsive layout + adaptive reliable encrypted transport over unchanged ESP-NOW protocol 2.
    Keys are stored as non-extractable CryptoKey objects in IndexedDB. No external servers. */
 const P=globalThis.OGP,$=id=>document.getElementById(id);
 const MAX_CHARS=500,MAX_PHOTO=96*1024,STORE='OffGridMessengerV14';
+const APP_VERSION='1.4.1';
 const stateRank={sending:0,queued:0,sent:1,failed:1,delivered:2,read:3};
 const encoder=new TextEncoder();
 let port=null,reader=null,writer=null,readPromise=null,closing=false,verified=false,serialBuffer='',writeChain=Promise.resolve(),handshakeTimer=null;
 let localMac=null,secretKey=null,peerMac=null,activeContact='Nearby node';
 let db=null,records=[],recordMap=new Map(),photoUrls=new Map(),incoming=new Map(),recentTransfers=new Map();
-let transferQueue=[],activeTransfer=null,serialPending=null,runningTransfers=false;
+let transferQueue=[],activeTransfer=null,runningTransfers=false;
+const radioByHex=new Map(),radioByWire=new Map();
+const linkStats={samples:0,avgMs:0,cleanStreak:0,retries:0,mode:'starting',window:1};
+let linkPreference='auto';
 let queuedReceipts=new Set(),pendingReads=new Set(),theme='dark';
 let imageMode='hq';
-try{theme=localStorage.getItem('offgrid_theme')==='light'?'light':'dark';imageMode=localStorage.getItem('offgrid_image_mode')==='lossless'?'lossless':'hq';}catch{}
+try{theme=localStorage.getItem('offgrid_theme')==='light'?'light':'dark';imageMode=localStorage.getItem('offgrid_image_mode')==='lossless'?'lossless':'hq';linkPreference=['auto','range','speed'].includes(localStorage.getItem('offgrid_link_preference'))?localStorage.getItem('offgrid_link_preference'):'auto';}catch{}
 document.body.classList.toggle('light',theme==='light');
 const macKey=()=>localMac||'unknown';
 const nameKey=()=>`offgrid_phase14_name_${macKey()}`;
@@ -37,6 +41,49 @@ const dbPut=(store,value)=>txRequest(store,'readwrite',st=>st.put(value));
 const dbDelete=(store,key)=>txRequest(store,'readwrite',st=>st.delete(key));
 const listStored=()=>txRequest('messages','readonly',st=>st.index('owner').getAll(IDBKeyRange.only(macKey())));
 async function wipeStored(){const rows=await listStored();await new Promise((resolve,reject)=>{const tx=db.transaction('messages','readwrite'),st=tx.objectStore('messages');for(const row of rows)st.delete(row.pk);tx.oncomplete=resolve;tx.onerror=()=>reject(tx.error);});}
+function chosenWindow(){
+ // Application-layer flow control only: does not change RF power, channel or the ESP-NOW PHY rate.
+ if(linkPreference==='range')return 1;
+ if(linkPreference==='speed')return linkStats.mode==='weak'?1:linkStats.cleanStreak>=4?3:2;
+ if(linkStats.samples<5||linkStats.cleanStreak<5)return 1;
+ if(linkStats.avgMs<380&&linkStats.cleanStreak>=14)return 3;
+ if(linkStats.avgMs<850)return 2;
+ return 1;
+}
+function photoBudget(){
+ if(imageMode==='lossless')return MAX_PHOTO;
+ if(linkStats.mode==='weak'||linkPreference==='range')return 48*1024;
+ if(linkPreference==='speed'||linkStats.mode==='strong')return 72*1024;
+ return 64*1024;
+}
+function updateLinkBadge(){
+ const node=$('linkModeLabel');if(!node)return;
+ const speed=chosenWindow(),budget=Math.round(photoBudget()/1024);
+ const name=linkPreference==='auto'?'Auto':linkPreference==='range'?'Range first':'Speed first';
+ let quality='learning';
+ if(linkStats.samples>3)quality=linkStats.mode==='strong'?'strong':linkStats.mode==='weak'?'weak':'steady';
+ node.textContent=`${name} · ${quality} · ${speed} in flight · ~${budget} KB photos`;
+ node.title='Estimated from delivery acknowledgments, not actual measured physical distance or RF data rate.';
+}
+function recordLinkResult(rtt,attempts){
+ linkStats.samples++;
+ linkStats.avgMs=linkStats.samples===1?rtt:linkStats.avgMs*0.78+rtt*0.22;
+ if(attempts>1||rtt>1800){linkStats.cleanStreak=0;linkStats.retries++;linkStats.mode='weak';}
+ else{
+   linkStats.cleanStreak++;
+   if(linkStats.cleanStreak>=12&&linkStats.avgMs<420)linkStats.mode='strong';
+   else if(linkStats.cleanStreak>=5)linkStats.mode='steady';
+ }
+ linkStats.window=chosenWindow();updateLinkBadge();
+}
+function recordLinkFailure(){linkStats.cleanStreak=0;linkStats.mode='weak';linkStats.window=1;linkStats.retries++;updateLinkBadge();}
+function pendingRadio(){return radioByHex.size>0;}
+function clearSlot(slot){
+ if(!slot)return;clearTimeout(slot.timer);
+ if(radioByHex.get(slot.hex)===slot)radioByHex.delete(slot.hex);
+ if(slot.wire&&radioByWire.get(slot.wire)===slot)radioByWire.delete(slot.wire);
+}
+function failPendingRadio(error){for(const slot of [...radioByHex.values()]){clearSlot(slot);slot.reject(error);}}
 function refreshStatus(){
  const ready=verified&&!!secretKey;
  $('statusDot').className='status-dot'+(verified?' on':port?' wait':'');
@@ -50,7 +97,7 @@ function refreshStatus(){
  $('securityIcon').textContent=ready?'🔒':'♢';
  $('securityLabel').textContent=ready?'AES-256-GCM enabled · manage pairing':verified?'Encryption key required · set up pairing':'Connect to configure encryption';
  $('composerStatus').textContent=ready?'Enter to send · images are compressed and sent in chunks':verified?'Pair the same key on both browsers to begin':'Connect an ESP32 using the sidebar';
- updateByteCount();
+ updateByteCount();updateLinkBadge();
 }
 function setName(name){activeContact=(name||'Nearby node').slice(0,36);$('contactSidebarName').textContent=activeContact;$('chatName').textContent=activeContact;const initial=Array.from(activeContact)[0]?.toUpperCase()||'N';$('contactAvatar').textContent=initial;$('headerAvatar').textContent=initial;}
 function persistName(){try{localStorage.setItem(nameKey(),activeContact);}catch{}}
@@ -107,12 +154,12 @@ async function processRx(mac,session,packetId,rawHex){
  if(state.count!==fr.count||state.total!==fr.length)return;
  if(!state.chunks[fr.index]){state.chunks[fr.index]=fr.bytes;state.received++;}state.updated=Date.now();
  if(state.received!==state.count)return;
- incoming.delete(key);recentTransfers.set(key,Date.now());
+ incoming.delete(key);
  const payload=P.concat(...state.chunks);
  if(payload.length!==state.total)return;
  try{
   const plain=await P.open(secretKey,payload,fr.transferId),env=P.parseEnvelope(plain);
-  await handleEnvelope(env,mac);
+  await handleEnvelope(env,mac);recentTransfers.set(key,Date.now());
  }catch(e){console.warn('Encrypted message rejected:',e);toast('Encrypted transfer rejected: wrong pairing key, corrupted data, or authentication failure.');}
 }
 async function handleEnvelope(env,mac){
@@ -142,25 +189,44 @@ async function sealJob(job){
  return P.frames(transferId,ciphertext);
 }
 async function oneFragment(frame){
- let lastErr;const hex=P.hex(frame);
+ const hex=P.hex(frame),started=performance.now();let lastErr;
  for(let attempt=0;attempt<3;attempt++){
   try{
-   await new Promise(async(resolve,reject)=>{
-    if(serialPending){reject(Error('Another frame is outstanding'));return;}
-    const slot={hex,resolve,reject,wire:null,timer:null};serialPending=slot;
-    slot.timer=setTimeout(()=>{if(serialPending===slot){serialPending=null;reject(Error('Radio acknowledgment timeout'));}},15000);
-    try{await writeLine('MSGHEX '+hex);}catch(e){clearTimeout(slot.timer);if(serialPending===slot)serialPending=null;reject(e);}
-   });return;
-  }catch(e){lastErr=e;if(!verified||!writer)throw e;await wait(250+attempt*200);}
+   await new Promise((resolve,reject)=>{
+    if(radioByHex.has(hex)){reject(Error('Duplicate fragment already outstanding'));return;}
+    const slot={hex,resolve,reject,wire:null,timer:null};radioByHex.set(hex,slot);
+    slot.timer=setTimeout(()=>{
+      if(radioByHex.get(hex)===slot){clearSlot(slot);reject(Error('Radio/browser acknowledgment timeout'));}
+    },14500);
+    writeLine('MSGHEX '+hex).catch(e=>{if(radioByHex.get(hex)===slot){clearSlot(slot);reject(e);}});
+   });
+   return {ms:Math.max(1,performance.now()-started),attempts:attempt+1};
+  }catch(e){lastErr=e;if(!verified||!writer)throw e;await wait(280+attempt*230);}
  }
  throw lastErr||Error('Fragment failed');
 }
-function onRadio(type,session,id,extra){const slot=serialPending;if(!slot||!slot.wire||slot.wire!==`${session}:${id}`)return;
- if(type==='SENT'&&!slot.sent){slot.sent=true;if(activeTransfer?.record&&activeTransfer.record.status==='sending'){} }
+function onRadio(type,session,id,extra){
+ const slot=radioByWire.get(`${session}:${id}`);if(!slot)return;
  if(type==='DELIVERED'||type==='FAILED'){
-  clearTimeout(slot.timer);serialPending=null;
-  if(type==='DELIVERED')slot.resolve();else slot.reject(Error(extra||'No browser acknowledgement'));
+  clearSlot(slot);
+  if(type==='DELIVERED')slot.resolve();else slot.reject(Error(extra||'No remote browser acknowledgment'));
  }
+}
+async function transferFragments(chunks,job){
+ let next=0,completed=0,fatal=null;const inflight=new Map();
+ while((completed<chunks.length)&&!fatal){
+  while(next<chunks.length&&inflight.size<chosenWindow()){
+   const i=next++;
+   const op=oneFragment(chunks[i]).then(result=>({i,...result})).catch(error=>({i,error}));
+   inflight.set(i,op);
+  }
+  if(!inflight.size)break;
+  const result=await Promise.race(inflight.values());inflight.delete(result.i);
+  if(result.error){recordLinkFailure();fatal=result.error;break;}
+  completed++;recordLinkResult(result.ms,result.attempts);
+  if(job.record)await setProgress(job.record,Math.round(completed*100/chunks.length));
+ }
+ if(fatal){await Promise.allSettled([...inflight.values()]);throw fatal;}
 }
 async function runTransfers(){
  if(runningTransfers||!verified||!secretKey)return;runningTransfers=true;
@@ -169,11 +235,7 @@ async function runTransfers(){
    const job=transferQueue.shift();activeTransfer=job;
    try{
     const chunks=await sealJob(job);
-    for(let i=0;i<chunks.length;i++){
-     if(!verified||!writer)throw Error('Disconnected');
-     await oneFragment(chunks[i]);
-     if(job.record)await setProgress(job.record,Math.round((i+1)*100/chunks.length));
-    }
+    await transferFragments(chunks,job);
     if(job.control){
       const r=recordMap.get(job.targetId);if(r&&r.dir==='in'){
        if(job.kind==='read')r.readSent=true;
@@ -182,7 +244,7 @@ async function runTransfers(){
       }
     }else if(job.record){await setState(job.record,'sent');}
    }catch(e){
-    if(job.control){const r=recordMap.get(job.targetId);if(job.kind==='read')pendingReads.delete(job.targetId);console.warn('Receipt send failed',job.kind,e.message);}
+    if(job.control){if(job.kind==='read')pendingReads.delete(job.targetId);console.warn('Receipt send failed',job.kind,e.message);}
     else if(job.record){await setState(job.record,'failed',e.message);toast('Transfer failed. Click its bubble to retry.');}
    }finally{if(job.control)queuedReceipts.delete(job.kind+':'+job.targetId);activeTransfer=null;}
   }
@@ -190,10 +252,10 @@ async function runTransfers(){
 }
 function parseLine(raw){const s=raw.trim();if(!s)return;
  if(s.startsWith('READY|')){const parts=s.split('|');if(!parts.includes('PROTO=2')){toast('Incompatible firmware. Flash working Phase 1.2/1.3 firmware.');return;}const mac=parts[1];if(!/^[0-9A-Fa-f:]{17}$/.test(mac))return;if(verified&&localMac===mac)return;void onReady(mac);return;}
- if(s.startsWith('QUEUED|')){const [,session,id,hex]=s.split('|'),slot=serialPending;if(slot&&slot.hex===hex){slot.wire=`${session}:${id}`;}return;}
+ if(s.startsWith('QUEUED|')){const [,session,id,hex]=s.split('|'),slot=radioByHex.get(hex);if(slot){slot.wire=`${session}:${id}`;radioByWire.set(slot.wire,slot);}return;}
  if(s.startsWith('RX|')){const [,mac,session,id,data]=s.split('|');if(mac&&session&&id&&data)void processRx(mac,session,id,data);return;}
  if(/^(SENT|DELIVERED|FAILED|RETRY|RADIO_ERROR)\|/.test(s)){const [type,session,id,extra]=s.split('|');if(type==='RADIO_ERROR')console.warn('ESP-NOW:',extra);else onRadio(type,session,id,extra);return;}
- if(s.startsWith('ERROR|')){const reason=s.slice(6);if(serialPending&&/^(QUEUE_FULL|EVENT_QUEUE_FULL|INVALID_HEX_OR_LENGTH|LINE_TOO_LONG|UNKNOWN_COMMAND)/.test(reason)){const slot=serialPending;serialPending=null;clearTimeout(slot.timer);slot.reject(Error('ESP32: '+reason));}toast('ESP32: '+reason);}
+ if(s.startsWith('ERROR|')){const reason=s.slice(6);if(pendingRadio()&&/^(QUEUE_FULL|EVENT_QUEUE_FULL|INVALID_HEX_OR_LENGTH|LINE_TOO_LONG|UNKNOWN_COMMAND)/.test(reason)){const slot=[...radioByHex.values()].findLast(x=>!x.wire)||[...radioByHex.values()].at(-1);if(slot){clearSlot(slot);slot.reject(Error('ESP32: '+reason));}}toast('ESP32: '+reason);}
 }
 function consume(data){serialBuffer+=new TextDecoder().decode(data);let i;while((i=serialBuffer.indexOf('\n'))>=0){parseLine(serialBuffer.slice(0,i));serialBuffer=serialBuffer.slice(i+1);}if(serialBuffer.length>8192)serialBuffer='';}
 async function readLoop(){try{while(port?.readable&&!closing){reader=port.readable.getReader();try{while(!closing){const {value,done}=await reader.read();if(done)break;if(value)consume(value);}}finally{reader.releaseLock();reader=null;}if(!closing&&port?.readable)await wait(100);}}catch(e){if(!closing)toast('Serial disconnected: '+e.message);}finally{if(!closing){readPromise=null;void disconnect();}}}
@@ -209,7 +271,7 @@ async function connect(){if(!navigator.serial){toast('Use Chromium with Web Seri
  }catch(e){toast('USB connection failed: '+e.message);await disconnect();}}
 async function disconnect(){if(closing)return;closing=true;
  try{if(handshakeTimer)clearInterval(handshakeTimer);handshakeTimer=null;if(reader)try{await reader.cancel();}catch{}if(readPromise)try{await readPromise;}catch{}if(writer){try{writer.releaseLock();}catch{}writer=null;}if(port){try{await port.close();}catch{}port=null;}}
- finally{readPromise=null;serialBuffer='';verified=false;port=null;writer=null;if(serialPending){clearTimeout(serialPending.timer);serialPending.reject(Error('Disconnected'));serialPending=null;}if(activeTransfer?.record)void setState(activeTransfer.record,'failed','Disconnected');
+ finally{readPromise=null;serialBuffer='';verified=false;port=null;writer=null;if(pendingRadio())failPendingRadio(Error('Disconnected'));if(activeTransfer?.record)void setState(activeTransfer.record,'failed','Disconnected');
  transferQueue=[];runningTransfers=false;queuedReceipts.clear();pendingReads.clear();incoming.clear();localMac=null;secretKey=null;refreshStatus();closing=false;}}
 async function sendText(){const input=$('messageInput'),text=input.value.trim();if(!verified||!secretKey||!text)return;if(countChars(text)>MAX_CHARS){toast('Maximum 500 characters per text message.');return;}
  const r={id:P.newId(),kind:'text',dir:'out',ts:Date.now(),text,status:'sending',progress:0};await appendRecord(r);input.value='';updateByteCount();transferQueue.push(makeJob(r));runTransfers();}
@@ -227,17 +289,18 @@ async function preparePhoto(file){if(!file||!file.type.startsWith('image/'))thro
    return {bytes:new Uint8Array(await blob.arrayBuffer()),mime:'image/png',width:originalW,height:originalH};
   }
   let candidate=null;
-  for(const maxEdge of [1920,1720,1536,1360,1200,1080,960,840,720,640]){
+  const targetBytes=photoBudget();
+  for(const maxEdge of [1800,1600,1440,1280,1152,1024,900,800,700,600,520]){
    const scale=Math.min(1,maxEdge/Math.max(originalW,originalH));const w=Math.max(1,Math.round(originalW*scale)),h=Math.max(1,Math.round(originalH*scale));
    canvas.width=w;canvas.height=h;ctx.drawImage(bitmap,0,0,w,h);
-   for(const q of [0.96,0.93,0.90,0.88]){
+   for(const q of [0.91,0.88,0.85,0.82,0.79,0.76]){
     let blob=await convertCanvas(canvas,'image/webp',q);
     if(!blob||blob.type!=='image/webp')blob=await convertCanvas(canvas,'image/jpeg',q);
     if(!blob)throw Error('Cannot encode photo');
-    if(blob.size<=MAX_PHOTO){candidate={bytes:new Uint8Array(await blob.arrayBuffer()),mime:blob.type,width:w,height:h};break;}
+    if(blob.size<=targetBytes){candidate={bytes:new Uint8Array(await blob.arrayBuffer()),mime:blob.type,width:w,height:h};break;}
    }if(candidate)break;
   }
-  if(!candidate)throw Error('Cannot compress to 96 KB with acceptable quality. Choose a smaller or simpler photo.');
+  if(!candidate)throw Error(`Photo could not fit the ${Math.round(targetBytes/1024)} KB link target. Try a simpler photo, or change Link mode to Speed first.`);
   return candidate;
  }finally{bitmap.close?.();}
 }
@@ -250,7 +313,7 @@ function retryMessage(id){const r=recordMap.get(id);if(!r||r.dir!=='out'||r.stat
 function showDialog(title,render){$('modalTitle').textContent=title;const content=$('modalBody');content.replaceChildren();render(content);$('modalBackdrop').classList.remove('hidden');}
 function closeDialog(){$('modalBackdrop').classList.add('hidden');}
 function el(tag,cl='',text=''){const out=document.createElement(tag);if(cl)out.className=cl;out.textContent=text;return out;}
-async function installPairKey(raw){if(!verified||!localMac)throw Error('Connect a node first');if(runningTransfers||serialPending||transferQueue.length)throw Error('Finish any active message or photo transfer before changing keys');if(secretKey&&!confirm('Replace the pairing key? This will delete this node’s old chat history, which cannot be decrypted with the new key.'))return false;
+async function installPairKey(raw){if(!verified||!localMac)throw Error('Connect a node first');if(runningTransfers||pendingRadio()||transferQueue.length)throw Error('Finish any active message or photo transfer before changing keys');if(secretKey&&!confirm('Replace the pairing key? This will delete this node’s old chat history, which cannot be decrypted with the new key.'))return false;
  const key=await P.importKey(raw);
  if(secretKey){await wipeStored();records=[];recordMap.clear();renderHistory();}
  await dbPut('keys',{mac:macKey(),key});secretKey=key;await migrateLegacy();await hydrateHistory();refreshStatus();sendReadReceipts();return true;}
@@ -260,7 +323,7 @@ function showPairing(){if(!verified){toast('Connect your ESP32 first.');return;}
   const field=document.createElement('textarea');field.className='pair-key-field';field.rows=2;field.placeholder='Paste a 43-character pairing key here';field.autocomplete='off';field.spellcheck=false;body.append(field);
   const actions=el('div','pair-actions'),gen=el('button','primary-button','Generate new key'),join=el('button','quiet-button','Install pasted key'),copy=el('button','quiet-button','Copy key');copy.disabled=true;actions.append(gen,join,copy);body.append(actions);
   const help=el('p','','Generate on one node, copy the key, then paste and install it on the other node. Keep the key private. After closing, the raw key is not recoverable from this browser.');body.append(help);
-  gen.onclick=async()=>{if(runningTransfers||serialPending||transferQueue.length){toast('Finish active transfers before changing the encryption key.');return;}if(secretKey&&!confirm('Generating a different key will replace your current key and delete old messages. Continue?'))return;
+  gen.onclick=async()=>{if(runningTransfers||pendingRadio()||transferQueue.length){toast('Finish active transfers before changing the encryption key.');return;}if(secretKey&&!confirm('Generating a different key will replace your current key and delete old messages. Continue?'))return;
     const raw=P.randomBytes(32),value=P.base64url(raw);field.value=value;try{
       if(secretKey){await wipeStored();records=[];recordMap.clear();renderHistory();}
       const key=await P.importKey(raw);await dbPut('keys',{mac:macKey(),key});secretKey=key;refreshStatus();indicator.textContent='🔒 New key installed. Copy it into the second browser.';copy.disabled=false;await migrateLegacy();await hydrateHistory();
@@ -275,12 +338,16 @@ async function migrateLegacy(){const oldKey='offgrid_phase13_history_'+macKey().
   }localStorage.removeItem(oldKey);toast('Previous Phase 1.3 text history migrated into encrypted local storage.');
  }catch(e){console.warn('Legacy migration failed',e);}}
 function showRename(){showDialog('Contact name',body=>{body.append(el('p','','This is a local nickname for the remote node.'));const field=document.createElement('input');field.value=activeContact;field.maxLength=36;body.append(field);const save=el('button','primary-button','Save contact name');save.onclick=()=>{setName(field.value.trim());persistName();closeDialog();};body.append(el('div','modal-actions')).append(save);setTimeout(()=>{field.focus();field.select();},40);});}
-async function clearHistory(){if(!verified||!secretKey)return;if(runningTransfers||serialPending||transferQueue.length){toast('Finish active transfers before clearing history.');return;}if(!confirm('Delete encrypted chat history for this ESP32 from this browser? This cannot be undone.'))return;
+async function clearHistory(){if(!verified||!secretKey)return;if(runningTransfers||pendingRadio()||transferQueue.length){toast('Finish active transfers before clearing history.');return;}if(!confirm('Delete encrypted chat history for this ESP32 from this browser? This cannot be undone.'))return;
  await wipeStored();records=[];recordMap.clear();revokePhotos();renderHistory();toast('Local chat history cleared.');closeDialog();}
-function showInfo(){showDialog('Chat information',body=>{[['Contact',activeContact],['Your ESP32',localMac||'Disconnected'],['Protocol','ESP-NOW firmware protocol 2 / encrypted app protocol OGM4'],['Security',secretKey?'AES-256-GCM, 256-bit random shared key':'Not paired'],['Photo limit','96 KB after encoding (metadata stripped)'],['Storage','AES-GCM encrypted local IndexedDB']].forEach(([a,b])=>{const line=el('div','info-line');line.append(el('span','',a),el('strong','',b));body.append(line);});body.append(el('p','','Grey single tick = transmitted; grey double tick = peer decrypted and confirmed; blue double tick = peer app reported it was viewed. Browser history is stored encrypted at rest.'));});}
-function showSettings(){showDialog('Settings',body=>{body.append(el('p','','Phase 1.4: browser-to-browser AES-256-GCM encryption, 500-character messages, and reliable encrypted photo transfer.'));
+function showInfo(){showDialog('Chat information',body=>{[['Contact',activeContact],['Your ESP32',localMac||'Disconnected'],['Protocol','ESP-NOW firmware protocol 2 / encrypted app protocol OGM4'],['Security',secretKey?'AES-256-GCM, 256-bit random shared key':'Not paired'],['Photo target',`${Math.round(photoBudget()/1024)} KB optimized, 96 KB absolute`],['Link profile',`${linkPreference}; app-level flow control, 1–3 in flight`],['Storage','AES-GCM encrypted local IndexedDB']].forEach(([a,b])=>{const line=el('div','info-line');line.append(el('span','',a),el('strong','',b));body.append(line);});body.append(el('p','','Grey single tick = transmitted; grey double tick = peer decrypted and confirmed; blue double tick = peer app reported it was viewed. Browser history is stored encrypted at rest.'));});}
+function showSettings(){showDialog('Settings',body=>{body.append(el('p','','Phase 1.4.1: responsive chat, 500-character encrypted messages, and photo transfer with adaptive flow control.'));
+ const linkLabel=el('label','','Transfer profile');body.append(linkLabel);const linkSelect=document.createElement('select');linkSelect.className='setting-select';
+ [['auto','Auto · adapts 1–3 fragments in flight based on ACK latency/retries'],['range','Range first · 1 fragment in flight, ~48 KB images'],['speed','Speed first · up to 3 fragments in flight, ~72 KB images']].forEach(([v,t])=>{const opt=document.createElement('option');opt.value=v;opt.textContent=t;linkSelect.append(opt);});
+ linkSelect.value=linkPreference;linkSelect.onchange=()=>{linkPreference=linkSelect.value;try{localStorage.setItem('offgrid_link_preference',linkPreference);}catch{}updateLinkBadge();};body.append(linkSelect);
+ body.append(el('p','','Link quality is estimated from receiver acknowledgments and retries, not measured distance. This firmware keeps its original radio PHY rate; these settings adjust packet concurrency and photo size, not transmit power or maximum RF range.')); 
  const modeLabel=el('label','','Image optimization');body.append(modeLabel);const select=document.createElement('select');select.className='setting-select';
- [['hq','Very high quality WebP/JPEG (may resize to fit 96 KB)'],['lossless','Lossless PNG + metadata stripping (reject if >96 KB)']].forEach(([v,t])=>{const opt=document.createElement('option');opt.value=v;opt.textContent=t;select.append(opt);});select.value=imageMode;select.onchange=()=>{imageMode=select.value;try{localStorage.setItem('offgrid_image_mode',imageMode);}catch{}};body.append(select);
+ [['hq','Optimized WebP/JPEG (adaptive 48–72 KB target, may resize)'],['lossless','Lossless PNG + metadata stripping (reject if >96 KB)']].forEach(([v,t])=>{const opt=document.createElement('option');opt.value=v;opt.textContent=t;select.append(opt);});select.value=imageMode;select.onchange=()=>{imageMode=select.value;try{localStorage.setItem('offgrid_image_mode',imageMode);}catch{}updateLinkBadge();};body.append(select);
  body.append(el('p','','Metadata stripping does not make photos tiny. High-quality mode can reduce dimensions and introduce slight loss; lossless PNG keeps the canvas pixels exact but may not fit through this radio link.'));
  const buttons=el('div','settings-actions'),rename=el('button','quiet-button','Rename contact'),key=el('button','quiet-button','Encryption key'),clear=el('button','soft-button','Clear history');rename.onclick=showRename;key.onclick=showPairing;clear.onclick=()=>void clearHistory();buttons.append(rename,key,clear);body.append(buttons);
  });}
@@ -295,4 +362,4 @@ document.addEventListener('visibilitychange',sendReadReceipts);window.addEventLi
 window.addEventListener('beforeunload',revokePhotos);
 setInterval(pruneIncoming,45000);
 (async()=>{try{db=await openDb();}catch(e){toast('IndexedDB unavailable. Encrypted storage cannot work: '+e.message);}refreshStatus();})();
-console.info('OffGrid Phase 1.4 — AES-256-GCM encrypted protocol OGM4 over ESP-NOW protocol 2.');
+console.info('OffGrid Phase 1.4.1 — responsive UI and adaptive application transfer pacing; firmware PHY unchanged.');
