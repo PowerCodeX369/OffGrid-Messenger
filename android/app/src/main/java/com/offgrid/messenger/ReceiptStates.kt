@@ -2,14 +2,12 @@ package com.offgrid.messenger
 
 /** Display never upgrades a receipt without an authenticated event.
  * Radio queued is NOT remote delivery; the second status requires OGM4 DELIVERED.
- * Voice uses PLAYED rather than READ to turn blue.
+ * Voice ticks turn blue on READ; only the microphone turns blue on PLAYED.
  */
 enum class ReceiptVisual { WAITING, SENT, DELIVERED, READ, FAILED }
 object ReceiptStates {
-    fun visual(status: String, kind: Int): ReceiptVisual = when {
+    fun visual(status: String, @Suppress("UNUSED_PARAMETER") kind: Int): ReceiptVisual = when {
         status == "failed" -> ReceiptVisual.FAILED
-        kind == OgmCodec.VOICE && status == "played" -> ReceiptVisual.READ
-        kind == OgmCodec.VOICE && status == "read" -> ReceiptVisual.DELIVERED
         status == "read" || status == "played" -> ReceiptVisual.READ
         status == "delivered" -> ReceiptVisual.DELIVERED
         status == "sent" -> ReceiptVisual.SENT

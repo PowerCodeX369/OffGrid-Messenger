@@ -7,6 +7,7 @@ import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.Crossfade
 import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInVertically
@@ -114,11 +115,11 @@ fun OffGridPremiumTheme(dark: Boolean, content: @Composable () -> Unit) {
 @Composable
 private fun GlassCard(
     modifier:Modifier=Modifier, dark:Boolean, radius:Dp=22.dp,
-    frost:Boolean=false,
+    frost:Boolean=false, bottomRadius:Dp=radius,
     content: @Composable ColumnScope.() -> Unit
 ) {
     val colors=MaterialTheme.colorScheme
-    val shape=RoundedCornerShape(radius)
+    val shape=RoundedCornerShape(topStart=radius,topEnd=radius,bottomStart=bottomRadius,bottomEnd=bottomRadius)
     val surface=when {
         dark && frost -> Color(0xFF1B3048)
         dark -> Color(0xFF18283D)
@@ -142,7 +143,7 @@ private fun timeOf(millis:Long)=SimpleDateFormat("h:mm a",Locale.getDefault()).f
 
 /** The presentation state is separated from BLE/OGM4 so the proven transport stays intact. */
 data class PremiumActions(
-    val sendText:(String)->Unit, val photo:()->Unit,
+    val sendText:(String)->Unit, val photo:()->Unit, val camera:()->Unit,
     val micPress:()->Unit, val micRelease:()->Unit, val micCancel:()->Unit,
     val playVoice:(ChatItem)->Unit, val markVisible:(Set<String>)->Unit,
     val chatVisibility:(Boolean)->Unit,
@@ -278,7 +279,7 @@ fun PremiumMessenger(
                                     recording=recording,small=micro,dark=dark,
                                     tapMode=accessibleVoiceTap,
                                     onSend={if(draft.isNotBlank()){actions.sendText(draft);draft=""}},
-                                    onPhoto=actions.photo,onPress=actions.micPress,
+                                    onPhoto=actions.photo,onCamera=actions.camera,onPress=actions.micPress,
                                     onRelease=actions.micRelease,onCancel=actions.micCancel
                                 )
                             }
@@ -554,7 +555,9 @@ private fun ChatBubble(message:ChatItem,dark:Boolean,playing:Boolean,openPhoto:(
         bottomEnd=if(message.outgoing)6.dp else 19.dp)
     Row(Modifier.fillMaxWidth(),horizontalArrangement=if(message.outgoing)Arrangement.End else Arrangement.Start) {
         BoxWithConstraints(Modifier.fillMaxWidth()) {
-            val bound = (maxWidth*.84f).coerceAtMost(350.dp)
+            val bound = if(message.kind==OgmCodec.VOICE)
+                (maxWidth*.70f).coerceAtMost(225.dp)
+                else (maxWidth*.84f).coerceAtMost(350.dp)
             Column(Modifier.align(if(message.outgoing)Alignment.CenterEnd else Alignment.CenterStart)
                 .widthIn(max=bound).clip(shape)
                 .combinedClickable(onClick={},onLongClick={onLongPress(message)})
@@ -637,25 +640,30 @@ private fun ResponsivePhoto(message:ChatItem,maxBubble:Dp,onOpen:(ChatItem)->Uni
 
 @Composable
 private fun VoiceBubble(message:ChatItem,playing:Boolean,onPlay:(ChatItem)->Unit) {
-    Row(verticalAlignment=Alignment.CenterVertically,modifier=Modifier.widthIn(min=182.dp)) {
-        FilledIconButton(onClick={onPlay(message)},modifier=Modifier.size(42.dp)) {
-            Icon(if(playing)Icons.Default.Stop else Icons.Default.PlayArrow,if(playing)"Stop" else "Play voice note")
+    // A deliberate compact voice bubble: no weight-based expansion to the full
+    // chat width. The waveform and duration live immediately beside each other.
+    Row(modifier=Modifier.widthIn(min=162.dp,max=208.dp),
+        verticalAlignment=Alignment.CenterVertically,
+        horizontalArrangement=Arrangement.spacedBy(7.dp)) {
+        FilledIconButton(onClick={onPlay(message)},modifier=Modifier.size(39.dp)) {
+            Icon(if(playing)Icons.Default.Stop else Icons.Default.PlayArrow,
+                if(playing)"Stop" else "Play voice note",modifier=Modifier.size(19.dp))
         }
-        Spacer(Modifier.width(9.dp))
-        Column(Modifier.weight(1f)) {
-            val segments= listOf(8,15,12,20,16,10,18,13,23,8,16,22,12,19,13)
-            Row(verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(3.dp)) {
-                segments.forEachIndexed { i,v ->
-                    Box(Modifier.width(3.dp).height(v.dp).clip(CircleShape).background(
-                        if(playing && i%3==0)MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.primary.copy(alpha=.42f)))
+        Column(modifier=Modifier.weight(1f),verticalArrangement=Arrangement.spacedBy(2.dp)) {
+            val bars=listOf(8,11,16,12,20,15,9,17,23,14,10,19,12,16,9,13,17,11,7)
+            Row(horizontalArrangement=Arrangement.spacedBy(2.dp),verticalAlignment=Alignment.CenterVertically) {
+                bars.forEachIndexed { index,height ->
+                    Box(Modifier.width(2.dp).height(height.dp).clip(CircleShape)
+                        .background(MaterialTheme.colorScheme.primary.copy(
+                            alpha=if(playing && index<=9)1f else .54f)))
                 }
             }
-            Spacer(Modifier.height(5.dp))
-            Text("${message.durationMs/1000}s · voice note",style=MaterialTheme.typography.labelSmall,
-                color=MaterialTheme.colorScheme.onSurfaceVariant)
+            Text("${message.durationMs/60000}:${((message.durationMs/1000)%60).toString().padStart(2,'0')}",
+                style=MaterialTheme.typography.labelSmall,
+                color=MaterialTheme.colorScheme.onSurfaceVariant,maxLines=1)
         }
         if(message.outgoing && message.status=="played") {
-            Icon(Icons.Default.Mic,"Played",tint=Color(0xFF36AEFF),modifier=Modifier.size(17.dp))
+            Icon(Icons.Default.Mic,"Voice listened to",tint=Color(0xFF36AEFF),modifier=Modifier.size(16.dp))
         }
     }
 }
@@ -671,19 +679,25 @@ private fun ReceiptIcon(message:ChatItem) {
         ReceiptVisual.DELIVERED -> Box(Modifier.size(20.dp).border(1.dp,gray.copy(alpha=.7f),CircleShape),contentAlignment=Alignment.Center) {
             Icon(Icons.Default.DoneAll,"Delivered",Modifier.size(15.dp),tint=gray)
         }
-        ReceiptVisual.READ -> Icon(Icons.Default.DoneAll,if(message.kind==OgmCodec.VOICE)"Played" else "Seen",Modifier.size(19.dp),tint=blue)
+        ReceiptVisual.READ -> Icon(Icons.Default.DoneAll,
+            if(message.kind==OgmCodec.VOICE && message.status=="played")"Read and played" else "Read",
+            Modifier.size(19.dp),tint=blue)
         ReceiptVisual.FAILED -> Icon(Icons.Default.ErrorOutline,"Not sent",Modifier.size(18.dp),tint=MaterialTheme.colorScheme.error)
     } }
 }
 
 @Composable
 private fun GlassComposer(draft:String,onDraft:(String)->Unit,connected:Boolean,recording:Boolean,small:Boolean,dark:Boolean,
-    tapMode:Boolean,onSend:()->Unit,onPhoto:()->Unit,onPress:()->Unit,onRelease:()->Unit,onCancel:()->Unit) {
+    tapMode:Boolean,onSend:()->Unit,onPhoto:()->Unit,onCamera:()->Unit,onPress:()->Unit,onRelease:()->Unit,onCancel:()->Unit) {
     var seconds by remember { mutableIntStateOf(0) }
     var slide by remember { mutableFloatStateOf(0f) }
     var locked by remember { mutableStateOf(false) }
     var cancelArmed by remember { mutableStateOf(false) }
     var trashFlash by remember { mutableStateOf(false) }
+    var attachmentMenu by remember { mutableStateOf(false) }
+    val keyboardVisible=WindowInsets.ime.getBottom(LocalDensity.current)>0
+    val lowerRadius by animateDpAsState(if(keyboardVisible)3.dp else 22.dp,
+        animationSpec=androidx.compose.animation.core.tween(240),label="keyboard composer corners")
     val haptics=LocalHapticFeedback.current
     LaunchedEffect(recording) {
         seconds=0
@@ -695,7 +709,9 @@ private fun GlassComposer(draft:String,onDraft:(String)->Unit,connected:Boolean,
     val canceled=(!locked && cancelArmed) || trashFlash
     val trashScale by animateFloatAsState(if(trashFlash)1.45f else if(canceled)1.17f else 1f,
         animationSpec=androidx.compose.animation.core.spring(),label="trash bounce")
-    GlassCard(Modifier.fillMaxWidth(),dark=dark,radius=if(small)18.dp else 23.dp,frost=true) {
+    // Small symmetric gutters avoid display waterfall / strongly rounded Pixel corners.
+    GlassCard(Modifier.fillMaxWidth().padding(horizontal=5.dp),dark=dark,
+        radius=if(small)18.dp else 23.dp,bottomRadius=lowerRadius,frost=true) {
         AnimatedVisibility(recording||trashFlash,enter=fadeIn()+slideInVertically { it/2 },exit=fadeOut()) {
             Row(Modifier.fillMaxWidth().heightIn(min=45.dp).padding(horizontal=16.dp,vertical=5.dp),
                 verticalAlignment=Alignment.CenterVertically) {
@@ -718,8 +734,8 @@ private fun GlassComposer(draft:String,onDraft:(String)->Unit,connected:Boolean,
                     modifier=Modifier.size(22.dp),tint=MaterialTheme.colorScheme.onSurfaceVariant)
             }
         }
-        Row(Modifier.fillMaxWidth().padding(horizontal=10.dp,vertical=8.dp),
-            verticalAlignment=Alignment.Bottom,horizontalArrangement=Arrangement.spacedBy(5.dp)) {
+        Row(Modifier.fillMaxWidth().padding(horizontal=9.dp,vertical=7.dp),
+            verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(5.dp)) {
             if(recording && locked) {
                 Row(Modifier.weight(1f).heightIn(min=50.dp),verticalAlignment=Alignment.CenterVertically) {
                     Icon(Icons.Default.Lock,"Locked",tint=MaterialTheme.colorScheme.primary,
@@ -729,8 +745,20 @@ private fun GlassComposer(draft:String,onDraft:(String)->Unit,connected:Boolean,
                         color=MaterialTheme.colorScheme.onSurface,maxLines=1)
                 }
             } else {
-            IconButton(onClick=onPhoto,enabled=connected&&!recording,modifier=Modifier.size(43.dp)) {
-                Icon(Icons.Default.AddPhotoAlternate,"Attach photo",tint=MaterialTheme.colorScheme.primary)
+            Box(contentAlignment=Alignment.Center,modifier=Modifier.size(43.dp)) {
+                IconButton(onClick={attachmentMenu=true},enabled=connected&&!recording,
+                    modifier=Modifier.size(43.dp)) {
+                    Icon(Icons.Default.AddPhotoAlternate,"Attach photo or take picture",
+                        modifier=Modifier.size(23.dp),tint=MaterialTheme.colorScheme.primary)
+                }
+                DropdownMenu(expanded=attachmentMenu,onDismissRequest={attachmentMenu=false}) {
+                    DropdownMenuItem(text={Text("Choose photo")},
+                        leadingIcon={Icon(Icons.Default.Collections,"Gallery")},
+                        onClick={attachmentMenu=false;onPhoto()})
+                    DropdownMenuItem(text={Text("Take picture")},
+                        leadingIcon={Icon(Icons.Default.PhotoCamera,"Camera")},
+                        onClick={attachmentMenu=false;onCamera()})
+                }
             }
             TextField(draft,onDraft,modifier=Modifier.weight(1f).heightIn(min=50.dp,max=140.dp),
                 enabled=connected&&!recording,maxLines=5,
