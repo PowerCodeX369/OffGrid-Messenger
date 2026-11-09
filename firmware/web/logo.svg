@@ -1,24 +1,8 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" fill="none">
-  <defs>
-    <linearGradient id="g" x1="36" y1="28" x2="212" y2="216" gradientUnits="userSpaceOnUse">
-      <stop stop-color="#18C8A7"/>
-      <stop offset="1" stop-color="#4FA2FF"/>
-    </linearGradient>
-    <linearGradient id="g2" x1="74" y1="72" x2="184" y2="176" gradientUnits="userSpaceOnUse">
-      <stop stop-color="#EFFFFA" stop-opacity=".95"/>
-      <stop offset="1" stop-color="#D7F7FF" stop-opacity=".92"/>
-    </linearGradient>
-  </defs>
-  <rect width="256" height="256" rx="64" fill="#0F1B24"/>
-  <circle cx="128" cy="128" r="76" stroke="url(#g)" stroke-width="10" opacity=".22"/>
-  <circle cx="128" cy="128" r="56" stroke="url(#g)" stroke-width="10" opacity=".36"/>
-  <circle cx="128" cy="128" r="34" fill="url(#g)" opacity=".95"/>
-  <path d="M88 88c-15 10-24 24-29 40" stroke="url(#g)" stroke-width="10" stroke-linecap="round"/>
-  <path d="M168 88c15 10 24 24 29 40" stroke="url(#g)" stroke-width="10" stroke-linecap="round"/>
-  <path d="M76 60c-23 15-38 38-45 65" stroke="url(#g)" stroke-width="8" stroke-linecap="round" opacity=".9"/>
-  <path d="M180 60c23 15 38 38 45 65" stroke="url(#g)" stroke-width="8" stroke-linecap="round" opacity=".9"/>
-  <path d="M91 105c0-18.225 14.775-33 33-33h8c18.225 0 33 14.775 33 33v20c0 18.225-14.775 33-33 33h-12.5l-18.5 17v-17.5c-16.569-2.846-29-17.286-29-34.5v-18Z" fill="url(#g2)"/>
-  <circle cx="111" cy="116" r="7" fill="#17B897"/>
-  <circle cx="128" cy="116" r="7" fill="#17B897"/>
-  <circle cx="145" cy="116" r="7" fill="#17B897"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 108 108" fill="none" role="img" aria-label="OffGrid">
+ <rect width="108" height="108" rx="25" fill="#1358CE"/>
+ <path d="M44 25H65C75 25 81 32 81 42V60C81 71 74 78 63 78H45L30 85L34 68C30 64 28 59 28 53V42C28 32 34 25 44 25Z" stroke="white" stroke-width="4.5" stroke-linecap="round" stroke-linejoin="round"/>
+ <path d="M42 55L54 43L67 55" stroke="white" stroke-width="3.7" stroke-linecap="round" stroke-linejoin="round"/>
+ <circle cx="42" cy="55" r="3.9" fill="white"/>
+ <circle cx="54" cy="43" r="3.9" fill="white"/>
+ <circle cx="67" cy="55" r="3.9" fill="white"/>
 </svg>
