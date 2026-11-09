@@ -4,6 +4,8 @@ import android.content.ContentResolver
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.graphics.Matrix
+import androidx.exifinterface.media.ExifInterface
 import android.media.MediaRecorder
 import android.net.Uri
 import android.os.Build
@@ -25,6 +27,28 @@ object PhotoPreparer {
         val options=BitmapFactory.Options().apply { inSampleSize=sample; inPreferredConfig=Bitmap.Config.ARGB_8888 }
         var working=resolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it,null,options) }
             ?: error("Cannot decode selected photo")
+        // Normalize camera EXIF orientation before compression. The encrypted JPEG
+        // has correct pixels but no inherited EXIF/GPS metadata.
+        val orientation=runCatching {
+            resolver.openInputStream(uri)?.use {
+                ExifInterface(it).getAttributeInt(ExifInterface.TAG_ORIENTATION,ExifInterface.ORIENTATION_NORMAL)
+            }
+        }.getOrNull() ?: ExifInterface.ORIENTATION_NORMAL
+        val matrix=Matrix()
+        when(orientation) {
+            ExifInterface.ORIENTATION_ROTATE_90 -> matrix.postRotate(90f)
+            ExifInterface.ORIENTATION_ROTATE_180 -> matrix.postRotate(180f)
+            ExifInterface.ORIENTATION_ROTATE_270 -> matrix.postRotate(270f)
+            ExifInterface.ORIENTATION_FLIP_HORIZONTAL -> matrix.postScale(-1f,1f)
+            ExifInterface.ORIENTATION_FLIP_VERTICAL -> matrix.postScale(1f,-1f)
+            ExifInterface.ORIENTATION_TRANSPOSE -> {matrix.postRotate(90f);matrix.postScale(-1f,1f)}
+            ExifInterface.ORIENTATION_TRANSVERSE -> {matrix.postRotate(270f);matrix.postScale(-1f,1f)}
+        }
+        if(!matrix.isIdentity) {
+            val oriented=Bitmap.createBitmap(working,0,0,working.width,working.height,matrix,true)
+            if(oriented!==working)working.recycle()
+            working=oriented
+        }
         // If a detailed photo cannot reach the fast 28-KiB target, return a
         // valid <=48-KiB quality encode rather than failing a working feature.
         var qualityFallback:MediaPayload.Photo?=null

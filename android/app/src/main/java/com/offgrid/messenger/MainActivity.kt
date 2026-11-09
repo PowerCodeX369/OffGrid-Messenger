@@ -476,11 +476,21 @@ class MainActivity : ComponentActivity() {
         pushEnvelope(OgmCodec.TEXT,id,value.toByteArray(Charsets.UTF_8))
     }
     private fun sendPhoto(uri:Uri) {
-        if(!connected)return
+        // In-app CameraX captures only temporary JPEGs in our own cache.
+        // Gallery/content URIs are never deleted.
+        val capturedFile=if(uri.scheme=="file") uri.path?.let(::File)?.takeIf {
+            it.parentFile?.canonicalPath==cacheDir.canonicalPath && it.name.startsWith("offgrid-camera-")
+        } else null
+        if(!connected) {
+            capturedFile?.delete()
+            state="Connect before sending a photo"
+            return
+        }
         state="Preparing private photo…"
         val targetBytes = if(fastPhotos) MediaPayload.FAST_PHOTO_TARGET else MediaPayload.ANDROID_PHOTO_TARGET
         mediaWorker.execute {
-            val result=runCatching { PhotoPreparer.prepare(contentResolver,uri,targetBytes) }
+            val result=try {runCatching { PhotoPreparer.prepare(contentResolver,uri,targetBytes) }}
+                finally {capturedFile?.delete()}
             mainHandler.post {
                 if(activityDestroyed)return@post
                 result.onSuccess { photo ->
@@ -774,6 +784,10 @@ class MainActivity : ComponentActivity() {
         val notificationsPermission=rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
             if(!granted)state="Notification permission denied; enable in Android Settings"
         }
+        var inAppCamera by remember { mutableStateOf(false) }
+        val cameraPermission=rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+            if(granted) inAppCamera=true else state="Camera permission denied; allow in Android Settings"
+        }
         val photoPicker=rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri:Uri? ->
             if(uri!=null)sendPhoto(uri)
         }
@@ -804,6 +818,9 @@ class MainActivity : ComponentActivity() {
         val micPermission=rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
             state=if(granted)"Microphone ready · hold mic button to record" else "Microphone permission required"
         }
+        LaunchedEffect(inAppCamera) {
+            if(inAppCamera) chatScreenVisible=false // camera must not mark off-screen chats read
+        }
         val prefs=getSharedPreferences("offgrid_premium_24",MODE_PRIVATE)
         var notificationAsked by remember { mutableStateOf(false) }
         LaunchedEffect(connected,notificationsEnabled) {
@@ -814,11 +831,19 @@ class MainActivity : ComponentActivity() {
         }
         SideEffect {
             val insets=WindowCompat.getInsetsController(window,window.decorView)
-            insets.isAppearanceLightStatusBars=!dark
-            insets.isAppearanceLightNavigationBars=!dark
+            insets.isAppearanceLightStatusBars=!dark && !inAppCamera
+            insets.isAppearanceLightNavigationBars=!dark && !inAppCamera
         }
         OffGridPremiumTheme(dark) {
-            PremiumMessenger(
+            if(inAppCamera) {
+                InAppCameraScreen(
+                    onCancel={inAppCamera=false},
+                    onSend={capturedFile ->
+                        inAppCamera=false
+                        sendPhoto(Uri.fromFile(capturedFile))
+                    }
+                )
+            } else PremiumMessenger(
                 items=items.toList(),connected=connected,status=state,nodeAddress=trustedAddress,
                 dark=dark,fastPhotos=fastPhotos,notifications=notificationsEnabled,
                 privatePreview=notificationPreview,backgroundEnabled=keepBleBackground,
@@ -827,6 +852,11 @@ class MainActivity : ComponentActivity() {
                 diagnostics=bleDiagnostics.toList(),contactName=contactName,avatarBytes=avatarBytes,
                 actions=PremiumActions(
                     sendText=::sendText,photo={photoPicker.launch("image/*")},
+                    camera={
+                        if(checkSelfPermission(Manifest.permission.CAMERA)==PackageManager.PERMISSION_GRANTED)
+                            inAppCamera=true
+                        else cameraPermission.launch(Manifest.permission.CAMERA)
+                    },
                     micPress={
                         if(checkSelfPermission(Manifest.permission.RECORD_AUDIO)==PackageManager.PERMISSION_GRANTED)
                             startVoiceRecording()

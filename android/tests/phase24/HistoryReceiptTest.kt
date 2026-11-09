@@ -13,8 +13,13 @@ fun main() {
     check(ReceiptStates.visual("sent",1)==ReceiptVisual.SENT)
     check(ReceiptStates.visual("delivered",1)==ReceiptVisual.DELIVERED)
     check(ReceiptStates.visual("read",1)==ReceiptVisual.READ)
-    check(ReceiptStates.visual("read",7)==ReceiptVisual.DELIVERED)
+    check(ReceiptStates.visual("read",7)==ReceiptVisual.READ)
     check(ReceiptStates.visual("played",7)==ReceiptVisual.READ)
+    check(ReceiptStates.visual("delivered",7)==ReceiptVisual.DELIVERED)
+    // READ and PLAYED are distinct events: the tick is blue on READ; the mic
+    // separately changes on PLAYED. Playback never manufactures a READ receipt.
+    check(ReceiptStates.advance("read","played")=="played")
+    check(ReceiptStates.advance("played","read")=="played")
     check(ReceiptStates.advance("read","sent")=="read")
     check(ReceiptStates.advance("delivered","failed")=="delivered")
     check(ReceiptStates.advance("sending","sent")=="sent")

@@ -4,7 +4,7 @@ plugins { id("com.android.application"); id("org.jetbrains.kotlin.android"); id(
 android {
  namespace="com.offgrid.messenger"
  compileSdk=36
- defaultConfig { applicationId="com.offgrid.messenger"; minSdk=26; targetSdk=36; versionCode=244; versionName="2.4.4-stable-surfaces" }
+ defaultConfig { applicationId="com.offgrid.messenger"; minSdk=26; targetSdk=36; versionCode=250; versionName="2.5-camera-polish" }
  buildFeatures { compose=true }
  compileOptions { sourceCompatibility=JavaVersion.VERSION_17; targetCompatibility=JavaVersion.VERSION_17 }
 
@@ -27,4 +27,10 @@ dependencies {
  implementation("androidx.activity:activity-compose:1.10.1")
  implementation("androidx.core:core-ktx:1.16.0")
  implementation("androidx.lifecycle:lifecycle-runtime-compose:2.9.1")
+ // CameraX preview/capture stays in-app; pin a stable SDK-36 compatible release.
+ val camerax="1.5.3"
+ implementation("androidx.camera:camera-camera2:$camerax")
+ implementation("androidx.camera:camera-lifecycle:$camerax")
+ implementation("androidx.camera:camera-view:$camerax")
+ implementation("androidx.exifinterface:exifinterface:1.4.2")
 }

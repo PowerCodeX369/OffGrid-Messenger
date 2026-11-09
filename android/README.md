@@ -1,3 +1,7 @@
+# OffGrid Messenger Android 2.5
+
+Open this directory in Android Studio. See `PHASE_2_5_CAMERA_POLISH.md` and `../README_FIRST.md` for changes, dependencies and validation. Keep the same application ID and install as an update; do not uninstall or flash your ESP32s.
+
 # OffGrid Messenger Android 2.4
 
 Import this folder directly into Android Studio. Run over the existing Phase 2.3 app without
