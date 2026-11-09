@@ -16,7 +16,7 @@ checks={
  'ESP32 stores NVS key': all(x in fw for x in ('nvs_get_blob','nvs_set_blob','nvs_commit','KEYGET','KEYSET')),
  'browser requests key from ESP32': "keyRequest('get','KEYGET')" in app,
  'browser not storing new keys': not re.search(r"dbPut\(['\"]keys['\"]",app),
- 'one in-flight fragment': 'function chosenWindow(){' in app and 'return 1;' in app.split('function chosenWindow(){',1)[1].split('}',1)[0],
+ 'text and receipts stay one in-flight': 'function chosenWindow(job=activeTransfer)' in app and "const kind=job?.kind==='image'&&!job?.control?'image':'text'" in app and "if(kind!=='image'" in (root/'web/adaptive.js').read_text(),
  'approved gallery retained': 'openPhotoViewer' in app and 'navigatePhoto' in app,
  'usb-serial support': 'requestPort()' in app,
 }
