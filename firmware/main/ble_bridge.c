@@ -60,7 +60,9 @@ static void challenge_new(void){
  char proof[33],line[48];ascii_hex(nonce,16,proof);snprintf(line,sizeof(line),"CHAL|%s",proof);push(line,false);
 }
 static bool allow(const char *s){
- return !strcmp(s,"STATUS")||!strncmp(s,"MSGHEX ",7)||!strncmp(s,"APPACK ",7)||!strncmp(s,"APPACKB ",8)||!strncmp(s,"READ ",5);
+ return !strcmp(s,"STATUS")||!strncmp(s,"MSGHEX ",7)||!strncmp(s,"APPACK ",7)||!strncmp(s,"APPACKB ",8)||!strncmp(s,"READ ",5)||
+        !strcmp(s,"RATE AUTO")||!strcmp(s,"RATE SPEED")||!strcmp(s,"RATE RANGE")||
+        !strcmp(s,"RATE LR500")||!strcmp(s,"RATE LR250");
 }
 static void complete_line(char *line){
  if(!strcmp(line,"AUTH?")){challenge_new();return;}
