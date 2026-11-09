@@ -10,7 +10,7 @@ assert "for (size_t i = 0; i < length; ++i)" in unit
 assert "(void)fwrite(line, 1, bytes, stdout);" in unit
 assert 'setvbuf(stdout,NULL,_IOLBF,0);' in s
 assert 'print_hex(' not in s
-source = '#include <stdio.h>\n#include <string.h>\n#include <stdint.h>\n#define MAX_TEXT 180\n' + unit + '''\nint main(void) {
+source = '#include <stdio.h>\n#include <string.h>\n#include <stdint.h>\n#define MAX_TEXT 180\nstatic void offgrid_ble_publish(const char *s){(void)s;} /* Host test stub: BLE transport is outside emitter test. */\n' + unit + '''\nint main(void) {
   setvbuf(stdout, NULL, _IOLBF, 0);
   unsigned char payload[180];
   for(int i=0;i<180;++i) payload[i]=(unsigned char)i;

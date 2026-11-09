@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#101b21">
+  <title>OffGrid Messenger</title>
+  <link rel="icon" href="logo.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="styles.css?v=1.6.1">
+  <script src="protocol.js?v=1.6.1" defer></script>
+  <script src="adaptive.js?v=1.6.1" defer></script>
+  <script src="app.js?v=1.6.1" defer></script>
+</head>
+<body>
+<div class="app" id="app">
+  <aside class="sidebar">
+    <header class="side-head">
+      <div class="branding">
+        <img class="brand-logo" src="logo.svg" alt="OffGrid Messenger logo">
+        <div><strong>OffGrid</strong><small>MESSENGER</small></div>
+      </div>
+      <div class="side-actions">
+        <button class="icon-button notification-button" id="notificationButton" type="button" title="Enable desktop notifications" aria-label="Enable desktop notifications" aria-pressed="false"><svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9ZM10 21h4"/></svg><span class="notification-dot" aria-hidden="true"></span></button><button class="icon-button" id="themeToggle" title="Toggle appearance" aria-label="Toggle appearance">◐</button>
+        <button class="icon-button" id="settingsButton" title="Settings" aria-label="Settings">⚙</button>
+      </div>
+    </header>
+    <div class="side-connection" id="connectionCard">
+      <div class="connection-title">
+        <span class="status-dot" id="statusDot"></span>
+        <div><strong id="connectionState">Disconnected</strong><small id="connectionDescription">Connect your ESP32-C3 over USB</small></div>
+      </div>
+      <div class="connection-buttons">
+        <button class="primary-button" id="connectButton">Connect ESP32</button>
+        <button class="quiet-button" id="disconnectButton" disabled>Disconnect</button>
+      </div>
+      <div class="node-info"><span id="nodeAddress">Node: —</span><span id="nodeChannel">Channel 6</span></div>
+      <div class="usb-diagnostics hidden" id="usbDiagnostics">
+        <span id="usbDiagnosticsText">Waiting for firmware response…</span>
+        <button class="usb-diagnostics-btn" id="usbDiagnosticsButton" type="button">Diagnostics</button>
+      </div>
+      <div class="link-health" title="Link profile uses acknowledgment latency and retries, not physical distance"><span class="link-health-dot"></span><span id="linkModeLabel">Auto · learning link quality</span></div>
+      <button class="security-line" id="securityButton" type="button"><span id="securityIcon">♢</span><span id="securityLabel">Connect to configure encryption</span><span class="security-chevron">›</span></button>
+    </div>
+    <div class="chats-heading"><h2>Chats</h2><span class="tiny-badge unread-badge" id="unreadBadge" hidden aria-label="Unread messages">0</span></div>
+    <button class="contact active" id="contactButton" type="button">
+      <span class="avatar" id="contactAvatar">N</span>
+      <span class="contact-body"><span class="contact-top"><strong id="contactSidebarName">Nearby node</strong><span class="contact-time" id="lastChatTime"></span></span><span class="contact-preview" id="lastChatPreview">Your off-grid conversation</span></span><span class="contact-unread" id="contactUnreadBadge" hidden aria-label="Unread messages">0</span>
+    </button>
+    <div class="phase-banner">
+      <span>OffGrid · Private messenger</span>
+      <strong>Encrypted conversations with a quieter, more personal interface</strong>
+      <small>No cloud. No server. No internet.</small>
+    </div>
+    <div class="side-foot"><span class="tiny-offline">◆</span> Peer-to-peer radio • USB Serial + ESP-NOW <small>Encrypted messages · keys stored on ESP32</small></div>
+  </aside>
+  <main class="conversation">
+    <header class="chat-header">
+      <button id="mobileBack" class="icon-button back-button" aria-label="Back to chats">‹</button>
+      <span class="avatar avatar-small" id="headerAvatar">N</span>
+      <div class="chat-title"><strong id="chatName">Nearby node</strong><span id="chatSubhead">Waiting for USB connection</span></div>
+      <div class="header-tools"><span class="header-radio" title="ESP-NOW, channel 6">⌁ <span>ESP-NOW</span></span><button class="icon-button" id="renameButton" title="Rename contact" aria-label="Rename contact">✎</button><button class="icon-button" id="infoButton" title="About this chat" aria-label="Chat information">ⓘ</button></div>
+    </header>
+    <div class="chat-background">
+      <div class="chat-scroll" id="chatScroll" aria-live="polite" aria-relevant="additions">
+        <div class="intro" id="introCard">
+          <img class="intro-logo" src="logo.svg" alt="OffGrid Messenger logo">
+          <strong>Off-grid messaging over ESP32-C3</strong>
+          <p>Encrypted text, photos and voice notes over your own ESP32 radio link. Pair both browsers with the same 256-bit key before sending.</p>
+          <span>Connect both boards to begin</span>
+        </div>
+        <div class="day-divider"><span>Today</span></div>
+        <div class="messages" id="messages"></div>
+      </div>
+      <div class="send-panel">
+        <div class="composer" id="composer">
+          <button class="icon-button composer-attach" id="attachments" title="Send a photo" aria-label="Send a photo" disabled>＋</button>
+          <input type="file" id="photoPicker" accept="image/*" hidden>
+          <textarea id="messageInput" rows="1" maxlength="2000" placeholder="Connect ESP32 to send messages" disabled aria-label="Message"></textarea>
+          <button class="icon-button voice-button" id="voiceButton" type="button" title="Record encrypted voice message (up to 2 minutes)" aria-label="Record voice message" aria-pressed="false" disabled>
+            <svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10a7 7 0 0 0 14 0M12 17v5M8 22h8"/></svg>
+          </button>
+          <span id="byteCount" class="byte-count">0/500</span>
+          <button class="send-button" id="sendButton" aria-label="Send message" disabled>
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 20 21 12 3 4l3.8 7.2L15 12l-8.2.8L3 20Z"/></svg>
+          </button>
+        </div>
+        <div class="composer-caption"><span id="composerStatus">Connect an ESP32 using the sidebar</span><span id="encryptionStatus">🔒 AES-256-GCM · end-to-end</span></div>
+      </div>
+    </div>
+  </main>
+</div>
+<div class="modal-backdrop hidden" id="modalBackdrop" role="presentation"><section class="modal" role="dialog" aria-modal="true" aria-labelledby="modalTitle"><div class="modal-head"><h2 id="modalTitle">Settings</h2><button class="icon-button" id="closeModal" aria-label="Close dialog">✕</button></div><div id="modalBody"></div></section></div>
+
+<!-- In-app encrypted photo viewer: no new browser tab or network request. -->
+<div class="photo-viewer hidden" id="photoViewer" role="dialog" aria-modal="true" aria-label="Photo viewer" tabindex="-1">
+  <div class="photo-viewer-header">
+    <div class="photo-viewer-heading"><span id="photoViewerName">Nearby node</span><small id="photoViewerDate"></small></div>
+    <div class="photo-viewer-actions">
+      <button type="button" class="viewer-action" id="viewerZoom" aria-label="Zoom photo" title="Zoom photo">⤢</button>
+      <a class="viewer-action" id="viewerDownload" download="offgrid-photo.webp" aria-label="Save photo" title="Save photo">↓</a>
+      <button type="button" class="viewer-action viewer-close" id="viewerClose" aria-label="Close photo viewer" title="Close (Esc)">✕</button>
+    </div>
+  </div>
+  <div class="photo-viewer-stage" id="viewerStage">
+    <button type="button" class="viewer-arrow viewer-prev" id="viewerPrevious" aria-label="Previous photo">‹</button>
+    <div class="photo-viewer-canvas" id="viewerCanvas"><img id="viewerImage" alt="Selected chat photograph"></div>
+    <button type="button" class="viewer-arrow viewer-next" id="viewerNext" aria-label="Next photo">›</button>
+  </div>
+  <div class="photo-viewer-footer"><span id="photoViewerCounter"></span><span id="photoViewerInfo"></span><span class="viewer-help">← → to browse · Esc to close · swipe on touch</span></div>
+</div>
+<div class="toast-host" id="toastHost" aria-live="polite"></div>
+</body>
+</html>

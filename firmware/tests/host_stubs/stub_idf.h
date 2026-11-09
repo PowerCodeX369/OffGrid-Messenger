@@ -16,6 +16,7 @@ typedef struct {const uint8_t *src_addr;const host_rxctrl_t *rx_ctrl;} esp_now_r
 #define ESP_IDF_VERSION 50400
 #define ESP_IDF_VERSION_VAL(a,b,c) ((a)*10000+(b)*100+(c))
 #define ESP_OK 0
+#define ESP_ERR_INVALID_STATE 4 /* ESP-IDF defines this in esp_err.h; host-only stub */
 #define ESP_ERR_NVS_NO_FREE_PAGES 1
 #define ESP_ERR_NVS_NEW_VERSION_FOUND 2
 #define ESP_ERR_ESPNOW_EXIST 3

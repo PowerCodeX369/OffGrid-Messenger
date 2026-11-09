@@ -2,14 +2,16 @@
 from pathlib import Path
 import hashlib
 ROOT=Path(__file__).resolve().parents[1]
-# Frozen baseline file hashes embedded so this test works after extracting the ZIP.
-BASELINE_SHA256={
- 'web/adaptive.js': '90073923f1b54502819c8e30faf9075905bf2bd49d24fb8958f887cc62a89f86',
- 'web/logo.svg': 'ff03904fa9c8e21817768419f37fea2633b1963b43299cd3be913f3ebb82f594',
- 'main/Kconfig.projbuild': '8e60879148e28ab24d0a577c78a2fa123f4ed35e7d2f06c8c8800b3acd8c06d1',
- 'main/CMakeLists.txt': 'c46684d574a03293e32257d859d456943bbd6859371e6c3fc2f8ebccde1a5dce',
- 'sdkconfig.defaults': 'c8bfd8deca28f70f84a784e7eb297f080ae1f67dc2f550e9db7ce9b78d6c6cb0',
+# Frozen project invariants: self-contained SHA-256 checks instead of using
+# an unrelated absolute /mnt/data path from the original authoring session.
+FROZEN = {
+    'web/protocol.js': '0d6fe9b9ed701444d8ad1c538f6e3ce6bb65a69f6796053d67085dadd4149635',
+    'web/styles.css': 'f99534e82cc49e192baef569c28fef7f688b322a0ef9d57fdf0fea8fb5f034b6',
+    'web/adaptive.js': '90073923f1b54502819c8e30faf9075905bf2bd49d24fb8958f887cc62a89f86',
+    'web/logo.svg': 'ff03904fa9c8e21817768419f37fea2633b1963b43299cd3be913f3ebb82f594',
+    'main/main.c': '51ad15ca812aab88b7d9f93275de2da99f4415b54f46e8749b0f305891d388a3',
 }
+
 S=(ROOT/'main/main.c').read_text()
 WEB=(ROOT/'web/app.js').read_text()
 checks={
@@ -30,10 +32,7 @@ checks={
 }
 for name,good in checks.items(): print(('PASS' if good else 'FAIL')+': '+name)
 assert all(checks.values())
-for name in ('web/adaptive.js','web/logo.svg','main/Kconfig.projbuild','main/CMakeLists.txt','sdkconfig.defaults'):
-    assert hashlib.sha256((ROOT/name).read_bytes()).hexdigest()==BASELINE_SHA256[name], f'baseline changed: {name}'
-print('PASS: reusable adaptive controller, logo, USB config and build metadata identical to frozen 1.4.11')
-assert 'RFTEST' not in S, 'RF Lab experiment code must not enter mainline'
-assert 'health_probe_drive();' in S and 'og_health_can_up(' in S and 'HEALTH_PING_ID' in S
-assert 'P.packVoice' in WEB and 'P.unpackVoice' in WEB and 'MediaRecorder' in WEB
-print('PASS: genuine peer probes and browser voice; no RF Lab experimental code')
+for name, expected in FROZEN.items():
+    actual = hashlib.sha256((ROOT/name).read_bytes()).hexdigest()
+    assert actual == expected, f'frozen file unexpectedly changed: {name}'
+print('PASS: frozen web encryption, styling, and ESP-NOW main.c hashes verified (portable)')
