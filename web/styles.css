@@ -148,3 +148,30 @@ body.light .chat-background{background-color:#edf4f1}
 }
 @media(max-width:380px){.side-actions .icon-button{width:32px;height:32px}.branding strong{font-size:16px}.brand-logo{width:33px;height:33px}.header-tools{gap:0}.header-tools .icon-button{width:30px;height:32px}.avatar-small{width:32px;height:32px}.byte-count{font-size:9px}}
 @keyframes chatSlide{from{opacity:.65;transform:translateX(12px)}to{opacity:1;transform:translateX(0)}}
+
+/* Phase 1.4.2: app-integrated image viewer. Existing layouts/themes remain untouched. */
+.photo-viewer.hidden{display:none!important}
+.photo-viewer{position:fixed;inset:0;z-index:50;display:flex;flex-direction:column;
+ background:rgba(8,17,23,.97);color:#f1f5f7;backdrop-filter:blur(18px);
+ animation:viewerReveal .23s cubic-bezier(.19,1,.22,1);}
+.photo-viewer-header{min-height:68px;padding:12px clamp(14px,3vw,40px);display:flex;align-items:center;justify-content:space-between;gap:18px;background:rgba(12,24,30,.75);border-bottom:1px solid #ffffff13}
+.photo-viewer-heading{display:flex;flex-direction:column;gap:4px;min-width:0;font-size:14px;font-weight:650;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.photo-viewer-heading small{font-size:11px;font-weight:400;color:#9cadb4}
+.photo-viewer-actions{display:flex;gap:8px;align-items:center;flex:none}
+.viewer-action{display:grid;place-items:center;width:38px;height:38px;border:0;border-radius:50%;color:#e8f5f5;background:transparent;font-size:22px;text-decoration:none;cursor:pointer;transition:background .18s,transform .18s}
+.viewer-action:hover,.viewer-arrow:hover:not(:disabled){background:#ffffff1e;transform:scale(1.06)}
+.photo-viewer-stage{position:relative;display:flex;flex:1;min-height:0;align-items:center;justify-content:center;padding:18px clamp(52px,7vw,110px)}
+.photo-viewer-canvas{max-width:100%;max-height:100%;min-width:0;min-height:0;overflow:hidden;display:flex;align-items:center;justify-content:center;border-radius:6px}
+.photo-viewer-canvas img{display:block;max-width:100%;max-height:calc(100dvh - 170px);width:auto;height:auto;object-fit:contain;box-shadow:0 12px 55px #0007;cursor:zoom-in;user-select:none;transition:transform .22s ease}
+.photo-viewer-canvas.zoomed{overflow:auto;justify-content:flex-start;align-items:flex-start;max-width:100%;width:100%;height:100%}
+.photo-viewer-canvas.zoomed img{max-width:none;max-height:none;cursor:zoom-out;min-width:100%;height:auto}
+.photo-viewer-canvas img.photo-enter{animation:viewerPhoto .24s cubic-bezier(.2,.8,.2,1)}
+.viewer-arrow{position:absolute;top:50%;transform:translateY(-50%);z-index:2;width:42px;height:48px;display:grid;place-items:center;border:0;border-radius:13px;color:#f7fbfb;background:#ffffff12;cursor:pointer;font-size:40px;line-height:1;transition:background .2s,transform .2s}
+.viewer-arrow.viewer-prev{left:clamp(7px,2vw,26px)}.viewer-arrow.viewer-next{right:clamp(7px,2vw,26px)}
+.viewer-arrow:hover:not(:disabled){transform:translateY(-50%) scale(1.06)}.viewer-arrow.viewer-hidden{visibility:hidden;pointer-events:none}
+.photo-viewer-footer{min-height:58px;padding:12px clamp(14px,3vw,40px);display:flex;align-items:center;justify-content:center;gap:15px;flex-wrap:wrap;background:#0c181ebf;border-top:1px solid #ffffff11;color:#b8c7cc;font-size:12px}
+#photoViewerCounter{font-weight:700;color:#f1f8fa}.viewer-help{color:#82969c;font-size:11px}
+body.viewer-open{overflow:hidden}
+@keyframes viewerReveal{from{opacity:0}to{opacity:1}}@keyframes viewerPhoto{from{opacity:.48;transform:translateY(8px) scale(.965)}to{opacity:1;transform:none}}
+@media(max-width:590px){.photo-viewer-header{min-height:56px}.photo-viewer-stage{padding:12px 42px}.photo-viewer-canvas img{max-height:calc(100dvh - 135px)}.viewer-help{display:none}.viewer-arrow{width:35px;height:42px;font-size:32px}.photo-viewer-footer{min-height:48px}}
+@media(prefers-reduced-motion:reduce){.photo-viewer,.photo-viewer-canvas img.photo-enter{animation:none}.viewer-action,.viewer-arrow,.photo-viewer-canvas img{transition:none}}
