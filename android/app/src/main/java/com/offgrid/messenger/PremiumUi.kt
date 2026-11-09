@@ -141,6 +141,14 @@ private fun GlassCard(
 
 private fun timeOf(millis:Long)=SimpleDateFormat("h:mm a",Locale.getDefault()).format(Date(millis))
 
+// Single navigation hierarchy; moving back must always reverse the opening slide.
+private fun navigationDepth(page:String):Int = when(page) {
+    "chats" -> 0
+    "chat" -> 1
+    "settings" -> 2
+    else -> 1
+}
+
 /** The presentation state is separated from BLE/OGM4 so the proven transport stays intact. */
 data class PremiumActions(
     val sendText:(String)->Unit, val photo:()->Unit, val camera:()->Unit,
@@ -215,10 +223,13 @@ fun PremiumMessenger(
             }
             Column(Modifier.weight(1f).fillMaxHeight()) {
                 AnimatedContent(targetState=page,modifier=Modifier.weight(1f).fillMaxWidth(),label="page navigation", transitionSpec={
+                    // A deeper page enters from the right; Back reverses that same motion.
+                    // Chats (0) -> conversation (1) -> settings (2) is our page hierarchy.
+                    val direction=if(navigationDepth(targetState)<navigationDepth(initialState)) -1 else 1
                     (fadeIn(animationSpec=androidx.compose.animation.core.tween(240)) +
-                        slideInHorizontally(animationSpec=androidx.compose.animation.core.tween(260)) { it/7 })
+                        slideInHorizontally(animationSpec=androidx.compose.animation.core.tween(260)) { direction*(it/7) })
                         .togetherWith(fadeOut(animationSpec=androidx.compose.animation.core.tween(170)) +
-                        slideOutHorizontally(animationSpec=androidx.compose.animation.core.tween(210)) { -it/8 })
+                        slideOutHorizontally(animationSpec=androidx.compose.animation.core.tween(210)) { -direction*(it/8) })
                 }) { destination ->
                 when {
                     destination=="settings" -> SettingsPane(
@@ -487,25 +498,27 @@ private fun ChatTimeline(
     onRetry:(ChatItem)->Unit,onLongPress:(ChatItem)->Unit,modifier:Modifier,
     topSpace:Dp=94.dp,bottomSpace:Dp=112.dp
 ) {
-    val visibleItems=remember(items,filter) { if(filter.isBlank())items else items.filter {
+    // Do not cache filtered results by list identity: messages mutate in a snapshot state list.
+    val visibleItems=if(filter.isBlank())items else items.filter {
         it.text.contains(filter,ignoreCase=true) || (it.kind==OgmCodec.IMAGE && "photo".contains(filter,true)) ||
             (it.kind==OgmCodec.VOICE && "voice".contains(filter,true))
-    } }
-    // Start at the newest entry. Opening a long chat must never animate through history.
-    val lazy=rememberLazyListState(initialFirstVisibleItemIndex=visibleItems.size)
+    }
+    val messageCount=visibleItems.size
+    val latestId=visibleItems.lastOrNull()?.id
+    // Index zero is the info banner; the newest message is at index messageCount.
+    val lazy=rememberLazyListState(initialFirstVisibleItemIndex=messageCount)
     var previousCount by remember { mutableIntStateOf(-1) }
-    LaunchedEffect(visibleItems.size,filter) {
-        val current=visibleItems.size
-        if(current==0)return@LaunchedEffect // first restored content must snap, not animate
-        val firstOpen=previousCount<0
-        val prior=previousCount
-        val lastVisible=lazy.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0
-        val nearBottom=(lazy.layoutInfo.totalItemsCount-lastVisible)<=3
-        previousCount=current
-        when {
-            current==0 -> Unit
-            firstOpen -> lazy.scrollToItem(current) // index 0 is the info banner
-            current>prior && nearBottom -> lazy.animateScrollToItem(current)
+    LaunchedEffect(messageCount,latestId,filter) {
+        val previous=previousCount
+        previousCount=messageCount
+        if(messageCount==0)return@LaunchedEffect
+        if(previous<0) {
+            lazy.scrollToItem(messageCount) // First open: never animate through saved history.
+        } else if(messageCount>previous) {
+            // Follow every new incoming or outgoing message, even if the user scrolled up.
+            // Avoid a long, janky animation through older history.
+            if(messageCount-lazy.firstVisibleItemIndex>18) lazy.scrollToItem(messageCount)
+            else lazy.animateScrollToItem(messageCount)
         }
     }
     LaunchedEffect(lazy,visibleItems,connected,appVisible) {

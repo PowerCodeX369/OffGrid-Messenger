@@ -4,7 +4,7 @@ plugins { id("com.android.application"); id("org.jetbrains.kotlin.android"); id(
 android {
  namespace="com.offgrid.messenger"
  compileSdk=36
- defaultConfig { applicationId="com.offgrid.messenger"; minSdk=26; targetSdk=36; versionCode=253; versionName="2.5.3-4x3-rollback" }
+ defaultConfig { applicationId="com.offgrid.messenger"; minSdk=26; targetSdk=36; versionCode=254; versionName="2.5.4-scroll-motion" }
  buildFeatures { compose=true }
  compileOptions { sourceCompatibility=JavaVersion.VERSION_17; targetCompatibility=JavaVersion.VERSION_17 }
 
