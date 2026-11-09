@@ -12,6 +12,7 @@ object MediaPayload {
     const val VOICE_MP4 = 2
     const val MAX_PHOTO_BYTES = 96 * 1024
     const val ANDROID_PHOTO_TARGET = 48 * 1024
+    const val FAST_PHOTO_TARGET = 28 * 1024
     const val MAX_VOICE_BYTES = 384 * 1024
     const val ANDROID_VOICE_TARGET = 96 * 1024
     const val MAX_VOICE_DURATION_MS = 120_000
