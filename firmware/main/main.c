@@ -1,4 +1,4 @@
-/* OffGrid Messenger Phase 1.4.7 Adaptive PHY — ESP-IDF >= 5.2 / ESP32-C3.
+/* OffGrid Messenger Phase 1.4.8 USB output optimization — ESP-IDF >= 5.2 / ESP32-C3.
  * EXPERIMENTAL branch of FROZEN Phase 1.4.5.2 WatchdogFix.
  * AES-256-GCM runs in the BROWSER. NVS key management unchanged.
  * 1 Mbps broadcast HELLO/recovery; peer-aware 1/6/12 Mbps unicast for data.
@@ -160,9 +160,27 @@ static int64_t now_ms(void) { return esp_timer_get_time() / 1000; }
 static void print_mac(const uint8_t *m) {
     printf("%02X:%02X:%02X:%02X:%02X:%02X",m[0],m[1],m[2],m[3],m[4],m[5]);
 }
-static void print_hex(const uint8_t *p, size_t n) {
-    static const char h[]="0123456789ABCDEF";
-    for (size_t i=0;i<n;i++) { putchar(h[p[i]>>4]); putchar(h[p[i]&15]); }
+/* Emit the entire HEX-bearing serial record in one stdio operation.
+ * Prior revisions used hundreds of unbuffered putchar() calls per 160-byte
+ * packet, an expensive choice for the ESP32-C3 USB Serial/JTAG console.
+ * Keep exactly the same newline-delimited browser protocol.
+ */
+static void emit_hex_record(const char *prefix, const uint8_t *payload, size_t length) {
+    static const char digits[] = "0123456789ABCDEF";
+    char line[128 + MAX_TEXT * 2 + 2];
+    size_t start = strlen(prefix);
+    if (length > MAX_TEXT || start + 2 * length + 1 >= sizeof(line)) {
+        puts("ERROR|SERIAL_RECORD_OVERFLOW");
+        return;
+    }
+    memcpy(line, prefix, start);
+    for (size_t i = 0; i < length; ++i) {
+        line[start + 2 * i] = digits[payload[i] >> 4];
+        line[start + 2 * i + 1] = digits[payload[i] & 0x0f];
+    }
+    const size_t bytes = start + 2 * length + 1;
+    line[bytes - 1] = '\n';
+    (void)fwrite(line, 1, bytes, stdout);
 }
 static const char *link_mode_name(void) {
     return link_mode==OG_RATE_RANGE?"RANGE":link_mode==OG_RATE_SPEED?"SPEED":"AUTO";
@@ -340,9 +358,11 @@ static void receipt(const received_t *r) {
     (void)send_frame(BROADCAST,&ack);
 }
 static void display_rx(const frame_t *f,const uint8_t *mac) {
-    printf("RX|");print_mac(mac);
-    printf("|%" PRIu32 "|%" PRIu32 "|",f->session,f->id);
-    print_hex(f->text,f->length);putchar('\n');
+    char prefix[128];
+    snprintf(prefix, sizeof(prefix),
+        "RX|%02X:%02X:%02X:%02X:%02X:%02X|%" PRIu32 "|%" PRIu32 "|",
+        mac[0],mac[1],mac[2],mac[3],mac[4],mac[5],f->session,f->id);
+    emit_hex_record(prefix,f->text,f->length);
 }
 static void process_event(const event_t *e) {
     if(e->type==EV_STATUS){show_ready("STATUS");emit_link();return;}
@@ -368,8 +388,9 @@ static void process_event(const event_t *e) {
         f->magic=PROTOCOL_MAGIC;f->version=PROTOCOL_VERSION;f->type=TYPE_TEXT;
         memcpy(f->sender,own_mac,6);f->session=boot_session;f->id=next_id++;
         f->length=e->length;memcpy(f->text,e->text,e->length);
-        printf("QUEUED|%" PRIu32 "|%" PRIu32 "|",f->session,f->id);
-        print_hex(f->text,f->length);putchar('\n');
+        char prefix[128];
+        snprintf(prefix,sizeof(prefix),"QUEUED|%" PRIu32 "|%" PRIu32 "|",f->session,f->id);
+        emit_hex_record(prefix,f->text,f->length);
         return;
     }
     if(e->type==EV_READ) {
@@ -524,8 +545,10 @@ static void serial_task(void *arg) {
     }
 }
 void app_main(void) {
-    setvbuf(stdout,NULL,_IONBF,0);
-    puts("BOOT|OffGrid Messenger Phase 1.4.7 Adaptive PHY / stable USB, NVS, ACK");
+    /* Line buffering batches complete protocol records but flushes on newline.
+     * This avoids byte-by-byte USB VFS writes while retaining immediate READY. */
+    setvbuf(stdout,NULL,_IOLBF,0);
+    puts("BOOT|OffGrid Messenger Phase 1.4.8 USB output / adaptive PHY, NVS, ACK");
     esp_err_t e=nvs_flash_init();
     if(e==ESP_ERR_NVS_NO_FREE_PAGES||e==ESP_ERR_NVS_NEW_VERSION_FOUND){ESP_ERROR_CHECK(nvs_flash_erase());e=nvs_flash_init();}
     ESP_ERROR_CHECK(e);
