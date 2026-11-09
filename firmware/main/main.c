@@ -1,4 +1,4 @@
-/* OffGrid Messenger Phase 1.4.3.1: ESP-IDF 5.2+ on ESP32-C3.
+/* OffGrid Messenger Phase 1.4.4: ESP-IDF 5.2+ on ESP32-C3.
  * Same firmware on both radios. Protocol OGM2 unchanged for web encryption.
  * Bootstrap with broadcast at 1 Mbps; learn peer, send unicast with adaptive PHY.
  * The RADIO is an untrusted encrypted-payload carrier (AES-GCM lives in browser).
@@ -26,6 +26,7 @@
 #include "esp_timer.h"
 #include "esp_idf_version.h"
 #include "nvs_flash.h"
+#include "nvs.h"
 
 #define CHANNEL 6
 #define MAX_TEXT 228
@@ -39,6 +40,10 @@
 #define TYPE_TEXT 1
 #define TYPE_RECEIPT 2
 #define TYPE_READ 3
+#define TYPE_HELLO 4 /* discovery only, never a chat payload */
+#define DISCOVERY_MS 1400
+#define NVS_KEY_NS "offgrid"
+#define NVS_KEY_NAME "pairkey"
 #define EVENT_QUEUE_LEN 32
 #define SERIAL_LINE 512
 #define LINK_REPORT_MS 1800
@@ -129,7 +134,29 @@ static uint32_t good_deliveries=0, total_deliveries=0, total_retries=0, total_fa
 static int64_t last_rate_change_ms=0, last_peer_ms=0, last_report_ms=0;
 /* STATUS confirms the USB host can send commands, not merely read boot output. */
 static volatile bool serial_status_seen=false;
-static int64_t last_boot_beacon_ms=0;
+static int64_t last_boot_beacon_ms=0, last_discovery_ms=0;
+static uint32_t radio_tx_ok=0, radio_tx_fail=0, radio_rx_ok=0, hello_rx=0, hello_tx=0;
+static uint8_t pairing_key[32];
+static bool pairing_key_present=false;
+static bool read_pair_key(void) {
+    nvs_handle_t handle;
+    if(nvs_open(NVS_KEY_NS,NVS_READONLY,&handle)!=ESP_OK)return false;
+    size_t n=sizeof(pairing_key);
+    esp_err_t e=nvs_get_blob(handle,NVS_KEY_NAME,pairing_key,&n);
+    nvs_close(handle);
+    return e==ESP_OK && n==sizeof(pairing_key);
+}
+static bool save_pair_key(const uint8_t *raw) {
+    nvs_handle_t handle;
+    if(nvs_open(NVS_KEY_NS,NVS_READWRITE,&handle)!=ESP_OK)return false;
+    esp_err_t e=nvs_set_blob(handle,NVS_KEY_NAME,raw,32);
+    if(e==ESP_OK)e=nvs_commit(handle);
+    nvs_close(handle);
+    if(e!=ESP_OK)return false;
+    memcpy(pairing_key,raw,32);pairing_key_present=true;
+    return true;
+}
+
 
 
 static int64_t now_ms(void) { return esp_timer_get_time() / 1000; }
@@ -141,10 +168,12 @@ static const char *mode_name(void) {
     return link_mode==LINK_RANGE?"RANGE":link_mode==LINK_SPEED?"SPEED":"AUTO";
 }
 static void emit_link(void) {
-    printf("LINK|");
-    if(peer_known)print_mac(known_peer);else printf("NONE");
-    printf("|RSSI=%ld|PHY=%u|MODE=%s|OK=%" PRIu32 "|RETRY=%" PRIu32 "|FAIL=%" PRIu32 "\n",
-         (long)rssi_ema,(unsigned)phy_mbps,mode_name(),total_deliveries,total_retries,total_failures);
+    char macbuf[20];
+    if(peer_known)snprintf(macbuf,sizeof(macbuf),"%02X:%02X:%02X:%02X:%02X:%02X",
+        known_peer[0],known_peer[1],known_peer[2],known_peer[3],known_peer[4],known_peer[5]);
+    else snprintf(macbuf,sizeof(macbuf),"NONE");
+    printf("LINK|%s|RSSI=%ld|PHY=%u|MODE=%s|OK=%" PRIu32 "|RETRY=%" PRIu32 "|FAIL=%" PRIu32 "|TXOK=%" PRIu32 "|TXFAIL=%" PRIu32 "|RX=%" PRIu32 "|HELLO=%" PRIu32 "\n",
+         macbuf,(long)rssi_ema,(unsigned)phy_mbps,mode_name(),total_deliveries,total_retries,total_failures,radio_tx_ok,radio_tx_fail,radio_rx_ok,hello_rx);
 }
 static bool set_phy(uint8_t desired) {
     if(!peer_known)return false;
@@ -229,8 +258,8 @@ static bool read_hex(const char *s,uint8_t *dst,uint16_t *len) {
     return true;
 }
 static void show_ready(const char *source) {
-    printf("READY|");print_mac(own_mac);
-    printf("|CHANNEL=%d|SESSION=%" PRIu32 "|PROTO=2|CAP=228|TXDONE=1|FROM=%s\n",CHANNEL,boot_session,source);
+    printf("READY|%02X:%02X:%02X:%02X:%02X:%02X|CHANNEL=%d|SESSION=%" PRIu32 "|PROTO=2|CAP=228|TXDONE=1|DISC=1|NVSKEY=1|FROM=%s\n",
+        own_mac[0],own_mac[1],own_mac[2],own_mac[3],own_mac[4],own_mac[5],CHANNEL,boot_session,source);
 }
 static void on_receive(const esp_now_recv_info_t *info,const uint8_t *data,int len) {
     const size_t base=offsetof(frame_t,text);
@@ -242,8 +271,8 @@ static void on_receive(const esp_now_recv_info_t *info,const uint8_t *data,int l
     frame_t *f=&ev.frame;
     if(f->magic!=PROTOCOL_MAGIC||f->version!=PROTOCOL_VERSION)return;
     if(f->length>MAX_TEXT||(size_t)len!=base+f->length)return;
-    if(f->type!=TYPE_TEXT&&f->type!=TYPE_RECEIPT&&f->type!=TYPE_READ)return;
-    if((f->type==TYPE_RECEIPT||f->type==TYPE_READ)&&f->length!=0)return;
+    if(f->type!=TYPE_TEXT&&f->type!=TYPE_RECEIPT&&f->type!=TYPE_READ&&f->type!=TYPE_HELLO)return;
+    if((f->type==TYPE_RECEIPT||f->type==TYPE_READ||f->type==TYPE_HELLO)&&f->length!=0)return;
     if(memcmp(f->sender,ev.mac,6)!=0||memcmp(f->sender,own_mac,6)==0)return;
     (void)xQueueSend(event_queue,&ev,0); /* Wi-Fi callback must never block */
 }
@@ -264,11 +293,12 @@ static esp_err_t send_frame(const uint8_t *dest, const frame_t *f) {
     while(xSemaphoreTake(tx_done,0)==pdTRUE){} /* discard stale notifications */
     tx_last_status=ESP_NOW_SEND_FAIL;
     esp_err_t err=esp_now_send(dest,(const uint8_t*)f,offsetof(frame_t,text)+f->length);
-    if(err!=ESP_OK)return err;
+    if(err!=ESP_OK){radio_tx_fail++;return err;}
     /* The send-callback is posted from the Wi-Fi task. */
-    if(xSemaphoreTake(tx_done,pdMS_TO_TICKS(300))!=pdTRUE)return ESP_ERR_TIMEOUT;
+    if(xSemaphoreTake(tx_done,pdMS_TO_TICKS(300))!=pdTRUE){radio_tx_fail++;return ESP_ERR_TIMEOUT;}
     last_radio_ms=now_ms();
-    return tx_last_status==ESP_NOW_SEND_SUCCESS?ESP_OK:ESP_FAIL;
+    if(tx_last_status==ESP_NOW_SEND_SUCCESS){radio_tx_ok++;return ESP_OK;}
+    radio_tx_fail++;return ESP_FAIL;
 }
 static received_t *find_history(const uint8_t *mac,uint32_t session,uint32_t id) {
     for(int i=0;i<RX_HISTORY;i++)if(history[i].active&&history[i].session==session&&history[i].id==id&&memcmp(history[i].mac,mac,6)==0)return &history[i];
@@ -282,9 +312,17 @@ static void receipt(const received_t *r) {
     (void)send_frame(r->mac,&ack); /* sender retries if receipt is lost */
 }
 static void display_rx(const frame_t *f,const uint8_t *mac) {
-    printf("RX|");print_mac(mac);
-    printf("|%" PRIu32 "|%" PRIu32 "|",f->session,f->id);
-    print_hex(f->text,f->length);putchar('\n');
+    char line[520];
+    int n=snprintf(line,sizeof(line),"RX|%02X:%02X:%02X:%02X:%02X:%02X|%" PRIu32 "|%" PRIu32 "|",
+        mac[0],mac[1],mac[2],mac[3],mac[4],mac[5],f->session,f->id);
+    if(n<0||(size_t)n+f->length*2>=sizeof(line))return;
+    const char hex[]="0123456789ABCDEF";
+    for(size_t i=0;i<f->length;i++){
+        line[n+i*2]=hex[f->text[i]>>4];
+        line[n+i*2+1]=hex[f->text[i]&15];
+    }
+    line[n+f->length*2]='\0';
+    puts(line);
 }
 static void process_event(const event_t *e) {
     if(e->type==EV_STATUS){
@@ -308,8 +346,17 @@ static void process_event(const event_t *e) {
         f->magic=PROTOCOL_MAGIC;f->version=PROTOCOL_VERSION;f->type=TYPE_TEXT;
         memcpy(f->sender,own_mac,6);f->session=boot_session;f->id=next_id++;
         f->length=e->length;memcpy(f->text,e->text,e->length);
-        printf("QUEUED|%" PRIu32 "|%" PRIu32 "|",f->session,f->id);
-        print_hex(f->text,f->length);putchar('\n');
+        char qline[520];
+        int n=snprintf(qline,sizeof(qline),"QUEUED|%" PRIu32 "|%" PRIu32 "|",f->session,f->id);
+        if(n>0&&(size_t)n+f->length*2<sizeof(qline)){
+            const char hx[]="0123456789ABCDEF";
+            for(size_t j=0;j<f->length;j++){
+                qline[n+j*2]=hx[f->text[j]>>4];
+                qline[n+j*2+1]=hx[f->text[j]&15];
+            }
+            qline[n+f->length*2]='\0';
+            puts(qline);
+        }
         return;
     }
     if(e->type==EV_READ) {
@@ -336,6 +383,8 @@ static void process_event(const event_t *e) {
     if(peer_known && memcmp(e->mac,known_peer,6)!=0)return; /* only 1 peer in Phase 1.4.x */
     learn_peer(e->mac,e->rssi);
     const frame_t *f=&e->frame;
+    radio_rx_ok++;
+    if(f->type==TYPE_HELLO){hello_rx++;return;}
     if(f->type==TYPE_READ) {
         /* Sender browser decides whether this ID belongs to its outgoing chat. */
         printf("READ|%" PRIu32 "|%" PRIu32 "\n",f->session,f->id);
@@ -368,11 +417,24 @@ static void process_event(const event_t *e) {
     display_rx(f,e->mac);
     /* No receipt until receiving browser sends APPACK! */
 }
+/* Discovery does not depend on a user sending a chat message.
+   It remains at the broadcast PHY and contains no secret material. */
+static void broadcast_hello(void) {
+    frame_t frame={0};
+    frame.magic=PROTOCOL_MAGIC;frame.version=PROTOCOL_VERSION;
+    frame.type=TYPE_HELLO;memcpy(frame.sender,own_mac,6);
+    frame.session=boot_session;
+    if(send_frame(BROADCAST,&frame)==ESP_OK)hello_tx++;
+}
 static void dispatcher(void *arg) {
     event_t e;
     while(true) {
         if(xQueueReceive(event_queue,&e,pdMS_TO_TICKS(2))==pdTRUE)process_event(&e);
         int64_t t=now_ms();
+        if(t-last_discovery_ms>=DISCOVERY_MS){
+            last_discovery_ms=t;
+            broadcast_hello();
+        }
         if(t-last_report_ms>=LINK_REPORT_MS){last_report_ms=t;emit_link();}
         /* The native USB Serial/JTAG console may open after BOOT/READY was printed.
            Re-announce readiness until a STATUS command is received from the browser.
@@ -407,16 +469,40 @@ static void dispatcher(void *arg) {
         }
     }
 }
+/* Key commands are intentionally accepted only on the native USB console.
+   Every USB host with physical access to the node can retrieve this key. */
+static void emit_pair_key(void) {
+    if(!pairing_key_present){puts("KEYEMPTY");return;}
+    char hex[65];
+    const char digits[]="0123456789ABCDEF";
+    for(size_t i=0;i<32;i++){
+        hex[i*2]=digits[pairing_key[i]>>4];
+        hex[i*2+1]=digits[pairing_key[i]&15];
+    }
+    hex[64]='\0';
+    /* Single output operation prevents a concurrent LINK line splitting key data. */
+    printf("KEYDATA|%s\n",hex);
+    memset(hex,0,sizeof(hex));
+}
 static void serial_task(void *arg) {
     char line[SERIAL_LINE];size_t used=0;
-    puts("HELP|MSGHEX, STATUS, RATE AUTO/RANGE/SPEED, APPACK, READ");
+    puts("HELP|MSGHEX, STATUS, RATE AUTO/RANGE/SPEED, APPACK, READ, KEYGET, KEYSET <64 HEX>");
     while(true) {
         int ch=getchar();
         if(ch==EOF){clearerr(stdin);vTaskDelay(pdMS_TO_TICKS(20));continue;}
         if(ch=='\r')continue;
         if(ch=='\n') {
             line[used]=0;event_t e={0};bool send=false;
-            if(strncmp(line,"MSGHEX ",7)==0) {
+            if(strcmp(line,"KEYGET")==0){emit_pair_key();}
+            else if(strcmp(line,"KEYSTATUS")==0){puts(pairing_key_present?"KEYSTATUS|PRESENT":"KEYSTATUS|EMPTY");}
+            else if(strncmp(line,"KEYSET ",7)==0){
+                uint8_t buf[32];uint16_t n=0;
+                if(strlen(line+7)!=64||!read_hex(line+7,buf,&n)||n!=32)puts("KEYERROR|INVALID_HEX");
+                else if(save_pair_key(buf))puts("KEYSTORED");
+                else puts("KEYERROR|NVS_WRITE_FAILED");
+                memset(buf,0,sizeof(buf));
+            }
+            else if(strncmp(line,"MSGHEX ",7)==0) {
                 e.type=EV_SEND;
                 if(read_hex(line+7,e.text,&e.length))send=true;
                 else puts("ERROR|INVALID_HEX_OR_LENGTH");
@@ -443,7 +529,7 @@ static void serial_task(void *arg) {
                 else if(strcmp(line+5,"SPEED")==0){e.type=EV_RATE;e.mode=LINK_SPEED;send=true;}
                 else puts("ERROR|BAD_RATE_MODE");
             }else if(strcmp(line,"STATUS")==0) {e.type=EV_STATUS;send=true;}
-            else if(strcmp(line,"HELP")==0)puts("HELP|MSGHEX <UTF8-HEX>, MSG <text>, STATUS, RATE AUTO/RANGE/SPEED, APPACK <MAC> <SESSION> <ID>, READ <MAC> <SESSION> <ID>");
+            else if(strcmp(line,"HELP")==0)puts("HELP|MSGHEX <UTF8-HEX>, MSG <text>, STATUS, RATE AUTO/RANGE/SPEED, APPACK, READ, KEYGET, KEYSET <64 HEX>");
             else if(used)puts("ERROR|UNKNOWN_COMMAND");
             if(send&&!xQueueSend(event_queue,&e,pdMS_TO_TICKS(100)))puts("ERROR|EVENT_QUEUE_FULL");
             used=0;
@@ -453,10 +539,11 @@ static void serial_task(void *arg) {
 }
 void app_main(void) {
     setvbuf(stdout,NULL,_IONBF,0);
-    puts("BOOT|OffGrid Messenger Phase 1.4.3.1 / USB handshake hotfix / protocol 2");
+    puts("BOOT|OffGrid Messenger Phase 1.4.4 / discovery + NVS pairing key");
     esp_err_t e=nvs_flash_init();
     if(e==ESP_ERR_NVS_NO_FREE_PAGES||e==ESP_ERR_NVS_NEW_VERSION_FOUND){ESP_ERROR_CHECK(nvs_flash_erase());e=nvs_flash_init();}
     ESP_ERROR_CHECK(e);
+    pairing_key_present=read_pair_key();
     ESP_ERROR_CHECK(esp_netif_init());ESP_ERROR_CHECK(esp_event_loop_create_default());
     wifi_init_config_t cfg=WIFI_INIT_CONFIG_DEFAULT();
     ESP_ERROR_CHECK(esp_wifi_init(&cfg));
@@ -467,6 +554,7 @@ void app_main(void) {
     ESP_ERROR_CHECK(esp_wifi_set_ps(WIFI_PS_NONE));
     ESP_ERROR_CHECK(esp_read_mac(own_mac,ESP_MAC_WIFI_STA));
     boot_session=esp_random();if(!boot_session)boot_session=1;
+    last_discovery_ms=now_ms()-DISCOVERY_MS+(int64_t)(esp_random()%700);
     event_queue=xQueueCreate(EVENT_QUEUE_LEN,sizeof(event_t));if(!event_queue)abort();
     tx_done=xSemaphoreCreateBinary();if(!tx_done)abort();
     ESP_ERROR_CHECK(esp_now_init());
