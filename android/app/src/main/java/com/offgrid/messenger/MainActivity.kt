@@ -23,6 +23,7 @@ import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.enableEdgeToEdge
 import androidx.core.content.ContextCompat
+import androidx.core.view.WindowCompat
 import androidx.activity.compose.setContent
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.IntentSenderRequest
@@ -77,7 +78,7 @@ private val mainHandler = Handler(Looper.getMainLooper())
 
 data class ChatItem(val id:String,val text:String,val outgoing:Boolean,val timestamp:Long,
     val status:String="sent",val kind:Int=OgmCodec.TEXT,val bytes:ByteArray?=null,
-    val mime:String="",val width:Int=0,val height:Int=0,val durationMs:Int=0,val progress:Int=0, val speedKiBs:Float=0f)
+    val mime:String="",val width:Int=0,val height:Int=0,val durationMs:Int=0,val progress:Int=0, val speedKiBs:Float=0f, val edited:Boolean=false, val deleted:Boolean=false)
 private data class Transfer(val frames:List<ByteArray>,val messageId:String,val control:Boolean=false,
     val media:Boolean=false,
     var index:Int=0,var session:String="",var packetId:String="",var attempts:Int=0,
@@ -115,6 +116,8 @@ class MainActivity : ComponentActivity() {
     private var pairingSaved by mutableStateOf(false)
     private var details by mutableStateOf(false)
     private var dark by mutableStateOf(false)
+    private var contactName by mutableStateOf("Nearby node")
+    private var avatarBytes by mutableStateOf<ByteArray?>(null)
     private val bleDiagnostics = mutableStateListOf<String>()
     private var pickerHandled = false
     private val mediaWorker = Executors.newSingleThreadExecutor()
@@ -155,6 +158,13 @@ class MainActivity : ComponentActivity() {
         history = EncryptedHistory(this)
         notifications = OffGridNotifications(this)
         val preferences=getSharedPreferences("offgrid_premium_24",MODE_PRIVATE)
+        contactName=preferences.getString("contact_name","Nearby node") ?: "Nearby node"
+        notifications.setContact(contactName,null)
+        historyWorker.execute {
+            runCatching {history.loadAvatar()}.onSuccess { data ->
+                mainHandler.post {if(!activityDestroyed){avatarBytes=data;notifications.setContact(contactName,data)}}
+            }
+        }
         notificationsEnabled=preferences.getBoolean("notifications",true)
         notificationPreview=preferences.getBoolean("previews",false)
         keepBleBackground=preferences.getBoolean("ble_background",false)
@@ -272,6 +282,34 @@ class MainActivity : ComponentActivity() {
         }
         scheduleHistorySave()
     }
+    private fun deleteForMe(item:ChatItem) {
+        val idx=items.indexOfFirst { it.id==item.id }
+        if(idx>=0) {
+            items.removeAt(idx);scheduleHistorySave()
+            state="Message deleted from this device"
+        }
+    }
+    private fun editOutgoing(item:ChatItem,updated:String) {
+        if(!connected || !item.outgoing || item.deleted || item.kind!=OgmCodec.TEXT ||
+            item.status !in listOf("delivered","read","played") ||
+            updated.isBlank() || updated.codePointCount(0,updated.length)>MessageMutation.MAX_EDIT_CHARS)return
+        val idx=items.indexOfFirst {it.id==item.id}
+        if(idx<0)return
+        val body=MessageMutation.editPayload(item.id,updated)
+        pushEnvelope(OgmCodec.EDIT,OgmCodec.newId(),body,control=true)
+        items[idx]=items[idx].copy(text=updated,edited=true)
+        scheduleHistorySave()
+    }
+    private fun deleteForEveryone(item:ChatItem) {
+        if(!connected || !item.outgoing || item.deleted ||
+            item.status !in listOf("delivered","read","played"))return
+        val idx=items.indexOfFirst {it.id==item.id}
+        if(idx<0)return
+        pushEnvelope(OgmCodec.DELETE,OgmCodec.newId(),MessageMutation.deletePayload(item.id),control=true)
+        items[idx]=items[idx].copy(text="You deleted this message",bytes=null,deleted=true,edited=false)
+        scheduleHistorySave()
+    }
+
     private fun cancelVoiceRecording() {
         if(!recording)return
         recordAutoStop?.let(mainHandler::removeCallbacks);recordAutoStop=null
@@ -608,6 +646,15 @@ class MainActivity : ComponentActivity() {
                         OgmCodec.DELIVERED -> if(env.text.size==8) updateReceipt(OgmCodec.hex(env.text),"delivered")
                         OgmCodec.READ -> if(env.text.size==8) updateReceipt(OgmCodec.hex(env.text),"read")
                         OgmCodec.PLAYED -> if(env.text.size==8) updateReceipt(OgmCodec.hex(env.text),"played")
+                        OgmCodec.EDIT, OgmCodec.DELETE -> {
+                            val target=MessageMutation.target(env.text)
+                            val idx=items.indexOfFirst {it.id==target && !it.outgoing}
+                            if(idx>=0) {
+                                if(env.kind==OgmCodec.DELETE && playingId==target)stopVoicePlayback()
+                                val changed=MessageMutation.apply(items[idx],env.kind,env.text)
+                                if(changed!=null){items[idx]=changed;scheduleHistorySave()}
+                            }
+                        }
                     }
                 } catch (ex: Exception) { Log.w("OffGrid", "Rejected invalid encrypted frame",ex) }
             }
@@ -712,6 +759,30 @@ class MainActivity : ComponentActivity() {
         val photoPicker=rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri:Uri? ->
             if(uri!=null)sendPhoto(uri)
         }
+        val avatarPicker=rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri:Uri? ->
+            if(uri!=null)mediaWorker.execute {
+                runCatching {
+                    val opts=BitmapFactory.Options().apply {inJustDecodeBounds=true}
+                    contentResolver.openInputStream(uri)?.use {BitmapFactory.decodeStream(it,null,opts)}
+                    val sample=BitmapFactory.Options().apply {
+                        inSampleSize=(maxOf(opts.outWidth,opts.outHeight)/256).coerceAtLeast(1)
+                    }
+                    val bitmap=contentResolver.openInputStream(uri)?.use {BitmapFactory.decodeStream(it,null,sample)}
+                        ?: error("Cannot decode contact image")
+                    val target=android.graphics.Bitmap.createScaledBitmap(bitmap,160,160,true)
+                    if(bitmap!==target)bitmap.recycle()
+                    val output=java.io.ByteArrayOutputStream()
+                    target.compress(android.graphics.Bitmap.CompressFormat.JPEG,78,output)
+                    target.recycle()
+                    output.toByteArray().also {require(it.size<=32768)}
+                }.onSuccess {data ->
+                    historyWorker.execute {runCatching {history.saveAvatar(data)}.onFailure {
+                        Log.e("OffGridHistory","Could not encrypt contact avatar",it)
+                    }}
+                    mainHandler.post {if(!activityDestroyed){avatarBytes=data;notifications.setContact(contactName,data)}}
+                }.onFailure {err -> mainHandler.post {state="Contact photo failed: ${err.message}"} }
+            }
+        }
         val micPermission=rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
             state=if(granted)"Microphone ready · hold mic button to record" else "Microphone permission required"
         }
@@ -723,6 +794,11 @@ class MainActivity : ComponentActivity() {
                 notificationsPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
             }
         }
+        SideEffect {
+            val insets=WindowCompat.getInsetsController(window,window.decorView)
+            insets.isAppearanceLightStatusBars=!dark
+            insets.isAppearanceLightNavigationBars=!dark
+        }
         OffGridPremiumTheme(dark) {
             PremiumMessenger(
                 items=items.toList(),connected=connected,status=state,nodeAddress=trustedAddress,
@@ -730,7 +806,7 @@ class MainActivity : ComponentActivity() {
                 privatePreview=notificationPreview,backgroundEnabled=keepBleBackground,
                 recording=recording,playingId=playingId,appVisible=appResumed,
                 accessibleVoiceTap=accessibleVoiceTap,
-                diagnostics=bleDiagnostics.toList(),
+                diagnostics=bleDiagnostics.toList(),contactName=contactName,avatarBytes=avatarBytes,
                 actions=PremiumActions(
                     sendText=::sendText,photo={photoPicker.launch("image/*")},
                     micPress={
@@ -754,6 +830,21 @@ class MainActivity : ComponentActivity() {
                         link?.stop();secure.clearNodeAddress();trustedAddress=null
                         state="BLE device forgotten; AES pairing key kept"
                     },editKey={showKey=true},
+                    deleteForMe=::deleteForMe,deleteForEveryone=::deleteForEveryone,
+                    editMessage=::editOutgoing,
+                    copyMessage={ item ->
+                        val clipboard=getSystemService(android.content.ClipboardManager::class.java)
+                        clipboard.setPrimaryClip(android.content.ClipData.newPlainText("Message",item.text))
+                    },
+                    chooseAvatar={avatarPicker.launch("image/*")},
+                    clearAvatar={
+                        avatarBytes=null;notifications.setContact(contactName,null)
+                        historyWorker.execute {runCatching {history.clearAvatar()}}
+                    },
+                    renameContact={value ->
+                        contactName=value.take(36);notifications.setContact(contactName,avatarBytes)
+                        prefs.edit().putString("contact_name",contactName).apply()
+                    },
                     changeDark={dark=it;prefs.edit().putBoolean("dark",it).apply()},
                     changeFastPhotos={
                         fastPhotos=it;getSharedPreferences("offgrid_media",MODE_PRIVATE)
