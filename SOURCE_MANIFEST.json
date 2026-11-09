@@ -1,0 +1,2305 @@
+[
+  {
+    "version": "1.0.0",
+    "title": "Initial ESP32-to-ESP32 radio bridge",
+    "archive": "OffGridMessenger_Phase1.zip",
+    "archive_sha256": "798e0ba5092c6b37661794fd986c1b9eadaf3d3b5b6f6a1067041acfb73de369",
+    "components_in_archive": {
+      "android": 0,
+      "firmware": 5,
+      "web": 2
+    },
+    "inherited_components": [
+      "android"
+    ],
+    "changes": {
+      "android": {
+        "added": [],
+        "modified": [],
+        "removed": []
+      },
+      "firmware": {
+        "added": [
+          "CMakeLists.txt",
+          "README.md",
+          "main/CMakeLists.txt",
+          "main/main.c",
+          "sdkconfig.defaults"
+        ],
+        "modified": [],
+        "removed": []
+      },
+      "web": {
+        "added": [
+          "app.js",
+          "index.html"
+        ],
+        "modified": [],
+        "removed": []
+      }
+    },
+    "source_readme_excerpt": "OffGrid Messenger \u2014 Phase 1 Hardware:** Two ESP32-C3 Super Mini boards, one Linux laptop, USB cables. No LoRa and no internet required for messaging. Included:** ESP-IDF firmware (same program on both boards), local Web Serial chat page.",
+    "extra_source_files_ignored": []
+  },
+  {
+    "version": "1.1.0",
+    "title": "Introduce browser Web Serial client",
+    "archive": "OffGridMessenger_Phase1_1.zip",
+    "archive_sha256": "1543180ce484c3810396ea7992e48b9d3675bccaba5de89c4d0c2ae10ce759a0",
+    "components_in_archive": {
+      "android": 0,
+      "firmware": 5,
+      "web": 2
+    },
+    "inherited_components": [
+      "android"
+    ],
+    "changes": {
+      "android": {
+        "added": [],
+        "modified": [],
+        "removed": []
+      },
+      "firmware": {
+        "added": [],
+        "modified": [
+          "README.md",
+          "main/CMakeLists.txt",
+          "main/main.c"
+        ],
+        "removed": []
+      },
+      "web": {
+        "added": [],
+        "modified": [
+          "app.js",
+          "index.html"
+        ],
+        "removed": []
+      }
+    },
+    "source_readme_excerpt": "OffGrid Messenger \u2014 Phase 1.1 (reliable text transport) Hardware:** two ESP32-C3 Super Mini boards connected via USB-C to one laptop. Firmware:** ESP-IDF 5.x (VS Code ESP-IDF extension).",
+    "extra_source_files_ignored": []
+  },
+  {
+    "version": "1.1.1",
+    "title": "Correct first browser integration",
+    "archive": "OffGridMessenger_Phase1_1_Fix.zip",
+    "archive_sha256": "8060a088db5645c32bfc7eac3fbf805c45be8697b62e2b3a172f8fed378a8ec0",
+    "components_in_archive": {
+      "android": 0,
+      "firmware": 5,
+      "web": 2
+    },
+    "inherited_components": [
+      "android"
+    ],
+    "changes": {
+      "android": {
+        "added": [],
+        "modified": [],
+        "removed": []
+      },
+      "firmware": {
+        "added": [],
+        "modified": [
+          "README.md"
+        ],
+        "removed": []
+      },
+      "web": {
+        "added": [],
+        "modified": [
+          "app.js",
+          "index.html"
+        ],
+        "removed": []
+      }
+    },
+    "source_readme_excerpt": "Phase 1.1.1 browser compatibility fix Issue fixed:** On one browser tab, a cached Phase 1 `app.js` could load with the new Phase 1.1 HTML. That old script renders session/id/hex as raw chat text and never sends `APPACK`, causing all outgoing messages to fail. The HTML now includes a versioned JavaSc",
+    "extra_source_files_ignored": []
+  },
+  {
+    "version": "1.2.0",
+    "title": "Expand initial messaging interface",
+    "archive": "OffGridMessenger_Phase1_2.zip",
+    "archive_sha256": "eb1dc9f77e116241f764c28cdb1bd07c03736cefc35b93760c698205bda06a6b",
+    "components_in_archive": {
+      "android": 0,
+      "firmware": 5,
+      "web": 3
+    },
+    "inherited_components": [
+      "android"
+    ],
+    "changes": {
+      "android": {
+        "added": [],
+        "modified": [],
+        "removed": []
+      },
+      "firmware": {
+        "added": [],
+        "modified": [
+          "README.md",
+          "main/main.c"
+        ],
+        "removed": []
+      },
+      "web": {
+        "added": [
+          "styles.css"
+        ],
+        "modified": [
+          "app.js",
+          "index.html"
+        ],
+        "removed": []
+      }
+    },
+    "source_readme_excerpt": "OffGrid Messenger \u2014 Phase 1.2 Professional, responsive offline web chat. Firmware runs on **two ESP32-C3 Super Mini** boards using **ESP-IDF**. Desktop browsers connect to each board using **USB Web Serial**; the boards communicate using **ESP-NOW on channel 6**. No router, internet access, or extra",
+    "extra_source_files_ignored": []
+  },
+  {
+    "version": "1.3.0",
+    "title": "Develop communication protocol and UI",
+    "archive": "OffGridMessenger_Phase1_3.zip",
+    "archive_sha256": "9e68bd86897e25d4aac0940b49ae5ae3ad59bfcf577f8f1b2f632a52612bbfe5",
+    "components_in_archive": {
+      "android": 0,
+      "firmware": 5,
+      "web": 4
+    },
+    "inherited_components": [
+      "android"
+    ],
+    "changes": {
+      "android": {
+        "added": [],
+        "modified": [],
+        "removed": []
+      },
+      "firmware": {
+        "added": [],
+        "modified": [
+          "README.md"
+        ],
+        "removed": []
+      },
+      "web": {
+        "added": [
+          "logo.svg"
+        ],
+        "modified": [
+          "app.js",
+          "index.html",
+          "styles.css"
+        ],
+        "removed": []
+      }
+    },
+    "source_readme_excerpt": "OffGrid Messenger \u2014 Phase 1.3 This package contains the same working protocol-2 ESP-IDF firmware and an upgraded professional web interface. What is new in Phase 1.3",
+    "extra_source_files_ignored": []
+  },
+  {
+    "version": "1.4.0",
+    "title": "Establish Phase 1.4 baseline",
+    "archive": "OffGridMessenger_Phase1_4.zip",
+    "archive_sha256": "4d501c4d775934b50ad5dcaaada9c950a621268a5c45a0c2d890614560109d5c",
+    "components_in_archive": {
+      "android": 0,
+      "firmware": 7,
+      "web": 5
+    },
+    "inherited_components": [
+      "android"
+    ],
+    "changes": {
+      "android": {
+        "added": [],
+        "modified": [],
+        "removed": []
+      },
+      "firmware": {
+        "added": [
+          "tests/mock-serial.js",
+          "tests/test-protocol.cjs"
+        ],
+        "modified": [
+          "README.md"
+        ],
+        "removed": []
+      },
+      "web": {
+        "added": [
+          "protocol.js"
+        ],
+        "modified": [
+          "app.js",
+          "index.html",
+          "styles.css"
+        ],
+        "removed": []
+      }
+    },
+    "source_readme_excerpt": "OffGrid Messenger \u2014 Phase 1.4 Encrypted, offline browser messenger for two ESP32-C3 Super Mini boards. This is an incremental upgrade of the confirmed-working Phase 1.3 ESP-IDF project. The firmware is preserved unchanged: the **browser** implements authenticated AES-256-GCM encryption, multi-packet",
+    "extra_source_files_ignored": []
+  },
+  {
+    "version": "1.4.1",
+    "title": "Add protocol contract tests",
+    "archive": "OffGridMessenger_Phase1_4_1.zip",
+    "archive_sha256": "a769df66f6df7f2ccbdd61154a98d2c6f1850ac54835beffeb473cc03809892c",
+    "components_in_archive": {
+      "android": 0,
+      "firmware": 7,
+      "web": 5
+    },
+    "inherited_components": [
+      "android"
+    ],
+    "changes": {
+      "android": {
+        "added": [],
+        "modified": [],
+        "removed": []
+      },
+      "firmware": {
+        "added": [],
+        "modified": [
+          "README.md"
+        ],
+        "removed": []
+      },
+      "web": {
+        "added": [],
+        "modified": [
+          "app.js",
+          "index.html",
+          "styles.css"
+        ],
+        "removed": []
+      }
+    },
+    "source_readme_excerpt": "Phase 1.4.1 \u2014 UI and adaptive-transfer fixes This is a maintenance update to Phase 1.4. **The ESP32-C3 protocol-2 firmware is unchanged, so you do not need to reflash working boards.** Both browser tabs must use the same updated frontend. Fixes",
+    "extra_source_files_ignored": []
+  },
+  {
+    "version": "1.4.2",
+    "title": "Refine early browser and radio behavior",
+    "archive": "OffGridMessenger_Phase1_4_2.zip",
+    "archive_sha256": "1658ff0a6ded425ebb3f7555a153e44723c486815150031092bcd1f849a0c58f",
+    "components_in_archive": {
+      "android": 0,
+      "firmware": 7,
+      "web": 5
+    },
+    "inherited_components": [
+      "android"
+    ],
+    "changes": {
+      "android": {
+        "added": [],
+        "modified": [],
+        "removed": []
+      },
+      "firmware": {
+        "added": [],
+        "modified": [
+          "README.md",
+          "main/main.c"
+        ],
+        "removed": []
+      },
+      "web": {
+        "added": [],
+        "modified": [
+          "app.js",
+          "index.html",
+          "styles.css"
+        ],
+        "removed": []
+      }
+    },
+    "source_readme_excerpt": "OffGrid Messenger \u2014 Phase 1.4.2 ESP32-C3 Super Mini \u00d7 2 \u00b7 ESP-IDF 5.2+ \u00b7 Web Serial / ESP-NOW \u00b7 AES-256-GCM browser messaging This release builds on your **approved Phase 1.4.1 web UI**. It adds genuine *per-peer ESP-NOW radio PHY-rate control* in the ESP-IDF firmware, a compact link telemetry line ",
+    "extra_source_files_ignored": []
+  },
+  {
+    "version": "1.4.3",
+    "title": "Refine firmware behavior",
+    "archive": "OffGridMessenger_Phase1_4_3.zip",
+    "archive_sha256": "08c212edc2baef30df934264de8b6125e1af4ff67b1af604b8c191a51768ced7",
+    "components_in_archive": {
+      "android": 0,
+      "firmware": 7,
+      "web": 5
+    },
+    "inherited_components": [
+      "android"
+    ],
+    "changes": {
+      "android": {
+        "added": [],
+        "modified": [],
+        "removed": []
+      },
+      "firmware": {
+        "added": [],
+        "modified": [
+          "README.md",
+          "main/main.c",
+          "tests/mock-serial.js",
+          "tests/test-protocol.cjs"
+        ],
+        "removed": []
+      },
+      "web": {
+        "added": [],
+        "modified": [
+          "app.js",
+          "index.html",
+          "protocol.js",
+          "styles.css"
+        ],
+        "removed": []
+      }
+    },
+    "source_readme_excerpt": "OffGrid Messenger \u2014 Phase 1.4.3 Performance Fix Why photos were slow:** Phase 1.4.2 used 160 data bytes per chunk and a fixed **65 ms delay before every ESP-NOW packet**, including ACKs. A 64 KiB image required ~410 chunks and ~410 radio acknowledgments; delays alone consumed ~53 seconds, often much",
+    "extra_source_files_ignored": []
+  },
+  {
+    "version": "1.4.3.1",
+    "title": "Follow-up reliability correction",
+    "archive": "OffGridMessenger_Phase1_4_3_1.zip",
+    "archive_sha256": "d8213a8352f352b0f5bfa1068b04dcf4a569ca581bf27464e73275835107fe75",
+    "components_in_archive": {
+      "android": 0,
+      "firmware": 7,
+      "web": 5
+    },
+    "inherited_components": [
+      "android"
+    ],
+    "changes": {
+      "android": {
+        "added": [],
+        "modified": [],
+        "removed": []
+      },
+      "firmware": {
+        "added": [],
+        "modified": [
+          "README.md",
+          "main/main.c"
+        ],
+        "removed": []
+      },
+      "web": {
+        "added": [],
+        "modified": [
+          "app.js",
+          "index.html",
+          "styles.css"
+        ],
+        "removed": []
+      }
+    },
+    "source_readme_excerpt": "OffGrid Messenger \u2014 Phase 1.4.3.1 (USB connection hotfix) For ESP32-C3 Super Mini, ESP-IDF in VS Code, Chromium Web Serial.** This maintenance release keeps all Phase 1.4.3 photo chunk sizes, callback-paced sending, AES-256-GCM browser message format, and photo gallery unchanged. What was fixed",
+    "extra_source_files_ignored": []
+  },
+  {
+    "version": "1.4.4",
+    "title": "Add static stability checks",
+    "archive": "OffGridMessenger_Phase1_4_4.zip",
+    "archive_sha256": "e27d2f2734e5ec513fa81cc7ed990cd89986207a2a86942df4644559e70d38da",
+    "components_in_archive": {
+      "android": 0,
+      "firmware": 8,
+      "web": 5
+    },
+    "inherited_components": [
+      "android"
+    ],
+    "changes": {
+      "android": {
+        "added": [],
+        "modified": [],
+        "removed": []
+      },
+      "firmware": {
+        "added": [
+          "tests/test-144-static.py"
+        ],
+        "modified": [
+          "README.md",
+          "main/main.c",
+          "tests/mock-serial.js"
+        ],
+        "removed": []
+      },
+      "web": {
+        "added": [],
+        "modified": [
+          "app.js",
+          "index.html"
+        ],
+        "removed": []
+      }
+    },
+    "source_readme_excerpt": "OffGrid Messenger \u2014 Phase 1.4.4 Recovery release: independent ESP-NOW discovery + per-node persistent pairing key.** The approved full-width web design, gallery, image encoding, AES-256-GCM protocol, photo chunk size (208 bytes per app packet), and adaptive 1/6/12 Mbps unicast rate selection remain ",
+    "extra_source_files_ignored": []
+  },
+  {
+    "version": "1.4.5",
+    "title": "Establish stable communication baseline",
+    "archive": "OffGridMessenger_Phase1_4_5_Stable.zip",
+    "archive_sha256": "4920286ceaae08d8b16477576fa92b2888773588407cbe6f4ad049d853134138",
+    "components_in_archive": {
+      "android": 0,
+      "firmware": 9,
+      "web": 5
+    },
+    "inherited_components": [
+      "android"
+    ],
+    "changes": {
+      "android": {
+        "added": [],
+        "modified": [],
+        "removed": []
+      },
+      "firmware": {
+        "added": [
+          "tests/smoke_browser.py",
+          "tests/test-stable-contract.py"
+        ],
+        "modified": [
+          "README.md",
+          "main/main.c",
+          "tests/mock-serial.js"
+        ],
+        "removed": [
+          "tests/test-144-static.py"
+        ]
+      },
+      "web": {
+        "added": [],
+        "modified": [
+          "app.js",
+          "index.html",
+          "protocol.js"
+        ],
+        "removed": []
+      }
+    },
+    "source_readme_excerpt": "OffGrid Messenger \u2014 Phase 1.4.5 STABLE (recovery) Reason for this release:** Phase 1.4.4 connected over USB but made even short encrypted text messages and acknowledgements unacceptably slow. This package intentionally **rolls the ESP-NOW radio transport back to the Phase 1.4 broadcast protocol** th",
+    "extra_source_files_ignored": []
+  },
+  {
+    "version": "1.4.5.1",
+    "title": "Correct handshake behavior",
+    "archive": "OffGridMessenger_Phase1_4_5_1_HandshakeFix.zip",
+    "archive_sha256": "26b4c5eb5c789b2a74f3c0f12514efa974bb805e8bcb3b2d404fa9000b9c7c33",
+    "components_in_archive": {
+      "android": 0,
+      "firmware": 10,
+      "web": 5
+    },
+    "inherited_components": [
+      "android"
+    ],
+    "changes": {
+      "android": {
+        "added": [],
+        "modified": [],
+        "removed": []
+      },
+      "firmware": {
+        "added": [
+          "tests/test-handshake.py"
+        ],
+        "modified": [
+          "README.md",
+          "main/main.c"
+        ],
+        "removed": []
+      },
+      "web": {
+        "added": [],
+        "modified": [
+          "app.js",
+          "index.html"
+        ],
+        "removed": []
+      }
+    },
+    "source_readme_excerpt": "OffGrid Messenger \u2014 1.4.5.1 USB Handshake Hotfix What this fixes The 1.4.5 release removed the READY beacon loop from earlier connecting releases. A board can boot before Web Serial opens, leaving its one-time READY unseen. If the ESP32 does not see the browser's STATUS command, both screens remain ",
+    "extra_source_files_ignored": []
+  },
+  {
+    "version": "1.4.5.2",
+    "title": "Correct watchdog behavior",
+    "archive": "OffGridMessenger_Phase1_4_5_2_WatchdogFix.zip",
+    "archive_sha256": "c5148b49fd5798d6ad5d3debef79ca7d8b1dedf4a7411eab6740a11d3b817ba2",
+    "components_in_archive": {
+      "android": 0,
+      "firmware": 11,
+      "web": 5
+    },
+    "inherited_components": [
+      "android"
+    ],
+    "changes": {
+      "android": {
+        "added": [],
+        "modified": [],
+        "removed": []
+      },
+      "firmware": {
+        "added": [
+          "tests/test-watchdog-fix.py"
+        ],
+        "modified": [
+          "README.md",
+          "main/main.c"
+        ],
+        "removed": []
+      },
+      "web": {
+        "added": [],
+        "modified": [],
+        "removed": []
+      }
+    },
+    "source_readme_excerpt": "OffGrid Messenger \u2014 Phase 1.4.5.2 (Watchdog Fix) What caused the failure The diagnostic log reports the Task Watchdog timing out because CPU0's idle task is starved while `dispatch` runs. `pdMS_TO_TICKS(5)` rounds **down to zero** when `CONFIG_FREERTOS_HZ=100` (one tick = 10 ms). The event-loop queu",
+    "extra_source_files_ignored": []
+  },
+  {
+    "version": "1.4.6",
+    "title": "Introduce safer adaptive rate controls",
+    "archive": "OffGridMessenger_Phase1_4_6_SafeAdaptive.zip",
+    "archive_sha256": "23dbace825cf88f4f99a661292eb91a111e229556b10fcaacd9c0d1a8f2c12a0",
+    "components_in_archive": {
+      "android": 0,
+      "firmware": 12,
+      "web": 6
+    },
+    "inherited_components": [
+      "android"
+    ],
+    "changes": {
+      "android": {
+        "added": [],
+        "modified": [],
+        "removed": []
+      },
+      "firmware": {
+        "added": [
+          "tests/test-adaptive.cjs"
+        ],
+        "modified": [
+          "README.md",
+          "tests/test-stable-contract.py"
+        ],
+        "removed": []
+      },
+      "web": {
+        "added": [
+          "adaptive.js"
+        ],
+        "modified": [
+          "app.js",
+          "index.html"
+        ],
+        "removed": []
+      }
+    },
+    "source_readme_excerpt": "OffGrid Messenger \u2014 Phase 1.4.6 Safe Adaptive Photo Transfer Frozen baseline Phase 1.4.5.2_WatchdogFix is the authoritative stable baseline.** All ESP-IDF files, `main/main.c`, `sdkconfig.defaults`, `web/protocol.js`, and `web/styles.css` are byte-for-byte unchanged. Flashing the boards is **not** r",
+    "extra_source_files_ignored": []
+  },
+  {
+    "version": "1.4.7",
+    "title": "Develop adaptive PHY selection",
+    "archive": "OffGridMessenger_Phase1_4_7_AdaptivePHY.zip",
+    "archive_sha256": "2d197ecde441ac4ecde0612b4cae4f30fdf0f46ee83e9fd4a08f7aa172e6d13b",
+    "components_in_archive": {
+      "android": 0,
+      "firmware": 14,
+      "web": 6
+    },
+    "inherited_components": [
+      "android"
+    ],
+    "changes": {
+      "android": {
+        "added": [],
+        "modified": [],
+        "removed": []
+      },
+      "firmware": {
+        "added": [
+          "main/link_rate_policy.h",
+          "tests/test-adaptive-phy-contract.py",
+          "tests/test_phy_policy.c"
+        ],
+        "modified": [
+          "README.md",
+          "main/main.c",
+          "tests/test-watchdog-fix.py"
+        ],
+        "removed": [
+          "tests/test-stable-contract.py"
+        ]
+      },
+      "web": {
+        "added": [],
+        "modified": [
+          "app.js",
+          "index.html"
+        ],
+        "removed": []
+      }
+    },
+    "source_readme_excerpt": "OffGrid Messenger \u2014 Phase 1.4.7 Experimental Adaptive PHY Stable rollback baseline: OffGridMessenger_Phase1_4_5_2_WatchdogFix.zip**. This is a separately versioned experiment. Do **not** overwrite or erase your stable baseline.",
+    "extra_source_files_ignored": []
+  },
+  {
+    "version": "1.4.8",
+    "title": "Improve USB output path",
+    "archive": "OffGridMessenger_Phase1_4_8_USBOutput.zip",
+    "archive_sha256": "293e28a76bd9ad1690c303f8b5c8185e2807fed4dbf5490ba98ede3f67179497",
+    "components_in_archive": {
+      "android": 0,
+      "firmware": 15,
+      "web": 6
+    },
+    "inherited_components": [
+      "android"
+    ],
+    "changes": {
+      "android": {
+        "added": [],
+        "modified": [],
+        "removed": []
+      },
+      "firmware": {
+        "added": [
+          "tests/test_usb_records.py"
+        ],
+        "modified": [
+          "README.md",
+          "main/main.c"
+        ],
+        "removed": []
+      },
+      "web": {
+        "added": [],
+        "modified": [],
+        "removed": []
+      }
+    },
+    "source_readme_excerpt": "OffGrid Messenger Phase 1.4.8 \u2014 USB Output Performance Candidate Base:** experimental Phase 1.4.7 (12 Mbps adaptive unicast). **Frozen rollback:** Phase 1.4.5.2 WatchdogFix. Neither original is modified. What the screenshot demonstrated",
+    "extra_source_files_ignored": []
+  },
+  {
+    "version": "1.4.9",
+    "title": "Add radio diagnostics",
+    "archive": "OffGridMessenger_Phase1_4_9_Diagnostics.zip",
+    "archive_sha256": "9542121e82fec363438c0ec019bac158370aa3769c1f5ef6216d6ec6e0bd0e7e",
+    "components_in_archive": {
+      "android": 0,
+      "firmware": 34,
+      "web": 6
+    },
+    "inherited_components": [
+      "android"
+    ],
+    "changes": {
+      "android": {
+        "added": [],
+        "modified": [],
+        "removed": []
+      },
+      "firmware": {
+        "added": [
+          "tests/host_stubs/esp_err.h",
+          "tests/host_stubs/esp_event.h",
+          "tests/host_stubs/esp_idf_version.h",
+          "tests/host_stubs/esp_log.h",
+          "tests/host_stubs/esp_mac.h",
+          "tests/host_stubs/esp_netif.h",
+          "tests/host_stubs/esp_now.h",
+          "tests/host_stubs/esp_random.h",
+          "tests/host_stubs/esp_timer.h",
+          "tests/host_stubs/esp_wifi.h",
+          "tests/host_stubs/freertos/FreeRTOS.h",
+          "tests/host_stubs/freertos/queue.h",
+          "tests/host_stubs/freertos/task.h",
+          "tests/host_stubs/nvs.h",
+          "tests/host_stubs/nvs_flash.h",
+          "tests/host_stubs/stub_idf.h",
+          "tests/smoke_diag_browser.py",
+          "tests/test-diagnostic-contract.py",
+          "tests/test-diagnostic-protocol.cjs"
+        ],
+        "modified": [
+          "README.md",
+          "main/main.c",
+          "tests/test-adaptive-phy-contract.py"
+        ],
+        "removed": []
+      },
+      "web": {
+        "added": [],
+        "modified": [
+          "app.js",
+          "index.html",
+          "protocol.js",
+          "styles.css"
+        ],
+        "removed": []
+      }
+    },
+    "source_readme_excerpt": "OffGrid Messenger \u2014 Phase 1.4.9 Diagnostics Purpose:** Measure, before changing the working photo transfer protocol, where its ~1.1 KB/s throughput bottleneck lies. Baselines and safety",
+    "extra_source_files_ignored": []
+  },
+  {
+    "version": "1.4.9.1",
+    "title": "Correct diagnostics compilation",
+    "archive": "OffGridMessenger_Phase1_4_9_1_CompileFix.zip",
+    "archive_sha256": "33928fa1a2a9a81a97dda7c51dad9c72b45a756dec383c793a39f111cae6b7c2",
+    "components_in_archive": {
+      "android": 0,
+      "firmware": 34,
+      "web": 6
+    },
+    "inherited_components": [
+      "android"
+    ],
+    "changes": {
+      "android": {
+        "added": [],
+        "modified": [],
+        "removed": []
+      },
+      "firmware": {
+        "added": [],
+        "modified": [
+          "README.md",
+          "main/main.c"
+        ],
+        "removed": []
+      },
+      "web": {
+        "added": [],
+        "modified": [],
+        "removed": []
+      }
+    },
+    "source_readme_excerpt": "OffGrid Messenger \u2014 Phase 1.4.9.1 Diagnostics Compile Fix Compile fix:** Corrected `RBENCH_DONE` format argument for average RTT in `main/main.c` (line ~374). Uses `PRIu32` plus explicit `(uint32_t)` cast, resolving ESP-IDF `-Werror=format`. **No protocol, radio, encryption, UI, or diagnostic behavi",
+    "extra_source_files_ignored": []
+  },
+  {
+    "version": "1.4.10",
+    "title": "Improve USB input",
+    "archive": "OffGridMessenger_Phase1_4_10_USBInput.zip",
+    "archive_sha256": "f1fc5a01d0ea91875a5ce9d6abf0000fc06224c04ae4058a4e20eb3ead4679f1",
+    "components_in_archive": {
+      "android": 0,
+      "firmware": 35,
+      "web": 6
+    },
+    "inherited_components": [
+      "android"
+    ],
+    "changes": {
+      "android": {
+        "added": [],
+        "modified": [],
+        "removed": []
+      },
+      "firmware": {
+        "added": [
+          "tests/test-usb-batched-rx.py"
+        ],
+        "modified": [
+          "README.md",
+          "main/main.c"
+        ],
+        "removed": []
+      },
+      "web": {
+        "added": [],
+        "modified": [],
+        "removed": []
+      }
+    },
+    "source_readme_excerpt": "OffGrid Messenger \u2014 Phase 1.4.10 USB Input Throughput Experimental performance branch.** Based directly on **Phase 1.4.9.1 CompileFix** (measured 1.18 KiB/s browser-to-ESP32 USB; 109.01 KiB/s reverse; 15.15 KiB/s radio-only; 0.92 KiB/s encrypted end-to-end). The **Phase 1.4.5.2 WatchdogFix** remains",
+    "extra_source_files_ignored": []
+  },
+  {
+    "version": "1.4.10.1",
+    "title": "Improve USB recovery",
+    "archive": "OffGridMessenger_Phase1_4_10_1_USBRecovery.zip",
+    "archive_sha256": "5a81444391aa0f4c1f5f746eedf394d1ab66e8a374b4e63127c09d7414ab2f1b",
+    "components_in_archive": {
+      "android": 0,
+      "firmware": 34,
+      "web": 6
+    },
+    "inherited_components": [
+      "android"
+    ],
+    "changes": {
+      "android": {
+        "added": [],
+        "modified": [],
+        "removed": []
+      },
+      "firmware": {
+        "added": [],
+        "modified": [
+          "README.md",
+          "main/main.c"
+        ],
+        "removed": [
+          "tests/test-usb-batched-rx.py"
+        ]
+      },
+      "web": {
+        "added": [],
+        "modified": [],
+        "removed": []
+      }
+    },
+    "source_readme_excerpt": "OffGrid Messenger \u2014 Phase 1.4.10.1 USB RX Recovery Controlled regression repair for the experimental 1.4.10 build.** The confirmed result was that using `read(STDIN_FILENO, rx, 256)` caused USB upload timeout and photo speed ~0.1 KiB/s. Do not continue using 1.4.10. Scope",
+    "extra_source_files_ignored": []
+  },
+  {
+    "version": "1.4.10.2",
+    "title": "Introduce interrupt-driven USB input",
+    "archive": "OffGridMessenger_Phase1_4_10_2_InterruptUSB.zip",
+    "archive_sha256": "a8cf3572fb71e42de31d76e10a214f5941b8745d50f21ec122783594527aca41",
+    "components_in_archive": {
+      "android": 0,
+      "firmware": 39,
+      "web": 6
+    },
+    "inherited_components": [
+      "android"
+    ],
+    "changes": {
+      "android": {
+        "added": [],
+        "modified": [],
+        "removed": []
+      },
+      "firmware": {
+        "added": [
+          "main/Kconfig.projbuild",
+          "tests/host_stubs/driver/usb_serial_jtag.h",
+          "tests/host_stubs/driver/usb_serial_jtag_vfs.h",
+          "tests/host_stubs/esp_vfs_dev.h",
+          "tests/test-usb-irq-contract.py"
+        ],
+        "modified": [
+          "README.md",
+          "main/CMakeLists.txt",
+          "main/main.c",
+          "sdkconfig.defaults",
+          "tests/host_stubs/freertos/queue.h"
+        ],
+        "removed": []
+      },
+      "web": {
+        "added": [],
+        "modified": [],
+        "removed": []
+      }
+    },
+    "source_readme_excerpt": "OffGrid Messenger \u2014 Phase 1.4.10.2 USB interrupt-driver experiment Status: experimental, not hardware verified.** Based on **Phase 1.4.10.1 USBRecovery**, which you measured at **2.45 KiB/s USB upload, 116.91 KiB/s USB download, 15.63 KiB/s ESP-NOW-only and 1.70 KiB/s encrypted end-to-end**. The aut",
+    "extra_source_files_ignored": []
+  },
+  {
+    "version": "1.4.10.3",
+    "title": "Introduce selective acknowledgments",
+    "archive": "OffGridMessenger_Phase1_4_10_3_SelectiveACK.zip",
+    "archive_sha256": "e7e10d5d58582d500c64e0aef5696cdd04c71e2d1ad4bfd84023dd1fdfc7d187",
+    "components_in_archive": {
+      "android": 0,
+      "firmware": 43,
+      "web": 6
+    },
+    "inherited_components": [
+      "android"
+    ],
+    "changes": {
+      "android": {
+        "added": [],
+        "modified": [],
+        "removed": []
+      },
+      "firmware": {
+        "added": [
+          "tests/test-selective-ack-browser.cjs",
+          "tests/test-selective-ack-contract.py",
+          "tests/test-selective-ack-firmware.py",
+          "tests/test-selective-ack.cjs"
+        ],
+        "modified": [
+          "README.md",
+          "main/main.c",
+          "tests/test-adaptive-phy-contract.py",
+          "tests/test-diagnostic-contract.py",
+          "tests/test-usb-irq-contract.py"
+        ],
+        "removed": []
+      },
+      "web": {
+        "added": [],
+        "modified": [
+          "app.js",
+          "index.html",
+          "protocol.js"
+        ],
+        "removed": []
+      }
+    },
+    "source_readme_excerpt": "OffGrid Messenger \u2014 Phase 1.4.10.3 Selective Photo ACK (experimental) Authoritative frozen baseline: Phase 1.4.10.2_InterruptUSB.** This new release is a *separate, reversible experiment*, not a replacement for that measured-working version. Why this version exists",
+    "extra_source_files_ignored": []
+  },
+  {
+    "version": "1.4.10.4",
+    "title": "Refine browser autoscroll",
+    "archive": "OffGridMessenger_Phase1_4_10_4_AutoScroll.zip",
+    "archive_sha256": "836ccb511a8334943ccfeb3d99d0dbf2b2701990f8da44e58e580ff96e0b12a5",
+    "components_in_archive": {
+      "android": 0,
+      "firmware": 45,
+      "web": 6
+    },
+    "inherited_components": [
+      "android"
+    ],
+    "changes": {
+      "android": {
+        "added": [],
+        "modified": [],
+        "removed": []
+      },
+      "firmware": {
+        "added": [
+          "ROADMAP.md",
+          "tests/test-auto-scroll-browser.py"
+        ],
+        "modified": [
+          "README.md"
+        ],
+        "removed": []
+      },
+      "web": {
+        "added": [],
+        "modified": [
+          "app.js",
+          "index.html"
+        ],
+        "removed": []
+      }
+    },
+    "source_readme_excerpt": "OffGrid Messenger \u2014 Phase 1.4.10.4 Auto-scroll (web-only patch to experimental Selective ACK) Authoritative frozen baseline: Phase 1.4.10.2_InterruptUSB.** This new release is a *separate, reversible experiment*, not a replacement for that measured-working version. Phase 1.4.10.4 changes \u2014 only Web ",
+    "extra_source_files_ignored": []
+  },
+  {
+    "version": "1.4.11",
+    "title": "Introduce ESP-NOW Long Range",
+    "archive": "OffGridMessenger_Phase1_4_11_LongRange.zip",
+    "archive_sha256": "972107335b0f19f504e11552bc6792b0bb2744dec76bd9687a673fe3d223ce60",
+    "components_in_archive": {
+      "android": 0,
+      "firmware": 44,
+      "web": 6
+    },
+    "inherited_components": [
+      "android"
+    ],
+    "changes": {
+      "android": {
+        "added": [],
+        "modified": [],
+        "removed": []
+      },
+      "firmware": {
+        "added": [
+          "VALIDATION.md",
+          "tests/test-long-range-contract.py",
+          "tests/test-lr-policy.c"
+        ],
+        "modified": [
+          "README.md",
+          "ROADMAP.md",
+          "main/link_rate_policy.h",
+          "main/main.c",
+          "tests/host_stubs/stub_idf.h"
+        ],
+        "removed": [
+          "tests/test-adaptive-phy-contract.py",
+          "tests/test-diagnostic-contract.py",
+          "tests/test-selective-ack-contract.py",
+          "tests/test-usb-irq-contract.py"
+        ]
+      },
+      "web": {
+        "added": [],
+        "modified": [
+          "app.js",
+          "index.html"
+        ],
+        "removed": []
+      }
+    },
+    "source_readme_excerpt": "OffGrid Messenger \u2014 Phase 1.4.11 (Experimental ESP-NOW Long Range) Hardware:** two ESP32-C3 Super Minis, one laptop, USB-C cables. **Firmware:** ESP-IDF 5.2+ (ESP32-C3 target) in VS Code. **Web app:** local Chromium Web Serial. **No LoRa radio, Wi-Fi AP, router, cloud server, or GPS required. > **IM",
+    "extra_source_files_ignored": []
+  },
+  {
+    "version": "1.4.11.1",
+    "title": "Add manual LR mode controls",
+    "archive": "OffGridMessenger_Phase1_4_11_1_ManualLR.zip",
+    "archive_sha256": "93fed240fa57ff5b9fc210bd98e02eecd28bb64f6339ca8f9e32121a5311dc30",
+    "components_in_archive": {
+      "android": 0,
+      "firmware": 45,
+      "web": 6
+    },
+    "inherited_components": [
+      "android"
+    ],
+    "changes": {
+      "android": {
+        "added": [],
+        "modified": [],
+        "removed": []
+      },
+      "firmware": {
+        "added": [
+          "tests/test_manual_lr_ui.py"
+        ],
+        "modified": [
+          "README.md",
+          "VALIDATION.md",
+          "tests/test-long-range-contract.py"
+        ],
+        "removed": []
+      },
+      "web": {
+        "added": [],
+        "modified": [
+          "app.js",
+          "index.html",
+          "styles.css"
+        ],
+        "removed": []
+      }
+    },
+    "source_readme_excerpt": "OffGrid Messenger \u2014 Phase 1.4.11.1 Manual LR Quick Switch Web-only UI patch on top of the experimental 1.4.11 LongRange build.** No ESP32 reflash is needed if both boards already run 1.4.11 LR firmware. The firmware, encrypted protocol, Web Serial, selective ACK, photo gallery, auto-scroll, and mess",
+    "extra_source_files_ignored": []
+  },
+  {
+    "version": "1.4.11.2",
+    "title": "Add RF diagnostics and testing",
+    "archive": "OffGridMessenger_Phase1_4_11_2_RFTest.zip",
+    "archive_sha256": "321fe5a07a579e2086d5ae38fe12a9d8043ec4b104edffdede9e9d88935e3e59",
+    "components_in_archive": {
+      "android": 0,
+      "firmware": 48,
+      "web": 6
+    },
+    "inherited_components": [
+      "android"
+    ],
+    "changes": {
+      "android": {
+        "added": [],
+        "modified": [],
+        "removed": []
+      },
+      "firmware": {
+        "added": [
+          "tests/test-rf-lab-browser.py",
+          "tests/test-rf-lab.c",
+          "tests/test_rf_lab_source.py"
+        ],
+        "modified": [
+          "README.md",
+          "ROADMAP.md",
+          "VALIDATION.md",
+          "main/main.c",
+          "tests/test-long-range-contract.py"
+        ],
+        "removed": []
+      },
+      "web": {
+        "added": [],
+        "modified": [
+          "app.js",
+          "index.html",
+          "styles.css"
+        ],
+        "removed": []
+      }
+    },
+    "source_readme_excerpt": "OffGrid Messenger \u2014 Phase 1.4.11.2: RF Lab / At-Home Long Range Experiments Experimental build.** Derived from the user-verified **Phase 1.4.11.1 ManualLR**, using the **Phase 1.4.10.2 InterruptUSB** release as the frozen stable rollback. ESP-IDF 5.2+ / ESP32-C3 / Chromium Web Serial. Two boards and",
+    "extra_source_files_ignored": []
+  },
+  {
+    "version": "1.5.0",
+    "title": "Improve LR reliability and voice messaging",
+    "archive": "OffGridMessenger_Phase1_5_ReliableLR_Voice.zip",
+    "archive_sha256": "c16bf8a56970ac00a22c2ad4aaaf092bbff9dd487632bcf0a19fd6a40f6e417a",
+    "components_in_archive": {
+      "android": 0,
+      "firmware": 49,
+      "web": 6
+    },
+    "inherited_components": [
+      "android"
+    ],
+    "changes": {
+      "android": {
+        "added": [],
+        "modified": [],
+        "removed": []
+      },
+      "firmware": {
+        "added": [
+          "TEST_RESULTS.txt",
+          "main/link_health_policy.h",
+          "tests/test-link-health.c",
+          "tests/test-voice-browser.py",
+          "tests/test-voice.cjs"
+        ],
+        "modified": [
+          "README.md",
+          "ROADMAP.md",
+          "VALIDATION.md",
+          "main/main.c",
+          "tests/test-adaptive.cjs",
+          "tests/test-long-range-contract.py"
+        ],
+        "removed": [
+          "tests/test-rf-lab-browser.py",
+          "tests/test-rf-lab.c",
+          "tests/test_manual_lr_ui.py",
+          "tests/test_rf_lab_source.py"
+        ]
+      },
+      "web": {
+        "added": [],
+        "modified": [
+          "app.js",
+          "index.html",
+          "protocol.js",
+          "styles.css"
+        ],
+        "removed": []
+      }
+    },
+    "source_readme_excerpt": "OffGrid Messenger \u2014 Phase 1.5 \u00b7 Verified-link LR + encrypted voice messages Parent: OFFICIAL Phase 1.4.11 LongRange stable baseline**, not 1.4.11.1 ManualLR or 1.4.11.2 RFTest. This project is a **separate experimental candidate**; don't overwrite the 1.4.11 ZIP or label 1.5 stable until physical te",
+    "extra_source_files_ignored": []
+  },
+  {
+    "version": "1.5.1",
+    "title": "Refine voice and played receipts",
+    "archive": "old_releases/OffGridMessenger_Phase1_5_1_Voice120_PlayedReceipts.zip",
+    "archive_sha256": "8145fce9911f7404472661b00e8eaca73f24c1fa754b7c83912e4adca3368bd5",
+    "components_in_archive": {
+      "android": 0,
+      "firmware": 51,
+      "web": 6
+    },
+    "inherited_components": [
+      "android"
+    ],
+    "changes": {
+      "android": {
+        "added": [],
+        "modified": [],
+        "removed": []
+      },
+      "firmware": {
+        "added": [
+          "tests/test-played-receipts-browser.py",
+          "tests/test-voice120-browser.py"
+        ],
+        "modified": [
+          "README.md",
+          "ROADMAP.md",
+          "TEST_RESULTS.txt",
+          "VALIDATION.md",
+          "tests/test-voice.cjs"
+        ],
+        "removed": []
+      },
+      "web": {
+        "added": [],
+        "modified": [
+          "app.js",
+          "index.html",
+          "protocol.js",
+          "styles.css"
+        ],
+        "removed": []
+      }
+    },
+    "source_readme_excerpt": "OffGrid Messenger \u2014 Phase 1.5.1 \u00b7 Two-minute voice + played receipts Parent: working Phase 1.5 ReliableLR + Voice, which itself was built directly from the official Phase 1.4.11 LongRange stable baseline.** Phase 1.4.11.1 ManualLR and 1.4.11.2 RFTest are test-only and are NOT in this release. This i",
+    "extra_source_files_ignored": []
+  },
+  {
+    "version": "1.6.1",
+    "title": "Refine web interface and notifications",
+    "archive": "old_releases/OffGridMessenger_Phase1_6_1_Notifications_RefinedUI.zip",
+    "archive_sha256": "771472ccaf61be95edfed9338648173fcbf873b7dc9b93088a1485677761bd29",
+    "components_in_archive": {
+      "android": 0,
+      "firmware": 53,
+      "web": 6
+    },
+    "inherited_components": [
+      "android"
+    ],
+    "changes": {
+      "android": {
+        "added": [],
+        "modified": [],
+        "removed": []
+      },
+      "firmware": {
+        "added": [
+          "tests/test-composer-premium-browser.py",
+          "tests/test-notifications-unread-browser.py"
+        ],
+        "modified": [
+          "README.md",
+          "ROADMAP.md",
+          "TEST_RESULTS.txt",
+          "VALIDATION.md"
+        ],
+        "removed": []
+      },
+      "web": {
+        "added": [],
+        "modified": [
+          "app.js",
+          "index.html",
+          "styles.css"
+        ],
+        "removed": []
+      }
+    },
+    "source_readme_excerpt": "OffGrid Messenger \u2014 Phase 1.6.1 What's new Built directly on the **user-approved Phase 1.6 Premium Glass UI**, with the working 1.5.1 voice messages and played receipts preserved.",
+    "extra_source_files_ignored": []
+  },
+  {
+    "version": "2.0.6",
+    "title": "Introduce Android and fix partitions",
+    "archive": "old_releases/OffGridMessenger_Phase2_0_6_PartitionFix.zip",
+    "archive_sha256": "c7c317e386abfc3ebf02c33be01317c257e7729366f13452c8b2df10d7d473bb",
+    "components_in_archive": {
+      "android": 15,
+      "firmware": 67,
+      "web": 0
+    },
+    "inherited_components": [
+      "web"
+    ],
+    "changes": {
+      "android": {
+        "added": [
+          "README.md",
+          "app/build.gradle.kts",
+          "app/src/main/AndroidManifest.xml",
+          "app/src/main/java/com/offgrid/messenger/BleNodeClient.kt",
+          "app/src/main/java/com/offgrid/messenger/MainActivity.kt",
+          "app/src/main/java/com/offgrid/messenger/OgmCodec.kt",
+          "app/src/main/java/com/offgrid/messenger/SecureKeyStore.kt",
+          "build.gradle.kts",
+          "gradle.properties",
+          "gradle/wrapper/gradle-wrapper.properties",
+          "settings.gradle.kts",
+          "tests/OgmCodecEmit.kt",
+          "tests/OgmCodecJvmTest.kt",
+          "tests/kotlin_vector.txt",
+          "tests/web_vector.txt"
+        ],
+        "modified": [],
+        "removed": []
+      },
+      "firmware": {
+        "added": [
+          ".vscode/c_cpp_properties.json",
+          ".vscode/tasks.json",
+          "NIMBLE_BUILD_AND_FLASH.md",
+          "PARTITION_FIX.md",
+          "VALIDATION_2_0_2.md",
+          "main/ble_auth_psa.h",
+          "main/ble_bridge.c",
+          "main/ble_bridge.h",
+          "partitions.csv",
+          "scripts/check_partitions.py",
+          "scripts/flash_both.py",
+          "scripts/flash_both.sh",
+          "scripts/verify_actual_idf61_build.sh",
+          "tests/psa_stub/psa/crypto.h",
+          "tests/run_psa_hmac_test.sh",
+          "tests/test_ble_hmac_psa.c",
+          "tests/test_dual_flash_plan.py",
+          "web/adaptive.js",
+          "web/app.js",
+          "web/index.html",
+          "web/logo.svg",
+          "web/protocol.js",
+          "web/styles.css"
+        ],
+        "modified": [
+          "README.md",
+          "ROADMAP.md",
+          "VALIDATION.md",
+          "main/CMakeLists.txt",
+          "main/main.c",
+          "sdkconfig.defaults",
+          "tests/host_stubs/stub_idf.h",
+          "tests/test-long-range-contract.py",
+          "tests/test-selective-ack-firmware.py",
+          "tests/test_usb_records.py"
+        ],
+        "removed": [
+          "TEST_RESULTS.txt",
+          "main/link_health_policy.h",
+          "tests/test-composer-premium-browser.py",
+          "tests/test-link-health.c",
+          "tests/test-notifications-unread-browser.py",
+          "tests/test-played-receipts-browser.py",
+          "tests/test-voice-browser.py",
+          "tests/test-voice.cjs",
+          "tests/test-voice120-browser.py"
+        ]
+      },
+      "web": {
+        "added": [],
+        "modified": [],
+        "removed": []
+      }
+    },
+    "source_readme_excerpt": "OffGrid Messenger \u2014 Phase 1.4.11 (Experimental ESP-NOW Long Range) Hardware:** two ESP32-C3 Super Minis, one laptop, USB-C cables. **Firmware:** ESP-IDF 5.2+ (ESP32-C3 target) in VS Code. **Web app:** local Chromium Web Serial. **No LoRa radio, Wi-Fi AP, router, cloud server, or GPS required. > **IM",
+    "extra_source_files_ignored": [
+      "PARTITION_PRESERVATION.json",
+      "PRESERVATION_MANIFEST.json",
+      "ROADMAP.md",
+      "README.md",
+      "RADIO_BASELINE_DIFF.patch",
+      "VALIDATION_2_0_3.md",
+      "VALIDATION_2_0_4.md",
+      "VALIDATION.md",
+      "README_FIRST.md",
+      "BUILD_FIX_2_0_3.md",
+      "BUILD_FIX.md"
+    ]
+  },
+  {
+    "version": "2.0.9",
+    "title": "Optimize BLE connection latency",
+    "archive": "OffGridMessenger_Phase2_0_9_BLE_Latency.zip",
+    "archive_sha256": "618a78b2e90f1982d38c54b75edb91ce34718be4448b31be789293c84176d76a",
+    "components_in_archive": {
+      "android": 17,
+      "firmware": 68,
+      "web": 0
+    },
+    "inherited_components": [
+      "web"
+    ],
+    "changes": {
+      "android": {
+        "added": [
+          "ANDROID_BLE_FIX_208.md",
+          "tests/test_ble_latency_contract.py"
+        ],
+        "modified": [
+          "app/build.gradle.kts",
+          "app/src/main/java/com/offgrid/messenger/BleNodeClient.kt",
+          "app/src/main/java/com/offgrid/messenger/MainActivity.kt",
+          "app/src/main/java/com/offgrid/messenger/SecureKeyStore.kt"
+        ],
+        "removed": []
+      },
+      "firmware": {
+        "added": [
+          "tests/test_ble_209_preservation.py"
+        ],
+        "modified": [
+          "main/ble_bridge.c",
+          "main/main.c",
+          "partitions.csv",
+          "scripts/check_partitions.py",
+          "scripts/verify_actual_idf61_build.sh",
+          "sdkconfig.defaults",
+          "tests/test-long-range-contract.py"
+        ],
+        "removed": []
+      },
+      "web": {
+        "added": [],
+        "modified": [],
+        "removed": []
+      }
+    },
+    "source_readme_excerpt": "OffGrid Messenger \u2014 Phase 1.4.11 (Experimental ESP-NOW Long Range) Hardware:** two ESP32-C3 Super Minis, one laptop, USB-C cables. **Firmware:** ESP-IDF 5.2+ (ESP32-C3 target) in VS Code. **Web app:** local Chromium Web Serial. **No LoRa radio, Wi-Fi AP, router, cloud server, or GPS required. > **IM",
+    "extra_source_files_ignored": [
+      "CHANGELOG_209.md",
+      "PRESERVATION_CHECK_209.json",
+      "README_FIRST.md",
+      "VALIDATION_209.md"
+    ]
+  },
+  {
+    "version": "2.1.0",
+    "title": "Expand Android media and interoperability",
+    "archive": "OffGridMessenger_Phase2_1_Android_Media.zip",
+    "archive_sha256": "9016370682f4063e0c6a6c531f00ee59aa338c252d64732fab560f71d1130b3d",
+    "components_in_archive": {
+      "android": 30,
+      "firmware": 68,
+      "web": 0
+    },
+    "inherited_components": [
+      "web"
+    ],
+    "changes": {
+      "android": {
+        "added": [
+          "ANDROID_BASELINE_SHA256.json",
+          "PHASE_2_1_MEDIA.md",
+          "app/src/main/java/com/offgrid/messenger/AndroidMedia.kt",
+          "app/src/main/java/com/offgrid/messenger/MediaPayload.kt",
+          "tests/MediaInteropEmit.kt",
+          "tests/MediaInteropImport.kt",
+          "tests/MediaPayloadJvmTest.kt",
+          "tests/emit_web_media.cjs",
+          "tests/reference_web_protocol.cjs",
+          "tests/run_phase21_tests.sh",
+          "tests/test_media_web_interop.cjs",
+          "tests/test_phase21_contract.py",
+          "tests/test_phase21_integrity.py"
+        ],
+        "modified": [
+          "app/build.gradle.kts",
+          "app/src/main/AndroidManifest.xml",
+          "app/src/main/java/com/offgrid/messenger/MainActivity.kt",
+          "app/src/main/java/com/offgrid/messenger/OgmCodec.kt"
+        ],
+        "removed": []
+      },
+      "firmware": {
+        "added": [],
+        "modified": [],
+        "removed": []
+      },
+      "web": {
+        "added": [],
+        "modified": [],
+        "removed": []
+      }
+    },
+    "source_readme_excerpt": "OffGrid Messenger \u2014 Phase 1.4.11 (Experimental ESP-NOW Long Range) Hardware:** two ESP32-C3 Super Minis, one laptop, USB-C cables. **Firmware:** ESP-IDF 5.2+ (ESP32-C3 target) in VS Code. **Web app:** local Chromium Web Serial. **No LoRa radio, Wi-Fi AP, router, cloud server, or GPS required. > **IM",
+    "extra_source_files_ignored": [
+      "CHANGELOG_209.md",
+      "PRESERVATION_21.json",
+      "PRESERVATION_CHECK_209.json",
+      "README_FIRST.md",
+      "VALIDATION_209.md",
+      "VALIDATION_21.md"
+    ]
+  },
+  {
+    "version": "2.2.0",
+    "title": "Accelerate media transmission",
+    "archive": "OffGridMessenger_Phase2_2_FastMedia.zip",
+    "archive_sha256": "f6dc63db81eed3359fe9a5ccba97ed18d71a830658ddc55be3d6417f85adcbab",
+    "components_in_archive": {
+      "android": 37,
+      "firmware": 68,
+      "web": 0
+    },
+    "inherited_components": [
+      "web"
+    ],
+    "changes": {
+      "android": {
+        "added": [
+          "PHASE_2_2_FAST_MEDIA.md",
+          "PRESERVATION_22_ANDROID.json",
+          "app/src/main/java/com/offgrid/messenger/MediaTransferWindow.kt",
+          "tests/MediaWindowContractTest.kt",
+          "tests/MediaWindowSpeedModel.kt",
+          "tests/run_phase22_tests.sh",
+          "tests/test_phase22_contract.py"
+        ],
+        "modified": [
+          "README.md",
+          "app/build.gradle.kts",
+          "app/src/main/java/com/offgrid/messenger/AndroidMedia.kt",
+          "app/src/main/java/com/offgrid/messenger/MainActivity.kt",
+          "app/src/main/java/com/offgrid/messenger/MediaPayload.kt",
+          "tests/test_phase21_contract.py"
+        ],
+        "removed": []
+      },
+      "firmware": {
+        "added": [],
+        "modified": [],
+        "removed": []
+      },
+      "web": {
+        "added": [],
+        "modified": [],
+        "removed": []
+      }
+    },
+    "source_readme_excerpt": "OffGrid Messenger \u2014 Phase 1.4.11 (Experimental ESP-NOW Long Range) Hardware:** two ESP32-C3 Super Minis, one laptop, USB-C cables. **Firmware:** ESP-IDF 5.2+ (ESP32-C3 target) in VS Code. **Web app:** local Chromium Web Serial. **No LoRa radio, Wi-Fi AP, router, cloud server, or GPS required. > **IM",
+    "extra_source_files_ignored": [
+      "CHANGELOG_209.md",
+      "CHANGELOG_22.md",
+      "PRESERVATION_21.json",
+      "PRESERVATION_22.json",
+      "PRESERVATION_CHECK_209.json",
+      "README_FIRST.md",
+      "VALIDATION_209.md",
+      "VALIDATION_21.md",
+      "VALIDATION_22.md"
+    ]
+  },
+  {
+    "version": "2.3.0",
+    "title": "Introduce binary BLE transport",
+    "archive": "OffGridMessenger_Phase2_3_BinaryBLE.zip",
+    "archive_sha256": "af0fd95b022a5f9c1203489003d513edc372b4d970d5daf88575979126f820c6",
+    "components_in_archive": {
+      "android": 50,
+      "firmware": 80,
+      "web": 0
+    },
+    "inherited_components": [
+      "web"
+    ],
+    "changes": {
+      "android": {
+        "added": [
+          "PHASE_2_3_BINARY_BLE.md",
+          "app/src/main/java/com/offgrid/messenger/BleBinaryCodec.kt",
+          "tests/BleBinaryCodecTest.kt",
+          "tests/MediaBinaryWindowContractTest.kt",
+          "tests/mock_android/AndroidStubs.kt",
+          "tests/mock_android/AnnotationStub.kt",
+          "tests/mock_android/BinaryGattTest.kt",
+          "tests/mock_android/BleClientContractTest.kt",
+          "tests/mock_android/ContextStub.kt",
+          "tests/mock_android/CryptoStub.kt",
+          "tests/mock_android/OsStubs.kt",
+          "tests/mock_android/OtherStubs.kt",
+          "tests/run_phase23_tests.sh"
+        ],
+        "modified": [
+          "README.md",
+          "app/build.gradle.kts",
+          "app/src/main/java/com/offgrid/messenger/BleNodeClient.kt",
+          "app/src/main/java/com/offgrid/messenger/MainActivity.kt",
+          "app/src/main/java/com/offgrid/messenger/MediaTransferWindow.kt",
+          "tests/MediaWindowContractTest.kt",
+          "tests/MediaWindowSpeedModel.kt",
+          "tests/test_phase21_contract.py",
+          "tests/test_phase22_contract.py"
+        ],
+        "removed": []
+      },
+      "firmware": {
+        "added": [
+          "PHASE_2_3_BUILD.md",
+          "main/ble_binary.h",
+          "tests/ble_stubs/host/ble_hs.h",
+          "tests/ble_stubs/host/ble_uuid.h",
+          "tests/ble_stubs/nimble/nimble_port.h",
+          "tests/ble_stubs/nimble/nimble_port_freertos.h",
+          "tests/ble_stubs/os/os_mbuf.h",
+          "tests/ble_stubs/services/gap/ble_svc_gap.h",
+          "tests/ble_stubs/services/gatt/ble_svc_gatt.h",
+          "tests/run_phase23_tests.sh",
+          "tests/test_ble_binary.c",
+          "tests/test_phase23_integrity.py"
+        ],
+        "modified": [
+          "main/ble_bridge.c",
+          "main/ble_bridge.h",
+          "main/main.c"
+        ],
+        "removed": []
+      },
+      "web": {
+        "added": [],
+        "modified": [],
+        "removed": []
+      }
+    },
+    "source_readme_excerpt": "OffGrid Messenger \u2014 Phase 1.4.11 (Experimental ESP-NOW Long Range) Hardware:** two ESP32-C3 Super Minis, one laptop, USB-C cables. **Firmware:** ESP-IDF 5.2+ (ESP32-C3 target) in VS Code. **Web app:** local Chromium Web Serial. **No LoRa radio, Wi-Fi AP, router, cloud server, or GPS required. > **IM",
+    "extra_source_files_ignored": [
+      "CHANGELOG_209.md",
+      "CHANGELOG_22.md",
+      "CHANGELOG_23.md",
+      "PHASE23_BASELINE_HASHES.json",
+      "PRESERVATION_21.json",
+      "PRESERVATION_22.json",
+      "PRESERVATION_23.json",
+      "PRESERVATION_CHECK_209.json",
+      "README_FIRST.md",
+      "README_PHASE_2_3.md",
+      "VALIDATION_209.md",
+      "VALIDATION_21.md",
+      "VALIDATION_22.md",
+      "VALIDATION_23.md"
+    ]
+  },
+  {
+    "version": "2.4.0",
+    "title": "Introduce premium Android UI",
+    "archive": "OffGridMessenger_Phase2_4_Premium.zip",
+    "archive_sha256": "f0365cd2631a5c9aefec47311732b0c32b57d487ef4e501b05706e2d8c755d44",
+    "components_in_archive": {
+      "android": 72,
+      "firmware": 80,
+      "web": 0
+    },
+    "inherited_components": [
+      "web"
+    ],
+    "changes": {
+      "android": {
+        "added": [
+          "PHASE_2_4_PREMIUM.md",
+          "app/src/main/java/com/offgrid/messenger/BleSessionHolder.kt",
+          "app/src/main/java/com/offgrid/messenger/EncryptedHistory.kt",
+          "app/src/main/java/com/offgrid/messenger/HistoryCodec.kt",
+          "app/src/main/java/com/offgrid/messenger/OffGridConnectionService.kt",
+          "app/src/main/java/com/offgrid/messenger/OffGridNotifications.kt",
+          "app/src/main/java/com/offgrid/messenger/PremiumUi.kt",
+          "app/src/main/java/com/offgrid/messenger/ReceiptStates.kt",
+          "app/src/main/res/drawable/ic_launcher_foreground.png",
+          "app/src/main/res/drawable/ic_notification.xml",
+          "app/src/main/res/mipmap-anydpi-v26/ic_launcher.xml",
+          "app/src/main/res/mipmap-hdpi/ic_launcher.png",
+          "app/src/main/res/mipmap-mdpi/ic_launcher.png",
+          "app/src/main/res/mipmap-xhdpi/ic_launcher.png",
+          "app/src/main/res/mipmap-xxhdpi/ic_launcher.png",
+          "app/src/main/res/mipmap-xxxhdpi/ic_launcher.png",
+          "app/src/main/res/values/colors.xml",
+          "tests/phase24/ChatItemStub.kt",
+          "tests/phase24/HistoryReceiptTest.kt",
+          "tests/run_phase24_tests.sh",
+          "tests/test_phase24_contract.py",
+          "tests/test_phase24_preservation.py"
+        ],
+        "modified": [
+          "README.md",
+          "app/build.gradle.kts",
+          "app/src/main/AndroidManifest.xml",
+          "app/src/main/java/com/offgrid/messenger/MainActivity.kt",
+          "tests/test_phase21_contract.py",
+          "tests/test_phase22_contract.py"
+        ],
+        "removed": []
+      },
+      "firmware": {
+        "added": [],
+        "modified": [],
+        "removed": []
+      },
+      "web": {
+        "added": [],
+        "modified": [],
+        "removed": []
+      }
+    },
+    "source_readme_excerpt": "OffGrid Messenger \u2014 Phase 1.4.11 (Experimental ESP-NOW Long Range) Hardware:** two ESP32-C3 Super Minis, one laptop, USB-C cables. **Firmware:** ESP-IDF 5.2+ (ESP32-C3 target) in VS Code. **Web app:** local Chromium Web Serial. **No LoRa radio, Wi-Fi AP, router, cloud server, or GPS required. > **IM",
+    "extra_source_files_ignored": [
+      "PRESERVATION_24.json",
+      "README_FIRST.md",
+      "RESEARCH_DESIGN.md",
+      "VALIDATION_24.md"
+    ]
+  },
+  {
+    "version": "2.4.1",
+    "title": "Add chat message controls",
+    "archive": "OffGridMessenger_Phase2_4_1_Complete.zip",
+    "archive_sha256": "a6a6df2a4f7acc53d201ffe0c12942bd63015c831d557c8d703cb9205881bb35",
+    "components_in_archive": {
+      "android": 78,
+      "firmware": 82,
+      "web": 0
+    },
+    "inherited_components": [
+      "web"
+    ],
+    "changes": {
+      "android": {
+        "added": [
+          "app/src/main/java/com/offgrid/messenger/MessageMutation.kt",
+          "app/src/main/res/drawable/ic_launcher_foreground.xml",
+          "app/src/main/res/drawable/ic_launcher_monochrome.xml",
+          "tests/phase25/CrossWire.kt",
+          "tests/phase25/MutationsTest.kt",
+          "tests/phase25/test_contract.py",
+          "tests/run_phase241_tests.sh"
+        ],
+        "modified": [
+          "app/build.gradle.kts",
+          "app/src/main/java/com/offgrid/messenger/EncryptedHistory.kt",
+          "app/src/main/java/com/offgrid/messenger/HistoryCodec.kt",
+          "app/src/main/java/com/offgrid/messenger/MainActivity.kt",
+          "app/src/main/java/com/offgrid/messenger/OffGridNotifications.kt",
+          "app/src/main/java/com/offgrid/messenger/OgmCodec.kt",
+          "app/src/main/java/com/offgrid/messenger/PremiumUi.kt",
+          "app/src/main/res/mipmap-anydpi-v26/ic_launcher.xml",
+          "app/src/main/res/mipmap-hdpi/ic_launcher.png",
+          "app/src/main/res/mipmap-mdpi/ic_launcher.png",
+          "app/src/main/res/mipmap-xhdpi/ic_launcher.png",
+          "app/src/main/res/mipmap-xxhdpi/ic_launcher.png",
+          "app/src/main/res/mipmap-xxxhdpi/ic_launcher.png",
+          "app/src/main/res/values/colors.xml",
+          "tests/phase24/ChatItemStub.kt",
+          "tests/run_phase24_tests.sh"
+        ],
+        "removed": [
+          "app/src/main/res/drawable/ic_launcher_foreground.png"
+        ]
+      },
+      "firmware": {
+        "added": [
+          "tests/test-phase241-crosswire.cjs",
+          "tests/test-phase241-mutations.cjs"
+        ],
+        "modified": [
+          "web/app.js",
+          "web/index.html",
+          "web/logo.svg",
+          "web/protocol.js",
+          "web/styles.css"
+        ],
+        "removed": []
+      },
+      "web": {
+        "added": [],
+        "modified": [],
+        "removed": []
+      }
+    },
+    "source_readme_excerpt": "OffGrid Messenger \u2014 Phase 1.4.11 (Experimental ESP-NOW Long Range) Hardware:** two ESP32-C3 Super Minis, one laptop, USB-C cables. **Firmware:** ESP-IDF 5.2+ (ESP32-C3 target) in VS Code. **Web app:** local Chromium Web Serial. **No LoRa radio, Wi-Fi AP, router, cloud server, or GPS required. > **IM",
+    "extra_source_files_ignored": [
+      "PRESERVATION_241.json",
+      "README_FIRST.md",
+      "VALIDATION_2_4_1.md"
+    ]
+  },
+  {
+    "version": "2.4.2",
+    "title": "Refine voice gestures and deletion ledger",
+    "archive": "OffGridMessenger_Phase2_4_2_Complete.zip",
+    "archive_sha256": "78b716db44ce18fd204d87a1f365083b0331cef439f460f182302811fc486c6f",
+    "components_in_archive": {
+      "android": 83,
+      "firmware": 82,
+      "web": 0
+    },
+    "inherited_components": [
+      "web"
+    ],
+    "changes": {
+      "android": {
+        "added": [
+          "app/src/main/java/com/offgrid/messenger/HiddenMessageIds.kt",
+          "app/src/main/java/com/offgrid/messenger/VoiceGestureRules.kt",
+          "tests/phase242/HiddenGestureTest.kt",
+          "tests/phase242/test_ui_contract.py",
+          "tests/run_phase242_tests.sh"
+        ],
+        "modified": [
+          "app/build.gradle.kts",
+          "app/src/main/java/com/offgrid/messenger/EncryptedHistory.kt",
+          "app/src/main/java/com/offgrid/messenger/MainActivity.kt",
+          "app/src/main/java/com/offgrid/messenger/PremiumUi.kt"
+        ],
+        "removed": []
+      },
+      "firmware": {
+        "added": [],
+        "modified": [],
+        "removed": []
+      },
+      "web": {
+        "added": [],
+        "modified": [],
+        "removed": []
+      }
+    },
+    "source_readme_excerpt": "OffGrid Messenger \u2014 Phase 1.4.11 (Experimental ESP-NOW Long Range) Hardware:** two ESP32-C3 Super Minis, one laptop, USB-C cables. **Firmware:** ESP-IDF 5.2+ (ESP32-C3 target) in VS Code. **Web app:** local Chromium Web Serial. **No LoRa radio, Wi-Fi AP, router, cloud server, or GPS required. > **IM",
+    "extra_source_files_ignored": [
+      "PRESERVATION_241.json",
+      "PRESERVATION_242.json",
+      "README_FIRST.md",
+      "VALIDATION_242.md",
+      "VALIDATION_2_4_1.md"
+    ]
+  },
+  {
+    "version": "2.4.3",
+    "title": "Refine visual effects",
+    "archive": "OffGridMessenger_Phase2_4_3_TrueGlass_Complete.zip",
+    "archive_sha256": "eaa9e57c6355e59394d8788b09ed42ced9ab31a5d8fdd437241e27224b257469",
+    "components_in_archive": {
+      "android": 85,
+      "firmware": 82,
+      "web": 0
+    },
+    "inherited_components": [
+      "web"
+    ],
+    "changes": {
+      "android": {
+        "added": [
+          "tests/run_phase243_tests.sh",
+          "tests/test_phase243_trueglass.py"
+        ],
+        "modified": [
+          "app/build.gradle.kts",
+          "app/src/main/java/com/offgrid/messenger/PremiumUi.kt"
+        ],
+        "removed": []
+      },
+      "firmware": {
+        "added": [],
+        "modified": [],
+        "removed": []
+      },
+      "web": {
+        "added": [],
+        "modified": [],
+        "removed": []
+      }
+    },
+    "source_readme_excerpt": "OffGrid Messenger \u2014 Phase 1.4.11 (Experimental ESP-NOW Long Range) Hardware:** two ESP32-C3 Super Minis, one laptop, USB-C cables. **Firmware:** ESP-IDF 5.2+ (ESP32-C3 target) in VS Code. **Web app:** local Chromium Web Serial. **No LoRa radio, Wi-Fi AP, router, cloud server, or GPS required. > **IM",
+    "extra_source_files_ignored": [
+      "VALIDATION_242.md",
+      "VALIDATION_2_4_1.md",
+      "PRESERVATION_241.json",
+      "PRESERVATION_242.json",
+      "README_FIRST.md",
+      "VALIDATION_243.md"
+    ]
+  },
+  {
+    "version": "2.4.4",
+    "title": "Stabilize dark and light theme",
+    "archive": "OffGridMessenger_Phase2_4_4_ThemeStability_Complete.zip",
+    "archive_sha256": "15d76eebf0adf4c2c703e4808fd2787c555222e7f8416f41c2ce27e12161c9a0",
+    "components_in_archive": {
+      "android": 87,
+      "firmware": 82,
+      "web": 0
+    },
+    "inherited_components": [
+      "web"
+    ],
+    "changes": {
+      "android": {
+        "added": [
+          "tests/run_phase244_tests.sh",
+          "tests/test_phase244_theme.py"
+        ],
+        "modified": [
+          "app/build.gradle.kts",
+          "app/src/main/java/com/offgrid/messenger/PremiumUi.kt"
+        ],
+        "removed": []
+      },
+      "firmware": {
+        "added": [],
+        "modified": [],
+        "removed": []
+      },
+      "web": {
+        "added": [],
+        "modified": [],
+        "removed": []
+      }
+    },
+    "source_readme_excerpt": "OffGrid Messenger \u2014 Phase 1.4.11 (Experimental ESP-NOW Long Range) Hardware:** two ESP32-C3 Super Minis, one laptop, USB-C cables. **Firmware:** ESP-IDF 5.2+ (ESP32-C3 target) in VS Code. **Web app:** local Chromium Web Serial. **No LoRa radio, Wi-Fi AP, router, cloud server, or GPS required. > **IM",
+    "extra_source_files_ignored": [
+      "PRESERVATION_241.json",
+      "PRESERVATION_242.json",
+      "README_FIRST.md",
+      "README_FIRST_244.md",
+      "VALIDATION_242.md",
+      "VALIDATION_243.md",
+      "VALIDATION_2_4_1.md"
+    ]
+  },
+  {
+    "version": "2.5.0",
+    "title": "Add in-app camera and media polish",
+    "archive": "OffGridMessenger_Phase2_5_CameraPolish_Complete.zip",
+    "archive_sha256": "6f4f513fb9169a27a9cb67cde2a5575be3281747f710a68f6b23cb2d52634244",
+    "components_in_archive": {
+      "android": 91,
+      "firmware": 82,
+      "web": 0
+    },
+    "inherited_components": [
+      "web"
+    ],
+    "changes": {
+      "android": {
+        "added": [
+          "PHASE_2_5_CAMERA_POLISH.md",
+          "app/src/main/java/com/offgrid/messenger/InAppCamera.kt",
+          "tests/run_phase25_tests.sh",
+          "tests/test_phase25_contract.py"
+        ],
+        "modified": [
+          "README.md",
+          "app/build.gradle.kts",
+          "app/src/main/AndroidManifest.xml",
+          "app/src/main/java/com/offgrid/messenger/AndroidMedia.kt",
+          "app/src/main/java/com/offgrid/messenger/MainActivity.kt",
+          "app/src/main/java/com/offgrid/messenger/PremiumUi.kt",
+          "app/src/main/java/com/offgrid/messenger/ReceiptStates.kt",
+          "tests/phase24/HistoryReceiptTest.kt"
+        ],
+        "removed": []
+      },
+      "firmware": {
+        "added": [],
+        "modified": [],
+        "removed": []
+      },
+      "web": {
+        "added": [],
+        "modified": [],
+        "removed": []
+      }
+    },
+    "source_readme_excerpt": "OffGrid Messenger \u2014 Phase 1.4.11 (Experimental ESP-NOW Long Range) Hardware:** two ESP32-C3 Super Minis, one laptop, USB-C cables. **Firmware:** ESP-IDF 5.2+ (ESP32-C3 target) in VS Code. **Web app:** local Chromium Web Serial. **No LoRa radio, Wi-Fi AP, router, cloud server, or GPS required. > **IM",
+    "extra_source_files_ignored": [
+      "PRESERVATION_241.json",
+      "PRESERVATION_242.json",
+      "VALIDATION_242.md",
+      "VALIDATION_243.md",
+      "VALIDATION_2_4_1.md",
+      "README_FIRST.md",
+      "VALIDATION_25.md"
+    ]
+  },
+  {
+    "version": "2.5.1",
+    "title": "Experiment with adaptive chat layout",
+    "archive": "OffGridMessenger_Phase2_5_1_Complete.zip",
+    "archive_sha256": "07350990606534ea2f827c5bd4ab2bc28db87c0a5ab51a84549e17efc97e511f",
+    "components_in_archive": {
+      "android": 97,
+      "firmware": 82,
+      "web": 0
+    },
+    "inherited_components": [
+      "web"
+    ],
+    "changes": {
+      "android": {
+        "added": [
+          "PHASE_2_5_1_ADAPTIVE_CHAT.md",
+          "app/src/main/java/com/offgrid/messenger/ConversationUiRules.kt",
+          "tests/phase251_ChatRulesTest.kt",
+          "tests/phase251_baseline.sha256.json",
+          "tests/run_phase251_tests.sh",
+          "tests/test_phase251_contract.py"
+        ],
+        "modified": [
+          "app/build.gradle.kts",
+          "app/src/main/java/com/offgrid/messenger/InAppCamera.kt",
+          "app/src/main/java/com/offgrid/messenger/MainActivity.kt",
+          "app/src/main/java/com/offgrid/messenger/PremiumUi.kt",
+          "tests/test_phase25_contract.py"
+        ],
+        "removed": []
+      },
+      "firmware": {
+        "added": [],
+        "modified": [],
+        "removed": []
+      },
+      "web": {
+        "added": [],
+        "modified": [],
+        "removed": []
+      }
+    },
+    "source_readme_excerpt": "OffGrid Messenger \u2014 Phase 1.4.11 (Experimental ESP-NOW Long Range) Hardware:** two ESP32-C3 Super Minis, one laptop, USB-C cables. **Firmware:** ESP-IDF 5.2+ (ESP32-C3 target) in VS Code. **Web app:** local Chromium Web Serial. **No LoRa radio, Wi-Fi AP, router, cloud server, or GPS required. > **IM",
+    "extra_source_files_ignored": [
+      "PRESERVATION_241.json",
+      "PRESERVATION_242.json",
+      "README_FIRST.md",
+      "VALIDATION_242.md",
+      "VALIDATION_243.md",
+      "VALIDATION_25.md",
+      "VALIDATION_251.md",
+      "VALIDATION_2_4_1.md"
+    ]
+  },
+  {
+    "version": "2.5.2",
+    "title": "Experiment with Reach and scroll behaviors",
+    "archive": "OffGridMessenger_Phase2_5_2_Complete.zip",
+    "archive_sha256": "86a3473e3451be90de0ccc9e62af6b3f4b289b99bd0ef0b690d8939a90120072",
+    "components_in_archive": {
+      "android": 100,
+      "firmware": 82,
+      "web": 0
+    },
+    "inherited_components": [
+      "web"
+    ],
+    "changes": {
+      "android": {
+        "added": [
+          "PHASE_2_5_2_REACH_MODE.md",
+          "tests/run_phase252_tests.sh",
+          "tests/test_phase252_contract.py"
+        ],
+        "modified": [
+          "app/build.gradle.kts",
+          "app/src/main/java/com/offgrid/messenger/PremiumUi.kt"
+        ],
+        "removed": []
+      },
+      "firmware": {
+        "added": [],
+        "modified": [],
+        "removed": []
+      },
+      "web": {
+        "added": [],
+        "modified": [],
+        "removed": []
+      }
+    },
+    "source_readme_excerpt": "OffGrid Messenger \u2014 Phase 1.4.11 (Experimental ESP-NOW Long Range) Hardware:** two ESP32-C3 Super Minis, one laptop, USB-C cables. **Firmware:** ESP-IDF 5.2+ (ESP32-C3 target) in VS Code. **Web app:** local Chromium Web Serial. **No LoRa radio, Wi-Fi AP, router, cloud server, or GPS required. > **IM",
+    "extra_source_files_ignored": [
+      "PRESERVATION_241.json",
+      "PRESERVATION_242.json",
+      "README_FIRST.md",
+      "VALIDATION_242.md",
+      "VALIDATION_243.md",
+      "VALIDATION_25.md",
+      "VALIDATION_251.md",
+      "VALIDATION_252.md",
+      "VALIDATION_2_4_1.md"
+    ]
+  },
+  {
+    "version": "2.5.3",
+    "title": "Rollback to accepted UI and preserve 4:3 camera",
+    "archive": "OffGrid_Android_Phase2_5_3_4x3_Rollback.zip",
+    "archive_sha256": "f288d3efe84419b06531c114344263341082b74a83ec89aac0e310fc2cb08b6d",
+    "components_in_archive": {
+      "android": 91,
+      "firmware": 0,
+      "web": 0
+    },
+    "inherited_components": [
+      "firmware",
+      "web"
+    ],
+    "changes": {
+      "android": {
+        "added": [],
+        "modified": [
+          "app/build.gradle.kts",
+          "app/src/main/java/com/offgrid/messenger/MainActivity.kt",
+          "app/src/main/java/com/offgrid/messenger/PremiumUi.kt",
+          "tests/test_phase25_contract.py"
+        ],
+        "removed": [
+          "PHASE_2_5_1_ADAPTIVE_CHAT.md",
+          "PHASE_2_5_2_REACH_MODE.md",
+          "app/src/main/java/com/offgrid/messenger/ConversationUiRules.kt",
+          "tests/phase251_ChatRulesTest.kt",
+          "tests/phase251_baseline.sha256.json",
+          "tests/run_phase251_tests.sh",
+          "tests/run_phase252_tests.sh",
+          "tests/test_phase251_contract.py",
+          "tests/test_phase252_contract.py"
+        ]
+      },
+      "firmware": {
+        "added": [],
+        "modified": [],
+        "removed": []
+      },
+      "web": {
+        "added": [],
+        "modified": [],
+        "removed": []
+      }
+    },
+    "source_readme_excerpt": "OffGrid Messenger Android 2.5 Open this directory in Android Studio. See `PHASE_2_5_CAMERA_POLISH.md` and `../README_FIRST.md` for changes, dependencies and validation. Keep the same application ID and install as an update; do not uninstall or flash your ESP32s. OffGrid Messenger Android 2.4",
+    "extra_source_files_ignored": [
+      "README_FIRST.md"
+    ]
+  },
+  {
+    "version": "2.5.4",
+    "title": "Implement automatic scroll and directional navigation",
+    "archive": "OffGridMessenger_Phase2_5_4_ScrollMotion_Source.zip",
+    "archive_sha256": "27fedf5d98a412b4ed48e462c63b4e08dd7e964a4de835ce656097b39a135f2c",
+    "components_in_archive": {
+      "android": 91,
+      "firmware": 0,
+      "web": 0
+    },
+    "inherited_components": [
+      "firmware",
+      "web"
+    ],
+    "changes": {
+      "android": {
+        "added": [],
+        "modified": [
+          "app/build.gradle.kts",
+          "app/src/main/java/com/offgrid/messenger/PremiumUi.kt"
+        ],
+        "removed": []
+      },
+      "firmware": {
+        "added": [],
+        "modified": [],
+        "removed": []
+      },
+      "web": {
+        "added": [],
+        "modified": [],
+        "removed": []
+      }
+    },
+    "source_readme_excerpt": "OffGrid Messenger Android 2.5 Open this directory in Android Studio. See `PHASE_2_5_CAMERA_POLISH.md` and `../README_FIRST.md` for changes, dependencies and validation. Keep the same application ID and install as an update; do not uninstall or flash your ESP32s. OffGrid Messenger Android 2.4",
+    "extra_source_files_ignored": [
+      "README_FIRST.md",
+      "VALIDATION_254.md"
+    ]
+  },
+  {
+    "version": "2.5.5",
+    "title": "Reduce unnecessary RF mode switching",
+    "archive": "OffGrid_RF_Stability_2_5_5_Firmware.zip",
+    "archive_sha256": "2eab1cf1480b89cfe7c4f219e0f8442f69744a4b961218ad29b40ff22665831b",
+    "components_in_archive": {
+      "android": 0,
+      "firmware": 87,
+      "web": 0
+    },
+    "inherited_components": [
+      "android",
+      "web"
+    ],
+    "changes": {
+      "android": {
+        "added": [],
+        "modified": [],
+        "removed": []
+      },
+      "firmware": {
+        "added": [
+          "RF_STABILITY_255.md",
+          "tests/run_stability_tests.sh",
+          "tests/test_rate_idle_simulation.c",
+          "tests/test_rate_stability_contract.py",
+          "tests/test_stable_rate_policy.c"
+        ],
+        "modified": [
+          "main/link_rate_policy.h",
+          "main/main.c"
+        ],
+        "removed": []
+      },
+      "web": {
+        "added": [],
+        "modified": [],
+        "removed": []
+      }
+    },
+    "source_readme_excerpt": "OffGrid Messenger \u2014 Phase 1.4.11 (Experimental ESP-NOW Long Range) Hardware:** two ESP32-C3 Super Minis, one laptop, USB-C cables. **Firmware:** ESP-IDF 5.2+ (ESP32-C3 target) in VS Code. **Web app:** local Chromium Web Serial. **No LoRa radio, Wi-Fi AP, router, cloud server, or GPS required. > **IM",
+    "extra_source_files_ignored": [
+      "PRESERVATION_RF_255.json",
+      "README_FIRST.md"
+    ]
+  },
+  {
+    "version": "2.5.6",
+    "title": "Add live radio telemetry and background BLE improvements",
+    "archive": "OffGridMessenger_Phase2_5_6_LinkMonitor_Complete.zip",
+    "archive_sha256": "d842d8980f69d386396410aabb0fa912daa0903cff655a9988d585c43ad0948d",
+    "components_in_archive": {
+      "android": 96,
+      "firmware": 88,
+      "web": 0
+    },
+    "inherited_components": [
+      "web"
+    ],
+    "changes": {
+      "android": {
+        "added": [
+          "app/src/main/java/com/offgrid/messenger/RadioLink.kt",
+          "tests/RadioLinkTest.kt",
+          "tests/run_phase256_tests.sh",
+          "tests/test_phase254_contract.py",
+          "tests/test_phase256_scope.py"
+        ],
+        "modified": [
+          "app/build.gradle.kts",
+          "app/src/main/AndroidManifest.xml",
+          "app/src/main/java/com/offgrid/messenger/BleSessionHolder.kt",
+          "app/src/main/java/com/offgrid/messenger/MainActivity.kt",
+          "app/src/main/java/com/offgrid/messenger/OffGridConnectionService.kt",
+          "app/src/main/java/com/offgrid/messenger/PremiumUi.kt"
+        ],
+        "removed": []
+      },
+      "firmware": {
+        "added": [
+          "tests/test_ble_rate_256.py"
+        ],
+        "modified": [
+          "main/ble_bridge.c",
+          "main/main.c"
+        ],
+        "removed": []
+      },
+      "web": {
+        "added": [],
+        "modified": [],
+        "removed": []
+      }
+    },
+    "source_readme_excerpt": "OffGrid Messenger \u2014 Phase 1.4.11 (Experimental ESP-NOW Long Range) Hardware:** two ESP32-C3 Super Minis, one laptop, USB-C cables. **Firmware:** ESP-IDF 5.2+ (ESP32-C3 target) in VS Code. **Web app:** local Chromium Web Serial. **No LoRa radio, Wi-Fi AP, router, cloud server, or GPS required. > **IM",
+    "extra_source_files_ignored": [
+      "README_FIRST.md",
+      "SOURCE_AUDIT.json",
+      "VALIDATION.md"
+    ]
+  }
+]
