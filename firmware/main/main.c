@@ -108,6 +108,9 @@ typedef struct {
     uint32_t id;
     uint16_t length;
     uint8_t text[MAX_TEXT];
+    /* Only BLE binary EV_SEND uses correlation token; radio frame is unchanged. */
+    bool ble_binary;
+    uint16_t ble_token;
     frame_t frame;
 } event_t;
 typedef struct {
@@ -664,9 +667,19 @@ static void process_event(const event_t *e) {
         f->magic=PROTOCOL_MAGIC;f->version=PROTOCOL_VERSION;f->type=TYPE_TEXT;
         memcpy(f->sender,own_mac,6);f->session=boot_session;f->id=next_id++;
         f->length=e->length;memcpy(f->text,e->text,e->length);
-        char prefix[128];
-        snprintf(prefix,sizeof(prefix),"QUEUED|%" PRIu32 "|%" PRIu32 "|",f->session,f->id);
-        emit_hex_record(prefix,f->text,f->length);
+        if(e->ble_binary){
+            /* Small BLE-only mapping avoids resending the entire hex payload.
+             * USB/browser still sees precisely its original QUEUED echo for
+             * ASCII MSGHEX; the ESP-NOW radio algorithm is untouched. */
+            char ack[80];
+            snprintf(ack,sizeof(ack),"BQUEUED|%u|%" PRIu32 "|%" PRIu32,
+                     (unsigned)e->ble_token,f->session,f->id);
+            offgrid_ble_publish(ack);
+        }else{
+            char prefix[128];
+            snprintf(prefix,sizeof(prefix),"QUEUED|%" PRIu32 "|%" PRIu32 "|",f->session,f->id);
+            emit_hex_record(prefix,f->text,f->length);
+        }
         return;
     }
     if(e->type==EV_READ) {
@@ -844,11 +857,18 @@ static bool parse_batch_ack(char *line,event_t *e) {
 /* Authenticated BLE uses a separate command consumer. USB parser and the
  * original ESP-NOW radio dispatcher are kept unchanged. */
 static void ble_commands(void *arg){
- (void)arg;char line[SERIAL_LINE];
+ (void)arg;offgrid_ble_command_t cmd;
  for(;;){
-  if(!offgrid_ble_receive_line(line,sizeof(line))){/* A single tick avoids 20-30ms inbox polling latency on 100Hz FreeRTOS. */
+  if(!offgrid_ble_receive_command(&cmd)){/* A single tick avoids 20-30ms inbox polling latency on 100Hz FreeRTOS. */
       vTaskDelay(1);continue;}
   event_t e={0};bool send=false;
+  if(cmd.kind==OFFGRID_BLE_COMMAND_BINARY){
+   if(cmd.length>0 && cmd.length<=MAX_TEXT && cmd.token!=0){
+    e.type=EV_SEND;e.ble_binary=true;e.ble_token=cmd.token;
+    e.length=cmd.length;memcpy(e.text,cmd.data.frame,cmd.length);send=true;
+   }else offgrid_ble_publish("ERROR|BAD_BINARY");
+  }else{
+  char *line=cmd.data.text;
   if(!strcmp(line,"STATUS")){e.type=EV_STATUS;send=true;}
   else if(!strncmp(line,"MSGHEX ",7)){e.type=EV_SEND;if(read_hex(line+7,e.text,&e.length))send=true;else offgrid_ble_publish("ERROR|BAD_HEX");}
   else if(!strncmp(line,"APPACKB ",8)){if(parse_batch_ack(line+8,&e))send=true;else offgrid_ble_publish("ERROR|BAD_BATCH_ACK");}
@@ -858,6 +878,7 @@ static void ble_commands(void *arg){
       ses<=UINT32_MAX&&id<=UINT32_MAX&&parse_mac(macstr,e.mac)){
       e.type=isread?EV_READ:EV_APPACK;e.session=ses;e.id=id;send=true;
    }else offgrid_ble_publish("ERROR|BAD_ACK");
+  }
   }
   if(send&&xQueueSend(event_queue,&e,pdMS_TO_TICKS(60)+1)!=pdTRUE)offgrid_ble_publish("ERROR|RADIO_BUSY");
  }
